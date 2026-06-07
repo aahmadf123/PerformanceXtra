@@ -232,9 +232,10 @@
 
   /* ---------- Responsive ---------- */
   @media (max-width: 860px) {
-    .builder-layout, .students-layout { grid-template-columns: 1fr; }
+    .builder-layout, .students-layout, .settings-layout { grid-template-columns: 1fr; }
   }
   @media (max-width: 680px) {
+    .form-grid2 { grid-template-columns: 1fr; }
     .header-top { gap: 10px; }
     .brand-tag { display: none; }
     .tabs { width: 100%; }
@@ -246,6 +247,84 @@
     .breakdown { grid-template-columns: 1fr; }
     .bar-row { grid-template-columns: 100px 1fr 34px; }
   }
+
+  /* ---------- Roles / admin ---------- */
+  .role-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .admin-badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: .72rem; font-weight: 800;
+    text-transform: uppercase; letter-spacing: .04em; color: var(--brand-dark);
+    background: var(--brand-tint); border: 1px solid #c7d2fe; padding: 5px 10px; border-radius: 999px;
+  }
+  .admin-badge.is-student { color: var(--ink-soft); background: #f1f5f9; border-color: var(--line); }
+  .preview-banner {
+    background: #fffbeb; border-bottom: 1px solid #fde68a; color: #92400e;
+    padding: 9px 16px; font-size: .85rem; text-align: center; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap;
+  }
+  .preview-banner[hidden] { display: none; }
+  .student-name-tag { font-weight: 700; color: var(--ink); padding: 4px 0; }
+  /* admin-only chrome is removed entirely when a student is viewing */
+  body[data-role="student"] .admin-only { display: none !important; }
+
+  /* ---------- Card admin controls ---------- */
+  .card-admin { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; border-top: 1px dashed var(--line); padding-top: 10px; margin-top: 2px; }
+  .card.is-hidden-activity { opacity: .6; }
+  .tag-hidden { font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#b45309; background:#fef3c7; padding:3px 8px; border-radius:6px; }
+  .tag-custom { font-size:.68rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#5b21b6; background:#ede9fe; padding:3px 8px; border-radius:6px; }
+
+  /* ---------- Modal ---------- */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(20,23,40,.5); z-index: 200;
+    display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto;
+  }
+  .modal-overlay[hidden] { display: none; }
+  .modal {
+    background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow);
+    width: 100%; max-width: 600px; margin: auto; display: flex; flex-direction: column;
+  }
+  .modal-head { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:16px 18px; border-bottom:1px solid var(--line); }
+  .modal-head h3 { font-size: 1.1rem; }
+  .modal-close { appearance:none; border:none; background:none; cursor:pointer; font-size:1.5rem; line-height:1; color:var(--muted); padding:0 4px; }
+  .modal-close:hover { color: var(--ink); }
+  .modal-body { padding: 18px; }
+  .modal-foot { display:flex; justify-content:flex-end; gap:10px; padding:14px 18px; border-top:1px solid var(--line); flex-wrap:wrap; }
+  .form-stack { display:flex; flex-direction:column; gap:14px; }
+  .form-grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  textarea { font:inherit; color:var(--ink); background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-sm); padding:9px 11px; width:100%; resize:vertical; min-height:70px; }
+  textarea:focus { outline:2px solid var(--brand); outline-offset:1px; border-color:var(--brand); }
+  .field-hint { font-size:.76rem; color:var(--muted); }
+
+  /* ---------- Activity picker ---------- */
+  .picker-list { border:1px solid var(--line); border-radius:var(--radius-sm); max-height:300px; overflow:auto; margin-top:10px; }
+  .picker-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid var(--line); font-size:.86rem; cursor:pointer; }
+  .picker-row:last-child { border-bottom:none; }
+  .picker-row:hover { background: var(--brand-tint); }
+  .picker-row input { width:auto; flex:none; }
+  .picker-row .p-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .picker-row .p-meta { color:var(--muted); font-size:.76rem; white-space:nowrap; }
+  .picker-count { font-size:.82rem; color:var(--ink-soft); font-weight:600; margin-top:10px; }
+
+  /* ---------- Assignments ---------- */
+  .assignment { border:1px solid var(--line); border-radius:var(--radius); padding:14px; margin-bottom:12px; background:var(--surface); box-shadow: var(--shadow-sm); }
+  .assignment-head { display:flex; align-items:flex-start; gap:10px; justify-content:space-between; }
+  .assignment-title { font-weight:700; font-size:1.02rem; }
+  .assignment-note { font-size:.85rem; color:var(--ink-soft); margin-top:4px; white-space:pre-wrap; }
+  .assignment-meta { font-size:.76rem; color:var(--muted); margin-top:4px; }
+  .assignment-bar { height:8px; background:var(--line); border-radius:999px; overflow:hidden; margin:12px 0; }
+  .assignment-bar > span { display:block; height:100%; background:var(--success); transition: width .2s; }
+  .assignment-status { font-size:.78rem; font-weight:700; color:var(--ink-soft); }
+  .assignment-status.is-complete { color: var(--success); }
+  .assign-item { display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid var(--line); font-size:.88rem; }
+  .assign-item .ai-name { flex:1; min-width:0; }
+  .assign-item.is-done .ai-name { color: var(--muted); }
+  .assign-item.is-done .ai-name strong { text-decoration: line-through; }
+
+  /* ---------- Sections / toolbars ---------- */
+  .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:6px 0 12px; flex-wrap:wrap; }
+  .section-head h3 { font-size:1.05rem; }
+  .repo-toolbar { display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-bottom:14px; flex-wrap:wrap; }
+  .settings-layout { display:grid; grid-template-columns: 1fr 1fr; gap:20px; align-items:start; }
+  .settings-row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
 
   /* ---------- Print: only the generated workout ---------- */
   @media print {
@@ -274,18 +353,26 @@
         </div>
       </div>
       <div class="student-picker">
-        <label for="student-select">Active student</label>
+        <label for="student-select" id="student-select-label">Active student</label>
         <select id="student-select" aria-label="Active student"></select>
+        <span class="student-name-tag" id="student-name-tag" hidden></span>
         <span class="student-count" id="student-count"></span>
       </div>
+      <div class="role-controls">
+        <span class="admin-badge" id="role-badge" hidden></span>
+        <button class="btn btn--sm" id="student-view-btn" hidden>Student view</button>
+        <button class="btn btn--sm" id="logout-btn" hidden>Log out</button>
+        <button class="btn btn--sm btn--primary" id="admin-login-btn">Admin login</button>
+      </div>
     </div>
-    <nav class="tabs" aria-label="Sections">
-      <button class="tab is-active" data-tab="repo" aria-current="page">Repository</button>
-      <button class="tab" data-tab="builder">Workout Builder</button>
-      <button class="tab" data-tab="students">My Students</button>
-    </nav>
+    <nav class="tabs" id="tabs" aria-label="Sections"></nav>
   </div>
 </header>
+
+<div class="preview-banner" id="preview-banner" hidden>
+  <span>👀 Coach preview — you’re seeing what the student sees.</span>
+  <button class="btn btn--sm" id="back-to-admin-btn">← Back to admin view</button>
+</div>
 
 <main class="container">
 
@@ -294,6 +381,11 @@
     <div class="view-intro">
       <h2 id="repo-h">Activity Repository</h2>
       <p>Every mental-training activity in one place. Search and filter by topic, content type, and progression, then open the resource or expand it for instructions and reflection prompts.</p>
+    </div>
+
+    <div class="repo-toolbar admin-only">
+      <label class="check" style="margin-right:auto"><input type="checkbox" id="show-hidden"> Show hidden activities</label>
+      <button class="btn btn--sm btn--accent" id="add-activity-btn">+ Add activity</button>
     </div>
 
     <button class="btn filters-toggle" id="filters-toggle" aria-expanded="true">Filters</button>
@@ -370,12 +462,12 @@
   <!-- ===================== Students ===================== -->
   <section id="view-students" class="view" aria-labelledby="students-h">
     <div class="view-intro">
-      <h2 id="students-h">My Students</h2>
-      <p>Track which activities each student has completed so you never assign the same thing twice.</p>
+      <h2 id="students-h">Students</h2>
+      <p>Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.</p>
     </div>
 
     <div class="note-banner">
-      <strong>Heads up:</strong> progress is saved only in this browser on this device — it isn’t shared across computers. Use <strong>Export</strong> to back it up or move it to another device.
+      <strong>Heads up:</strong> students, assignments and progress are saved only in this browser on this device — they aren’t shared across computers. Use <strong>Export</strong> in Settings to back up or move them.
     </div>
 
     <div class="students-layout">
@@ -386,22 +478,66 @@
           <input type="text" id="new-student-name" placeholder="New student name" aria-label="New student name" autocomplete="off">
           <button class="btn btn--primary" type="submit">Add</button>
         </form>
-        <div style="margin-top:18px">
-          <h3 style="margin-bottom:10px">Backup</h3>
-          <div class="backup-bar">
-            <button class="btn btn--sm" id="export-btn">Export JSON</button>
-            <button class="btn btn--sm" id="import-merge-btn">Import (merge)</button>
-            <button class="btn btn--sm" id="import-replace-btn">Import (replace)</button>
-            <input type="file" id="import-file" accept="application/json,.json" hidden>
-          </div>
-        </div>
       </div>
 
       <div class="panel" id="student-detail"></div>
     </div>
   </section>
 
+  <!-- ===================== My Workouts (student) ===================== -->
+  <section id="view-workouts" class="view" aria-labelledby="workouts-h">
+    <div class="view-intro">
+      <h2 id="workouts-h">My Workouts</h2>
+      <p>These are the activities your coach has assigned for you. Work through them and mark each one done as you go.</p>
+    </div>
+    <div id="workouts-panel"></div>
+  </section>
+
+  <!-- ===================== My Progress (student) ===================== -->
+  <section id="view-progress" class="view" aria-labelledby="progress-h">
+    <div class="view-intro">
+      <h2 id="progress-h">My Progress</h2>
+      <p>See how much you’ve completed so far, broken down by topic and by week.</p>
+    </div>
+    <div class="panel" id="progress-panel"></div>
+  </section>
+
+  <!-- ===================== Settings (admin) ===================== -->
+  <section id="view-settings" class="view" aria-labelledby="settings-h">
+    <div class="view-intro">
+      <h2 id="settings-h">Settings</h2>
+      <p>Admin passcode, plus backup and restore of all coaching data on this device.</p>
+    </div>
+
+    <div class="settings-layout">
+      <div class="panel">
+        <h3>Admin passcode</h3>
+        <p class="field-hint" style="margin:8px 0 14px">This passcode unlocks the admin tools. It’s checked in the browser, so it keeps students out of admin features — change it from the default before sharing this site.</p>
+        <form class="form-stack" id="passcode-form">
+          <div class="field"><label for="new-passcode">New passcode</label><input type="password" id="new-passcode" autocomplete="new-password" placeholder="Choose a passcode"></div>
+          <div class="field"><label for="confirm-passcode">Confirm passcode</label><input type="password" id="confirm-passcode" autocomplete="new-password" placeholder="Repeat it"></div>
+          <div><button class="btn btn--primary" type="submit">Update passcode</button></div>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h3>Backup &amp; restore</h3>
+        <div class="note-banner" style="margin:12px 0">
+          <strong>Heads up:</strong> all students, assignments, and custom activities are saved only in this browser on this device. Export regularly to back up or move to another device.
+        </div>
+        <div class="backup-bar">
+          <button class="btn btn--sm" id="export-btn">Export JSON</button>
+          <button class="btn btn--sm" id="import-merge-btn">Import (merge)</button>
+          <button class="btn btn--sm" id="import-replace-btn">Import (replace)</button>
+          <input type="file" id="import-file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+    </div>
+  </section>
+
 </main>
+
+<div class="modal-overlay" id="modal-root" hidden aria-hidden="true"></div>
 
 <footer class="site-footer">
   <div class="container">PerformanceXtra — Mental Workout Repository · <span id="total-count"></span> activities</div>
@@ -4201,10 +4337,15 @@
     catch (e) { console.error("Failed to parse " + id, e); return null; }
   }
 
-  var DATA = readJSON("px-data") || [];
+  // BASE is the immutable set generated from the spreadsheet. The working sets
+  // (ALL / DATA / BY_ID / PRESENT) are rebuilt from BASE plus admin additions
+  // (custom activities, per-activity overrides, hidden flags) by rebuildData().
+  var BASE = readJSON("px-data") || [];
   var TAX = readJSON("px-taxonomy") || { topics: [], subtopics: [], types: [], progressions: [], frequencies: [], months: [] };
+  var ALL = [];   // every activity, including hidden — used for BY_ID lookups & admin management
+  var DATA = [];  // visible activities — what students, the builder and filters see
   var BY_ID = {};
-  DATA.forEach(function (a) { BY_ID[a.id] = a; });
+  var PRESENT = { topic: [], subtopic: [], type: [], progression: [], frequency: [] };
 
   // The spreadsheet's dropdown sheet reuses one 36-term vocabulary for both
   // Topics and Subtopics, so filter dropdowns are built from values actually
@@ -4212,7 +4353,7 @@
   function distinctPresent(field) {
     var present = {};
     DATA.forEach(function (a) {
-      if (field === "subtopic") a.subtopics.forEach(function (s) { present[s] = true; });
+      if (field === "subtopic") (a.subtopics || []).forEach(function (s) { present[s] = true; });
       else if (a[field] != null) present[a[field]] = true;
     });
     return present;
@@ -4222,13 +4363,37 @@
     Object.keys(presentObj).forEach(function (v) { if (out.indexOf(v) === -1) out.push(v); });
     return out;
   }
-  var PRESENT = {
-    topic: ordered(TAX.topics, distinctPresent("topic")),
-    subtopic: ordered(TAX.subtopics, distinctPresent("subtopic")),
-    type: ordered(TAX.types, distinctPresent("type")),
-    progression: ordered(TAX.progressions, distinctPresent("progression")),
-    frequency: ordered(TAX.frequencies, distinctPresent("frequency"))
-  };
+  function applyOverride(a, ov) {
+    if (!ov) return a;
+    var out = {};
+    Object.keys(a).forEach(function (k) { out[k] = a[k]; });
+    Object.keys(ov).forEach(function (k) { out[k] = ov[k]; });
+    return out;
+  }
+  // Recompute the working sets from BASE + admin additions. Called once at
+  // startup (after the store is loaded) and again whenever the admin adds,
+  // edits, or hides an activity.
+  function rebuildData() {
+    var st = state.tracking;
+    var overrides = st.overrides || {};
+    var hidden = st.hidden || {};
+    var custom = st.customActivities || [];
+    var merged = BASE.map(function (a) { return applyOverride(a, overrides[a.id]); });
+    custom.forEach(function (a) { merged.push(applyOverride(a, overrides[a.id])); });
+    ALL = merged;
+    BY_ID = {};
+    ALL.forEach(function (a) { BY_ID[a.id] = a; });
+    DATA = ALL.filter(function (a) { return !hidden[a.id]; });
+    PRESENT = {
+      topic: ordered(TAX.topics, distinctPresent("topic")),
+      subtopic: ordered(TAX.subtopics, distinctPresent("subtopic")),
+      type: ordered(TAX.types, distinctPresent("type")),
+      progression: ordered(TAX.progressions, distinctPresent("progression")),
+      frequency: ordered(TAX.frequencies, distinctPresent("frequency"))
+    };
+  }
+  function isHidden(id) { return !!(state.tracking.hidden && state.tracking.hidden[id]); }
+  function isCustom(id) { return /^CUST-/.test(id); }
 
   /* ----------------------------- DOM helpers ----------------------------- */
   function $(sel, root) { return (root || document).querySelector(sel); }
@@ -4270,32 +4435,97 @@
     t._timer = setTimeout(function () { t.classList.remove("show"); }, 2600);
   }
 
-  /* ----------------------------- Tracking / localStorage ----------------------------- */
-  var LS_KEY = "performancextra.tracking.v1";
+  /* ----------------------------- Store / localStorage -----------------------------
+   * v2 store holds everything the coach owns on this device: students (each with
+   * their completions and assignments), admin-added custom activities, per-activity
+   * overrides, hidden flags, and the admin passcode hash. v1 (student tracking only)
+   * is migrated forward on first load. */
+  var LS_KEY = "performancextra.store.v2";
+  var LS_KEY_V1 = "performancextra.tracking.v1";
+  var DEFAULT_PASSCODE = "pxadmin";
   var storageOK = true;
 
-  function emptyTracking() { return { version: 1, activeStudentId: null, students: {} }; }
+  function emptyStore() {
+    return {
+      version: 2, activeStudentId: null, students: {},
+      customActivities: [], overrides: {}, hidden: {},
+      settings: { passcodeHash: hashPasscode(DEFAULT_PASSCODE) }
+    };
+  }
 
-  function loadTracking() {
+  // Ensure every expected field exists (covers migrated / partial / imported data).
+  function normalizeStore(obj) {
+    var s = emptyStore();
+    if (obj && typeof obj === "object") {
+      if (obj.students && typeof obj.students === "object") s.students = obj.students;
+      if (obj.activeStudentId) s.activeStudentId = obj.activeStudentId;
+      if (Array.isArray(obj.customActivities)) s.customActivities = obj.customActivities;
+      if (obj.overrides && typeof obj.overrides === "object") s.overrides = obj.overrides;
+      if (obj.hidden && typeof obj.hidden === "object") s.hidden = obj.hidden;
+      if (obj.settings && obj.settings.passcodeHash) s.settings.passcodeHash = obj.settings.passcodeHash;
+    }
+    // Every student needs a completed map and an assignments array.
+    Object.keys(s.students).forEach(function (id) {
+      var st = s.students[id];
+      if (!st.completed || typeof st.completed !== "object") st.completed = {};
+      if (!Array.isArray(st.assignments)) st.assignments = [];
+    });
+    return s;
+  }
+
+  function loadStore() {
     try {
       var raw = localStorage.getItem(LS_KEY);
-      if (!raw) return emptyTracking();
-      var obj = JSON.parse(raw);
-      if (!obj || typeof obj !== "object" || !obj.students) return emptyTracking();
-      return obj;
+      if (raw) return normalizeStore(JSON.parse(raw));
+      // First run on v2: migrate any existing v1 tracking forward.
+      var v1 = localStorage.getItem(LS_KEY_V1);
+      if (v1) {
+        var old = JSON.parse(v1);
+        return normalizeStore({ students: old.students, activeStudentId: old.activeStudentId });
+      }
+      return emptyStore();
     } catch (e) {
       storageOK = false;
-      return emptyTracking();
+      return emptyStore();
     }
   }
 
-  function saveTracking() {
+  function saveStore() {
     if (!storageOK) return;
     try { localStorage.setItem(LS_KEY, JSON.stringify(state.tracking)); }
     catch (e) { storageOK = false; $("#storage-warning").hidden = false; }
   }
+  // Back-compat alias: lots of call sites persist via saveTracking().
+  var saveTracking = saveStore;
 
   function genId() { return "stu_" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
+  function genActId() { return "CUST-" + Math.random().toString(36).slice(2, 7).toUpperCase(); }
+  function genAsgId() { return "asg_" + Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-3); }
+
+  /* ----------------------------- Auth (client-side gate) -----------------------------
+   * A small non-cryptographic hash gives light obfuscation of the passcode in
+   * storage. This keeps honest students out of admin tools; it is not, and does
+   * not claim to be, real server-side security on a static site. */
+  function hashPasscode(s) {
+    var h = 5381; s = String(s);
+    for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return "h" + h.toString(36);
+  }
+  function passcodeHash() { return (state.tracking.settings && state.tracking.settings.passcodeHash) || hashPasscode(DEFAULT_PASSCODE); }
+  function checkPasscode(input) { return hashPasscode(input) === passcodeHash(); }
+  function setPasscode(input) {
+    if (!state.tracking.settings) state.tracking.settings = {};
+    state.tracking.settings.passcodeHash = hashPasscode(input);
+    saveStore();
+  }
+  function isUsingDefaultPasscode() { return passcodeHash() === hashPasscode(DEFAULT_PASSCODE); }
+
+  var AUTH_KEY = "performancextra.admin";
+  function isAuthed() { try { return sessionStorage.getItem(AUTH_KEY) === "1"; } catch (e) { return state._authed === true; } }
+  function setAuthed(on) {
+    state._authed = !!on;
+    try { if (on) sessionStorage.setItem(AUTH_KEY, "1"); else sessionStorage.removeItem(AUTH_KEY); } catch (e) {}
+  }
 
   function students() { return state.tracking.students; }
   function studentList() {
@@ -4314,7 +4544,7 @@
 
   function toggleComplete(activityId) {
     var s = activeStudent();
-    if (!s) { toast("Add a student first (My Students tab)"); return false; }
+    if (!s) { toast("Select a student first"); return false; }
     if (s.completed[activityId]) delete s.completed[activityId];
     else s.completed[activityId] = new Date().toISOString();
     saveTracking();
@@ -4325,10 +4555,101 @@
     name = (name || "").trim();
     if (!name) return null;
     var id = genId();
-    students()[id] = { id: id, name: name, createdAt: new Date().toISOString(), completed: {} };
+    students()[id] = { id: id, name: name, createdAt: new Date().toISOString(), completed: {}, assignments: [] };
     if (!state.tracking.activeStudentId) state.tracking.activeStudentId = id;
     saveTracking();
     return id;
+  }
+
+  /* ----------------------------- Assignments ----------------------------- */
+  function studentAssignments(s) { return (s && Array.isArray(s.assignments)) ? s.assignments : []; }
+
+  function addAssignment(studentId, title, note, activityIds) {
+    var s = students()[studentId];
+    if (!s) return null;
+    if (!Array.isArray(s.assignments)) s.assignments = [];
+    var items = (activityIds || []).filter(function (id) { return BY_ID[id]; });
+    if (!items.length) return null;
+    var asg = {
+      id: genAsgId(),
+      title: (title || "").trim() || "Workout",
+      note: (note || "").trim(),
+      createdAt: new Date().toISOString(),
+      items: items
+    };
+    s.assignments.unshift(asg);
+    saveTracking();
+    return asg.id;
+  }
+  function deleteAssignment(studentId, asgId) {
+    var s = students()[studentId];
+    if (!s || !Array.isArray(s.assignments)) return;
+    s.assignments = s.assignments.filter(function (a) { return a.id !== asgId; });
+    saveTracking();
+  }
+  function assignmentProgress(s, asg) {
+    var done = 0;
+    asg.items.forEach(function (id) { if (s.completed[id]) done++; });
+    return { done: done, total: asg.items.length };
+  }
+
+  /* ----------------------------- Custom activities / overrides / hidden ----------------------------- */
+  function monthForWeek(week) {
+    if (!week) return null;
+    var m = (TAX.months || []).filter(function (x) { return (x.weeks || []).indexOf(week) !== -1; })[0];
+    return m ? m.value : Math.ceil(week / 4);
+  }
+  // Coerce a raw form object into the canonical activity shape used everywhere.
+  function normalizeActivity(o, id) {
+    var week = o.week ? Number(o.week) : null;
+    var tm = o.timeMinutes !== "" && o.timeMinutes != null ? Number(o.timeMinutes) : null;
+    var subs = Array.isArray(o.subtopics) ? o.subtopics
+      : String(o.subtopics || "").split(",").map(function (x) { return x.trim(); }).filter(Boolean);
+    return {
+      id: id,
+      name: (o.name || "").trim(),
+      topic: (o.topic || "").trim() || null,
+      subtopics: subs,
+      type: (o.type || "").trim() || null,
+      week: week,
+      progression: (o.progression || "").trim() || (week ? "Week " + week : null),
+      month: o.month ? Number(o.month) : monthForWeek(week),
+      frequency: (o.frequency || "").trim() || null,
+      time: (o.time || "").trim() || null,
+      timeMinutes: isNaN(tm) ? null : tm,
+      link: (o.link || "").trim() || null,
+      instructions: (o.instructions || "").trim() || null,
+      reflection: (o.reflection || "").trim() || null
+    };
+  }
+  function addCustomActivity(form) {
+    var a = normalizeActivity(form, genActId());
+    if (!a.name) return null;
+    state.tracking.customActivities.push(a);
+    saveStore(); rebuildData();
+    return a.id;
+  }
+  // Edit a custom activity in place; edit a built-in one via an override layer.
+  function saveActivityEdit(id, form) {
+    if (isCustom(id)) {
+      var list = state.tracking.customActivities;
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].id === id) { list[i] = normalizeActivity(form, id); break; }
+      }
+    } else {
+      state.tracking.overrides[id] = normalizeActivity(form, id);
+    }
+    saveStore(); rebuildData();
+  }
+  function resetActivityOverride(id) { delete state.tracking.overrides[id]; saveStore(); rebuildData(); }
+  function setHidden(id, on) {
+    if (on) state.tracking.hidden[id] = true; else delete state.tracking.hidden[id];
+    saveStore(); rebuildData();
+  }
+  function deleteCustomActivity(id) {
+    state.tracking.customActivities = state.tracking.customActivities.filter(function (a) { return a.id !== id; });
+    delete state.tracking.hidden[id];
+    saveStore(); rebuildData();
   }
   function renameStudent(id, name) {
     name = (name || "").trim();
@@ -4363,23 +4684,32 @@
   /* ----------------------------- State ----------------------------- */
   var state = {
     tab: "repo",
+    view: "student",        // "admin" once authed; "student" otherwise (or coach preview)
+    showHidden: false,      // admin toggle to surface hidden activities in the repo
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
     workout: { criteria: null, results: [] },
-    tracking: loadTracking()
+    tracking: loadStore()
   };
+  rebuildData();
+  saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
+
+  function isAdminView() { return state.view === "admin"; }
 
   /* ----------------------------- Repository ----------------------------- */
   function applyFilters() {
     var f = state.filters;
     var q = norm(f.search);
-    return DATA.filter(function (a) {
+    // Admins can opt to see hidden activities (to unhide/edit them); everyone
+    // else only ever sees the visible set.
+    var source = (isAdminView() && state.showHidden) ? ALL : DATA;
+    return source.filter(function (a) {
       if (f.topic && a.topic !== f.topic) return false;
-      if (f.subtopic && a.subtopics.indexOf(f.subtopic) === -1) return false;
+      if (f.subtopic && (a.subtopics || []).indexOf(f.subtopic) === -1) return false;
       if (f.type && a.type !== f.type) return false;
       if (f.progression && a.progression !== f.progression) return false;
       if (f.frequency && a.frequency !== f.frequency) return false;
       if (q) {
-        var hay = norm(a.name + " " + a.topic + " " + a.subtopics.join(" "));
+        var hay = norm(a.name + " " + (a.topic || "") + " " + (a.subtopics || []).join(" "));
         if (hay.indexOf(q) === -1) return false;
       }
       return true;
@@ -4394,7 +4724,8 @@
   }
 
   function createCard(a) {
-    var card = el("article", { class: "card" + (isDone(a.id) ? " is-done" : ""), "data-id": a.id });
+    var hidden = isHidden(a.id);
+    var card = el("article", { class: "card" + (isDone(a.id) ? " is-done" : "") + (hidden ? " is-hidden-activity" : ""), "data-id": a.id });
 
     card.appendChild(el("div", { class: "card-head" }, [
       el("div", {}, [
@@ -4405,8 +4736,10 @@
     ]));
 
     var chips = el("div", { class: "chips" });
+    if (isCustom(a.id)) chips.appendChild(el("span", { class: "tag-custom" }, "Custom"));
+    if (hidden) chips.appendChild(el("span", { class: "tag-hidden" }, "Hidden"));
     if (a.topic) chips.appendChild(el("span", { class: "chip chip--topic" }, a.topic));
-    a.subtopics.forEach(function (s) { chips.appendChild(el("span", { class: "chip chip--sub" }, s)); });
+    (a.subtopics || []).forEach(function (s) { chips.appendChild(el("span", { class: "chip chip--sub" }, s)); });
     chips.appendChild(el("span", { class: "chip" }, a.progression || "—"));
     if (a.time) chips.appendChild(el("span", { class: "chip chip--meta" }, a.time));
     if (a.frequency) chips.appendChild(el("span", { class: "chip chip--meta" }, a.frequency));
@@ -4444,6 +4777,24 @@
     }, done ? "✓ Completed" : "Mark done");
     foot.appendChild(doneBtn);
     card.appendChild(foot);
+
+    if (isAdminView()) {
+      var admin = el("div", { class: "card-admin" }, [
+        el("button", { class: "btn btn--sm", onclick: function () { openActivityModal(a.id); } }, "✎ Edit"),
+        el("button", { class: "btn btn--sm", onclick: function () { setHidden(a.id, !hidden); renderRepo(); toast(hidden ? "Activity shown" : "Activity hidden"); } }, hidden ? "↺ Unhide" : "Hide"),
+        el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignModal([a.id], a.name); } }, "Assign…")
+      ]);
+      if (isCustom(a.id)) {
+        admin.appendChild(el("button", { class: "btn btn--sm btn--danger", onclick: function () {
+          if (confirm("Delete custom activity “" + a.name + "”?")) { deleteCustomActivity(a.id); renderRepo(); toast("Custom activity deleted"); }
+        } }, "Delete"));
+      } else if (state.tracking.overrides[a.id]) {
+        admin.appendChild(el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+          resetActivityOverride(a.id); renderRepo(); toast("Reverted to original");
+        } }, "Reset edits"));
+      }
+      card.appendChild(admin);
+    }
 
     return card;
   }
@@ -4615,11 +4966,18 @@
         "Only " + w.results.length + " of " + w.criteria.count + " requested activities matched these criteria."));
     }
 
-    out.appendChild(el("div", { class: "export-bar" }, [
+    var exportBar = el("div", { class: "export-bar" }, [
       el("button", { class: "btn btn--sm", onclick: function () { window.print(); } }, "🖨 Print"),
       el("button", { class: "btn btn--sm", onclick: copyWorkout }, "📋 Copy"),
       el("button", { class: "btn btn--sm", onclick: downloadWorkout }, "⬇ Download .txt")
-    ]));
+    ]);
+    if (isAdminView()) {
+      exportBar.appendChild(el("button", {
+        class: "btn btn--sm btn--accent",
+        onclick: function () { openAssignModal(w.results.map(function (a) { return a.id; }), criteriaSummary(w.criteria)); }
+      }, "👤 Assign to student"));
+    }
+    out.appendChild(exportBar);
 
     var listWrap = el("div", {});
     w.results.forEach(function (a, idx) {
@@ -4734,34 +5092,29 @@
     return wrap;
   }
 
-  function renderStudentDetail() {
-    var detail = $("#student-detail");
-    detail.textContent = "";
-    var s = activeStudent();
-    if (!s) {
-      detail.appendChild(el("div", { class: "empty-state" }, [
-        el("h3", {}, "No active student"),
-        el("p", {}, "Add a student, then set them active to see progress here.")
-      ]));
-      return;
-    }
-    var p = computeProgress(s);
-    var pct = Math.round(p.total / DATA.length * 100);
+  function fmtDate(iso) {
+    try { return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }); }
+    catch (e) { return (iso || "").slice(0, 10); }
+  }
 
-    detail.appendChild(el("h3", {}, s.name + " — Progress"));
-    detail.appendChild(el("div", { class: "progress-stat" }, [
+  // Shared progress block — used by the admin Students detail and the student
+  // My Progress tab.
+  function appendProgress(container, s) {
+    var p = computeProgress(s);
+    var pct = DATA.length ? Math.round(p.total / DATA.length * 100) : 0;
+    container.appendChild(el("div", { class: "progress-stat" }, [
       el("span", { class: "big" }, String(p.total)),
       el("span", {}, "of " + DATA.length + " activities completed (" + pct + "%)")
     ]));
-    detail.appendChild(el("div", { class: "progress-bar" }, el("span", { style: "width:" + pct + "%" })));
+    container.appendChild(el("div", { class: "progress-bar" }, el("span", { style: "width:" + pct + "%" })));
 
     if (p.total) {
-      detail.appendChild(el("div", { class: "breakdown" }, [
+      container.appendChild(el("div", { class: "breakdown" }, [
         el("div", {}, [el("div", { class: "detail-label", style: "margin-bottom:8px" }, "By topic"), bars(p.byTopic)]),
         el("div", {}, [el("div", { class: "detail-label", style: "margin-bottom:8px" }, "By progression"), bars(p.byWeek)])
       ]));
 
-      detail.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
+      container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
       var cl = el("div", { class: "completed-list" });
       Object.keys(s.completed)
         .sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); })
@@ -4776,18 +5129,126 @@
             } }, "Undo")
           ]));
         });
-      detail.appendChild(cl);
+      container.appendChild(cl);
     } else {
-      detail.appendChild(el("p", { class: "no-link" }, "No activities completed yet. Mark activities done from the Repository tab."));
+      container.appendChild(el("p", { class: "no-link" }, "No activities completed yet."));
     }
+  }
+
+  // Render a student's assignments. opts.admin adds a delete control; opts.actionable
+  // adds per-item "Mark done" buttons (used in the student's My Workouts tab).
+  function appendAssignmentList(container, s, opts) {
+    opts = opts || {};
+    var list = studentAssignments(s);
+    if (!list.length) {
+      container.appendChild(el("p", { class: "no-link" }, opts.admin
+        ? "No assignments yet. Create one to give this student a focused set of activities."
+        : "No workouts assigned yet — browse the Repository to explore on your own."));
+      return;
+    }
+    list.forEach(function (asg) {
+      var prog = assignmentProgress(s, asg);
+      var pct = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
+      var complete = prog.total > 0 && prog.done === prog.total;
+      var card = el("div", { class: "assignment" });
+
+      var right = null;
+      if (opts.admin) {
+        right = el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", onclick: function () {
+          if (confirm("Delete assignment “" + asg.title + "”?")) { deleteAssignment(s.id, asg.id); renderAll(); }
+        } }, "✕");
+      }
+      card.appendChild(el("div", { class: "assignment-head" }, [
+        el("div", {}, [
+          el("div", { class: "assignment-title" }, asg.title),
+          asg.note ? el("div", { class: "assignment-note" }, asg.note) : null,
+          el("div", { class: "assignment-meta" }, "Assigned " + fmtDate(asg.createdAt))
+        ]),
+        right
+      ]));
+      card.appendChild(el("div", { class: "assignment-status" + (complete ? " is-complete" : "") },
+        complete ? "✓ All done" : prog.done + " of " + prog.total + " done"));
+      card.appendChild(el("div", { class: "assignment-bar" }, el("span", { style: "width:" + pct + "%" })));
+
+      asg.items.forEach(function (id) {
+        var a = BY_ID[id];
+        if (!a) return;
+        var done = !!s.completed[id];
+        var item = el("div", { class: "assign-item" + (done ? " is-done" : "") });
+        item.appendChild(el("span", { class: "ai-name" }, [
+          el("strong", {}, a.name), a.time ? (" · " + a.time) : "", a.type ? (" · " + a.type) : ""
+        ]));
+        if (a.link) item.appendChild(el("a", { class: "btn btn--sm", href: a.link, target: "_blank", rel: "noopener" }, "Open ↗"));
+        if (opts.actionable) {
+          var btn = el("button", { class: "btn btn--sm done-btn", "aria-pressed": done ? "true" : "false", onclick: function () {
+            if (s.completed[id]) delete s.completed[id]; else s.completed[id] = new Date().toISOString();
+            saveTracking(); renderAll();
+          } }, done ? "✓ Done" : "Mark done");
+          item.appendChild(btn);
+        }
+        card.appendChild(item);
+      });
+      container.appendChild(card);
+    });
+  }
+
+  function renderStudentDetail() {
+    var detail = $("#student-detail");
+    detail.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      detail.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No student selected"),
+        el("p", {}, "Add a student, then set them active to assign work and see progress.")
+      ]));
+      return;
+    }
+    detail.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, s.name + " — Assignments"),
+      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
+    ]));
+    appendAssignmentList(detail, s, { admin: true });
+
+    detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
+    appendProgress(detail, s);
+  }
+
+  /* ----------------------------- Student views ----------------------------- */
+  function renderWorkoutsTab() {
+    var panel = $("#workouts-panel");
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "panel" }, el("div", { class: "empty-state" }, [
+        el("h3", {}, "No student selected"),
+        el("p", {}, "Ask your coach to set you up. (Coach? Use “Admin login”, top right.)")
+      ])));
+      return;
+    }
+    appendAssignmentList(panel, s, { actionable: true });
+  }
+
+  function renderProgressTab() {
+    var panel = $("#progress-panel");
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No student selected"),
+        el("p", {}, "Ask your coach to set you up. (Coach? Use “Admin login”, top right.)")
+      ]));
+      return;
+    }
+    panel.appendChild(el("h3", { style: "margin-bottom:14px" }, s.name + " — Progress"));
+    appendProgress(panel, s);
   }
 
   /* ----------------------------- Export / Import ----------------------------- */
   function exportTracking() {
     var date = new Date().toISOString().slice(0, 10);
-    downloadFile("performancextra-tracking-" + date + ".json",
+    downloadFile("performancextra-data-" + date + ".json",
       JSON.stringify(state.tracking, null, 2), "application/json");
-    toast("Tracking exported");
+    toast("Data exported");
   }
 
   var pendingImportMode = "merge";
@@ -4799,11 +5260,14 @@
       var incoming;
       try { incoming = JSON.parse(reader.result); }
       catch (e) { toast("That file isn’t valid JSON"); return; }
-      if (!incoming || !incoming.students || incoming.version !== 1) {
-        toast("Unrecognized backup file (expected version 1)");
+      if (!incoming || !incoming.students || (incoming.version !== 1 && incoming.version !== 2)) {
+        toast("Unrecognized backup file");
         return;
       }
+      incoming = normalizeStore(incoming);   // upgrade v1 / fill missing fields
       if (pendingImportMode === "replace") {
+        // Keep the current passcode unless the backup carries one.
+        if (!incoming.settings.passcodeHash) incoming.settings.passcodeHash = passcodeHash();
         state.tracking = incoming;
       } else {
         var cur = state.tracking;
@@ -4816,12 +5280,24 @@
             // keep the earliest completion timestamp on conflict
             existing.completed[aid] = (!b || a < b) ? a : b;
           });
+          // Merge assignments, skipping ones already present by id.
+          var have = {};
+          (existing.assignments || []).forEach(function (x) { have[x.id] = true; });
+          (inc.assignments || []).forEach(function (x) { if (!have[x.id]) existing.assignments.push(x); });
         });
         if (!cur.activeStudentId && incoming.activeStudentId) cur.activeStudentId = incoming.activeStudentId;
+        // Bring over custom activities the current device doesn't have.
+        var haveAct = {};
+        cur.customActivities.forEach(function (a) { haveAct[a.id] = true; });
+        incoming.customActivities.forEach(function (a) { if (!haveAct[a.id]) cur.customActivities.push(a); });
+        Object.keys(incoming.overrides).forEach(function (id) { if (!cur.overrides[id]) cur.overrides[id] = incoming.overrides[id]; });
+        Object.keys(incoming.hidden).forEach(function (id) { cur.hidden[id] = incoming.hidden[id]; });
       }
-      saveTracking();
+      saveStore();
+      rebuildData();
+      refreshSelects();
       renderAll();
-      toast("Tracking imported (" + pendingImportMode + ")");
+      toast("Data imported (" + pendingImportMode + ")");
     };
     reader.readAsText(file);
   }
@@ -4835,15 +5311,26 @@
 
   function renderStudentPicker() {
     var sel = $("#student-select");
+    var label = $("#student-select-label");
+    var nameTag = $("#student-name-tag");
     var all = studentList();
-    sel.textContent = "";
-    if (!all.length) {
-      sel.appendChild(option("", "No students yet"));
-      sel.disabled = true;
+    if (isAdminView()) {
+      // Coach gets a dropdown to switch the student they're working with.
+      label.hidden = false; sel.hidden = false; nameTag.hidden = true;
+      sel.textContent = "";
+      if (!all.length) {
+        sel.appendChild(option("", "No students yet"));
+        sel.disabled = true;
+      } else {
+        sel.disabled = false;
+        all.forEach(function (s) { sel.appendChild(option(s.id, s.name)); });
+        sel.value = state.tracking.activeStudentId || "";
+      }
     } else {
-      sel.disabled = false;
-      all.forEach(function (s) { sel.appendChild(option(s.id, s.name)); });
-      sel.value = state.tracking.activeStudentId || "";
+      // Student view: locked to the active student, no switching.
+      var s = activeStudent();
+      label.hidden = true; sel.hidden = true; nameTag.hidden = false;
+      nameTag.textContent = s ? ("Hi, " + s.name) : "No student selected";
     }
     updateStudentCount();
   }
@@ -4856,7 +5343,26 @@
     } else { c.textContent = ""; }
   }
 
+  /* ----------------------------- Tabs / role ----------------------------- */
+  function currentTabs() {
+    return isAdminView()
+      ? [{ id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
+         { id: "students", label: "Students" }, { id: "settings", label: "Settings" }]
+      : [{ id: "workouts", label: "My Workouts" }, { id: "repo", label: "Repository" },
+         { id: "progress", label: "My Progress" }];
+  }
+
+  function renderTabs() {
+    var nav = $("#tabs");
+    nav.textContent = "";
+    currentTabs().forEach(function (t) {
+      nav.appendChild(el("button", { class: "tab", "data-tab": t.id, onclick: function () { setTab(t.id); } }, t.label));
+    });
+  }
+
   function setTab(tab) {
+    var ids = currentTabs().map(function (t) { return t.id; });
+    if (ids.indexOf(tab) === -1) tab = ids[0];
     state.tab = tab;
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
@@ -4867,11 +5373,264 @@
     if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
   }
 
+  // Sync all role-dependent chrome (body flag, header buttons, badge, tabs) to
+  // the current view + auth state.
+  function applyRole() {
+    document.body.setAttribute("data-role", isAdminView() ? "admin" : "student");
+    var authed = isAuthed();
+    var preview = authed && !isAdminView();
+    $("#admin-login-btn").hidden = authed;
+    $("#student-view-btn").hidden = !isAdminView();
+    $("#logout-btn").hidden = !isAdminView();
+    $("#preview-banner").hidden = !preview;
+    var badge = $("#role-badge");
+    badge.hidden = false;
+    if (isAdminView()) { badge.textContent = "Coach"; badge.classList.remove("is-student"); }
+    else { badge.textContent = preview ? "Student preview" : "Student"; badge.classList.add("is-student"); }
+    renderTabs();
+    setTab(state.tab);
+  }
+
+  function goAdmin() { state.view = "admin"; state.tab = "repo"; applyRole(); renderAll(); }
+  function goStudent(preview) { state.view = "student"; state.tab = "workouts"; applyRole(); renderAll(); }
+  function logout() { setAuthed(false); goStudent(); toast("Logged out — student view"); }
+
+  /* ----------------------------- Modal ----------------------------- */
+  function closeModal() {
+    var root = $("#modal-root");
+    root.hidden = true; root.setAttribute("aria-hidden", "true"); root.textContent = ""; root.onclick = null;
+    document.removeEventListener("keydown", modalKeydown);
+  }
+  function modalKeydown(e) { if (e.key === "Escape") closeModal(); }
+  function openModal(title, bodyNode, actions) {
+    var root = $("#modal-root");
+    root.textContent = "";
+    var modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": title });
+    modal.appendChild(el("div", { class: "modal-head" }, [
+      el("h3", {}, title),
+      el("button", { class: "modal-close", "aria-label": "Close", onclick: closeModal }, "×")
+    ]));
+    modal.appendChild(el("div", { class: "modal-body" }, bodyNode));
+    var acts = (actions || []).filter(Boolean);
+    if (acts.length) {
+      var foot = el("div", { class: "modal-foot" });
+      acts.forEach(function (a) {
+        var cls = "btn" + (a.accent ? " btn--accent" : (a.primary ? " btn--primary" : "")) + (a.danger ? " btn--danger" : "");
+        foot.appendChild(el("button", { class: cls, onclick: a.onClick }, a.label));
+      });
+      modal.appendChild(foot);
+    }
+    root.appendChild(modal);
+    root.hidden = false; root.setAttribute("aria-hidden", "false");
+    root.onclick = function (e) { if (e.target === root) closeModal(); };
+    document.addEventListener("keydown", modalKeydown);
+    return modal;
+  }
+
+  function openLoginModal() {
+    var input = el("input", { type: "password", id: "login-pass", autocomplete: "current-password", placeholder: "Admin passcode" });
+    var err = el("div", { class: "warn" }, "Incorrect passcode. Try again."); err.hidden = true;
+    var hint = isUsingDefaultPasscode()
+      ? el("p", { class: "field-hint" }, "Default passcode is “" + DEFAULT_PASSCODE + "”. Change it in Settings after you log in.")
+      : null;
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", { for: "login-pass" }, "Enter the admin passcode to unlock coaching tools."), input]),
+      err, hint
+    ]);
+    function submit() {
+      if (checkPasscode(input.value)) { setAuthed(true); closeModal(); goAdmin(); toast("Welcome, coach"); }
+      else { err.hidden = false; input.value = ""; input.focus(); }
+    }
+    openModal("Admin login", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Log in", primary: true, onClick: submit }
+    ]);
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } });
+    setTimeout(function () { input.focus(); }, 30);
+  }
+
+  function studentSelectNode(defaultId) {
+    var sel = el("select", {});
+    var all = studentList();
+    all.forEach(function (s) { sel.appendChild(option(s.id, s.name)); });
+    sel.value = defaultId || state.tracking.activeStudentId || (all[0] && all[0].id) || "";
+    return sel;
+  }
+
+  // Assign a fixed set of activities (a generated workout, or one card) to a student.
+  function openAssignModal(activityIds, defaultTitle) {
+    activityIds = (activityIds || []).filter(function (id) { return BY_ID[id]; });
+    if (!activityIds.length) { toast("Nothing to assign"); return; }
+    if (!studentList().length) { toast("Add a student first (Students tab)"); return; }
+    var sel = studentSelectNode();
+    var title = el("input", { type: "text", value: defaultTitle || "Workout" });
+    var note = el("textarea", { placeholder: "Optional note — why this matters, how often to do it…" });
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Assign to"), sel]),
+      el("div", { class: "field" }, [el("label", {}, "Title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("p", { class: "field-hint" }, activityIds.length + " activit" + (activityIds.length === 1 ? "y" : "ies") + " will be assigned.")
+    ]);
+    openModal("Assign to student", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Assign", accent: true, onClick: function () {
+        var sid = sel.value;
+        if (!sid) { toast("Pick a student"); return; }
+        if (addAssignment(sid, title.value, note.value, activityIds)) {
+          closeModal(); renderAll(); toast("Assigned to " + students()[sid].name);
+        } else { toast("Couldn’t create assignment"); }
+      } }
+    ]);
+  }
+
+  // Build an assignment for a specific student by searching + checking activities.
+  function openAssignBuilderModal(studentId) {
+    var s = students()[studentId];
+    if (!s) return;
+    var selected = {};
+    var title = el("input", { type: "text", placeholder: "e.g. Week 1 — Confidence" });
+    var note = el("textarea", { placeholder: "Optional note for the student" });
+    var search = el("input", { type: "search", placeholder: "Search activities to add…" });
+    var listWrap = el("div", { class: "picker-list" });
+    var countEl = el("div", { class: "picker-count" }, "0 selected");
+
+    function updateCount() { countEl.textContent = Object.keys(selected).length + " selected"; }
+    function refresh() {
+      var q = norm(search.value);
+      listWrap.textContent = "";
+      var matches = DATA.filter(function (a) {
+        if (!q) return true;
+        return norm(a.name + " " + (a.topic || "") + " " + (a.subtopics || []).join(" ")).indexOf(q) !== -1;
+      }).slice(0, 200);
+      if (!matches.length) { listWrap.appendChild(el("div", { class: "picker-row" }, "No activities match.")); return; }
+      matches.forEach(function (a) {
+        var cb = el("input", { type: "checkbox" });
+        cb.checked = !!selected[a.id];
+        cb.addEventListener("change", function () { if (cb.checked) selected[a.id] = true; else delete selected[a.id]; updateCount(); });
+        listWrap.appendChild(el("label", { class: "picker-row" }, [
+          cb,
+          el("span", { class: "p-name" }, a.name),
+          el("span", { class: "p-meta" }, (a.type || "") + (a.time ? (" · " + a.time) : ""))
+        ]));
+      });
+    }
+
+    var quick = null;
+    if (state.workout && state.workout.results && state.workout.results.length) {
+      quick = el("button", { class: "btn btn--sm", type: "button", onclick: function () {
+        state.workout.results.forEach(function (a) { selected[a.id] = true; });
+        if (!title.value) title.value = criteriaSummary(state.workout.criteria);
+        refresh(); updateCount(); toast("Added last generated workout");
+      } }, "↪ Use last generated workout");
+    }
+
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      quick,
+      el("div", { class: "field" }, [el("label", {}, "Add activities"), search]),
+      listWrap, countEl
+    ]);
+    search.addEventListener("input", refresh);
+    openModal("New assignment for " + s.name, body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Create assignment", accent: true, onClick: function () {
+        var ids = Object.keys(selected);
+        if (!ids.length) { toast("Pick at least one activity"); return; }
+        if (addAssignment(studentId, title.value, note.value, ids)) { closeModal(); renderAll(); toast("Assignment created"); }
+      } }
+    ]);
+    refresh();
+  }
+
+  // Add a new custom activity, or edit an existing one (built-in edits go to an override layer).
+  function openActivityModal(id) {
+    var editing = id ? BY_ID[id] : null;
+    var f = {};
+    function makeInput(key, attrs, isArea) {
+      var node = isArea ? el("textarea", attrs || {}) : el("input", attrs || {});
+      if (!isArea && !node.getAttribute("type")) node.type = "text";
+      if (editing) {
+        var val = key === "subtopics" ? (editing.subtopics || []).join(", ") : editing[key];
+        if (val != null && val !== "") node.value = val;
+      }
+      f[key] = node;
+      return node;
+    }
+    function field(label, key, attrs, isArea, hint) {
+      var kids = [el("label", {}, label), makeInput(key, attrs, isArea)];
+      if (hint) kids.push(el("div", { class: "field-hint" }, hint));
+      return el("div", { class: "field" }, kids);
+    }
+    function dl(idv, values) {
+      var d = el("datalist", { id: idv });
+      values.forEach(function (v) { d.appendChild(option(v, "")); });
+      return d;
+    }
+    var body = el("div", { class: "form-stack" }, [
+      field("Name *", "name", { placeholder: "Activity name" }),
+      el("div", { class: "form-grid2" }, [
+        field("Topic", "topic", { list: "dl-topics" }),
+        field("Content type", "type", { list: "dl-types" })
+      ]),
+      field("Subtopics", "subtopics", { placeholder: "Calmness, Focus" }, false, "Separate multiple with commas."),
+      el("div", { class: "form-grid2" }, [
+        field("Progression", "progression", { list: "dl-progressions", placeholder: "Week 3 / Extra" }),
+        field("Frequency", "frequency", { list: "dl-frequencies" })
+      ]),
+      el("div", { class: "form-grid2" }, [
+        field("Week (number)", "week", { type: "number", min: "1", max: "20" }, false, "Optional — sets the month automatically."),
+        field("Time (label)", "time", { placeholder: "5 min" })
+      ]),
+      el("div", { class: "form-grid2" }, [
+        field("Time in minutes", "timeMinutes", { type: "number", min: "0" }, false, "Used by the time-budget feature."),
+        field("Link", "link", { type: "url", placeholder: "https://…" })
+      ]),
+      field("Instructions", "instructions", { placeholder: "How to do it" }, true),
+      field("Reflection prompt", "reflection", {}, true),
+      dl("dl-topics", PRESENT.topic), dl("dl-types", PRESENT.type),
+      dl("dl-progressions", PRESENT.progression), dl("dl-frequencies", PRESENT.frequency)
+    ]);
+    function save() {
+      var form = {};
+      Object.keys(f).forEach(function (k) { form[k] = f[k].value; });
+      if (!String(form.name || "").trim()) { toast("Name is required"); f.name.focus(); return; }
+      if (editing) saveActivityEdit(id, form); else addCustomActivity(form);
+      closeModal(); refreshSelects(); renderRepo();
+      toast(editing ? "Activity updated" : "Activity added");
+    }
+    openModal(editing ? "Edit activity" : "Add activity", body, [
+      { label: "Cancel", onClick: closeModal },
+      (editing && isCustom(id)) ? { label: "Delete", danger: true, onClick: function () {
+        if (confirm("Delete this custom activity?")) { deleteCustomActivity(id); closeModal(); refreshSelects(); renderRepo(); toast("Deleted"); }
+      } } : null,
+      { label: editing ? "Save" : "Add activity", accent: true, onClick: save }
+    ]);
+  }
+
+  /* ----------------------------- Shared select refresh ----------------------------- */
+  function refreshSelects() {
+    var f = state.filters;
+    fillSelect($("#f-topic"), PRESENT.topic, "All topics"); $("#f-topic").value = f.topic;
+    fillSelect($("#f-subtopic"), PRESENT.subtopic, "All subtopics"); $("#f-subtopic").value = f.subtopic;
+    fillSelect($("#f-type"), PRESENT.type, "All types"); $("#f-type").value = f.type;
+    fillSelect($("#f-progression"), PRESENT.progression, "All progressions"); $("#f-progression").value = f.progression;
+    fillSelect($("#f-frequency"), PRESENT.frequency, "All frequencies"); $("#f-frequency").value = f.frequency;
+    fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
+    fillSelect($("#b-subtopic"), PRESENT.subtopic, "Any subtopic");
+    fillSelect($("#b-type"), PRESENT.type, "Any type");
+  }
+
   function renderAll() {
     renderStudentPicker();
     renderRepo();
-    renderWorkout();
-    renderStudents();
+    if (isAdminView()) {
+      renderWorkout();
+      renderStudents();
+    } else {
+      renderWorkoutsTab();
+      renderProgressTab();
+    }
   }
 
   /* ----------------------------- Init ----------------------------- */
@@ -4879,12 +5638,8 @@
     if (!storageOK) $("#storage-warning").hidden = false;
     $("#total-count").textContent = DATA.length;
 
-    // Tabs
-    $all(".tab").forEach(function (b) {
-      b.addEventListener("click", function () { setTab(b.getAttribute("data-tab")); });
-    });
-    var initial = (location.hash || "").replace("#", "");
-    if (["repo", "builder", "students"].indexOf(initial) !== -1) setTab(initial);
+    // Resume the admin role if this browser session already authenticated.
+    state.view = isAuthed() ? "admin" : "student";
 
     // Repository filters
     fillSelect($("#f-topic"), PRESENT.topic, "All topics");
@@ -4946,6 +5701,32 @@
       e.target.value = "";
     });
 
+    // Role controls (header + preview banner)
+    $("#admin-login-btn").addEventListener("click", openLoginModal);
+    $("#student-view-btn").addEventListener("click", function () { goStudent(true); });
+    $("#logout-btn").addEventListener("click", logout);
+    $("#back-to-admin-btn").addEventListener("click", goAdmin);
+
+    // Repository admin tools
+    $("#add-activity-btn").addEventListener("click", function () { openActivityModal(null); });
+    $("#show-hidden").addEventListener("change", function (e) { state.showHidden = e.target.checked; renderRepo(); });
+
+    // Settings — change admin passcode
+    $("#passcode-form").addEventListener("submit", function (e) {
+      e.preventDefault();
+      var a = $("#new-passcode").value, b = $("#confirm-passcode").value;
+      if (!a || a.length < 4) { toast("Use at least 4 characters"); return; }
+      if (a !== b) { toast("Passcodes don’t match"); return; }
+      setPasscode(a);
+      $("#new-passcode").value = ""; $("#confirm-passcode").value = "";
+      toast("Passcode updated");
+    });
+
+    // Pick up an initial tab from the URL hash (validated against the role).
+    var initial = (location.hash || "").replace("#", "");
+    if (initial) state.tab = initial;
+
+    applyRole();   // renders the role-appropriate tabs and selects the active one
     renderAll();
   }
 
