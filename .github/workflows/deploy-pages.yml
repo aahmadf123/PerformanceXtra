@@ -1,6 +1,6 @@
 name: Deploy to GitHub Pages
 
-# Publishes the static site (index.html + assets at the repo root) to GitHub Pages.
+# Publishes the static site (index.html) to GitHub Pages.
 # One-time setup: in the repo, go to Settings -> Pages -> Build and deployment ->
 # Source: "GitHub Actions". After that, every push to main redeploys automatically.
 # You can also run it manually on any branch via the "Run workflow" button.
@@ -33,12 +33,17 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Prepare static site artifact
+        run: |
+          mkdir -p _site
+          cp index.html _site/index.html
+          cp .nojekyll _site/.nojekyll
+
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # The whole repo root is the static site. build/ is dev-only but harmless
-          # to upload; index.html is what gets served.
-          path: .
+          # Upload only production files to avoid publishing dev assets.
+          path: _site
 
       - name: Deploy to GitHub Pages
         id: deployment
