@@ -1,97 +1,121 @@
 # PerformanceXtra — Mental Workout Repository
 
-A single-page, **static** web app that consolidates PerformanceXtra's mental-performance
-training resources into one tagged, searchable repository — with a workout builder,
-per-student completion tracking, and a **coach (admin) / student split**. No backend, no
-build step: it's one self-contained `index.html` that runs anywhere (open it directly, or
-host it on any static server).
+A web app that consolidates PerformanceXtra's mental-performance training resources
+into one tagged, searchable repository — with a workout builder, per-athlete completion
+tracking, and a **coach / athlete split**.
 
-## Two views: coach and student
+It runs in **two modes from the same code**:
 
-The app opens in the **student view** by default. A coach unlocks the **admin tools** with a
-passcode (top-right **Admin login**).
+- **Shared mode (Cloudflare):** hosted on Cloudflare Pages with a Pages Functions API and a
+  D1 database. Coaches and athletes have **real accounts**, data is **shared across every
+  device**, and roles are **enforced on the server** — an athlete can't become a coach by
+  poking at the browser.
+- **Offline mode (static):** open `index.html` directly (or on any static host) with no
+  backend. Data lives in `localStorage` on that device and a client passcode gates the coach
+  tools. This is the original behaviour, kept as a fallback/demo.
 
-- **Coach / admin** can: browse the repository, build workouts, **assign** activities and
-  workouts to specific students, **add** their own custom activities, **edit or hide** any
-  activity, manage students, and change the passcode.
-- **Students** see only their own assigned workouts, the repository (to browse and mark
-  things done), and their progress. They can't assign, add, edit, or manage anything.
+The app auto-detects which mode to use: on boot it probes `GET /api/me`. If a Cloudflare
+backend answers, it runs in shared mode; otherwise it falls back to offline mode.
 
-The coach can hit **Student view** to preview exactly what an athlete sees (one click back to
-admin), or **Log out** to lock the device down to the student view before handing it over.
+## Project structure
 
-> **Default passcode:** `pxadmin`. Change it from **Settings → Admin passcode** before
-> sharing the site.
->
-> **Security note:** the site is fully static, so the passcode gate is enforced *in the
-> browser*. That keeps students out of the coach tools, but it is **not** server-enforced
-> security — a determined, technical user could bypass a client-side gate. For true
-> account-level access control you'd need a backend.
+```
+index.html              # markup only (loads styles.css, data.js, app.js)
+styles.css              # all styles
+app.js                  # the whole app (one IIFE; no build step)
+data.js                 # generated dataset: window.PX_DATA + window.PX_TAXONOMY
+functions/api/[[route]].js  # Cloudflare Pages Functions API (auth + shared data)
+db/schema.sql           # D1 schema (kept for version control / reproducibility)
+wrangler.toml           # Pages project config + D1 binding
+build/
+  generate_data.py      # regenerates data.js from the spreadsheet
+  PerformanceXtra_Master_Sheet.xlsx  # source spreadsheet (dev-only, not served)
+```
+
+## Two views: coach and athlete
+
+- **Coach** can: browse the repository, build workouts, **assign** activities to specific
+  athletes, **add** custom activities, **edit or hide** any activity, manage athletes, and
+  export rosters/assignments.
+- **Athletes** see only their own assigned workouts (with instructions and reflection prompts
+  inline), the repository, and their progress. They can't assign, add, edit, or manage
+  anything.
+
+### Adding athletes (shared mode)
+
+A coach adds an athlete by name + email and gets a **private invite link**. The athlete opens
+it, sets their own password, and lands on **My Workouts**. There's no shared passcode to leak,
+and each athlete only ever sees their own work.
 
 ## What it does
 
 - **Repository** — browse all activities. Search by name/topic/subtopic and filter by Topic,
   Subtopic, Content Type, Progression (Week 1–17 / Extra), and Frequency. Each card shows its
   tags and time, links to the resource, and expands to show instructions and reflection
-  prompts. Coaches also get per-card **Edit / Hide / Assign** controls and an **+ Add
-  activity** button.
+  prompts. Coaches also get per-card **Edit / Hide / Assign** controls and **+ Add activity**.
 - **Workout Builder** *(coach)* — assemble a session from criteria like *“Month 1,
-  Confidence.”* Choose a progression scope (any / month / week / extra), topic, content type,
-  how many activities, and an optional time budget. Optionally exclude activities the active
-  student already completed. Print, copy, download, or **Assign to a student**.
-- **Students** *(coach)* — create student profiles, build **assignments** (a titled set of
-  activities with an optional note), and track per-student progress (overall %, by topic, by
-  progression).
-- **My Workouts** *(student)* — the activities the coach assigned, with a progress bar per
-  assignment and a **Mark done** button on each item.
-
-> **Storage note:** all coaching data (students, assignments, custom activities, the passcode
-> hash) is saved in the browser's `localStorage` — it lives on the device/browser that
-> recorded it and is **not** shared across computers. Use the **Export / Import JSON** buttons
-> (Settings tab) to back it up or move it. Existing v1 student tracking is migrated forward
-> automatically.
-
-## Project structure
-
-```
-index.html                       # the entire app (HTML + CSS + JS + embedded data)
-.nojekyll                        # tells GitHub Pages to serve files as-is
-.github/workflows/deploy-pages.yml  # CI that publishes the site to GitHub Pages
-build/
-  generate_data.py               # regenerates the embedded data from the spreadsheet
-  PerformanceXtra_Master_Sheet.xlsx  # source spreadsheet (dev-only, not served)
-```
+  Confidence.”* Print, copy, download, or **Assign to an athlete**.
+- **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
+  activities with an optional note), track per-athlete progress, and **export the roster to
+  CSV** or a single assignment to a printable PDF.
+- **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
+  and a **Mark done** button on each item.
+- **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
+  automatically the first time a coach or athlete signs in.
 
 ## Run it locally
 
-Just open `index.html` in a browser (double-click works — the data is embedded, so there's
-no `fetch`/CORS issue under `file://`). To serve it like production:
+Offline (no backend): just open `index.html` in a browser, or serve the folder:
 
 ```bash
 python3 -m http.server   # then visit http://localhost:8000
 ```
 
+With the full backend (Functions + D1) locally:
+
+```bash
+npm install -g wrangler
+wrangler pages dev .      # serves the site + /api/* Functions
+```
+
 ## Update the activities
 
-The activity data and filter taxonomy are generated from the spreadsheet and embedded into
-`index.html` between marker comments. After editing `build/PerformanceXtra_Master_Sheet.xlsx`:
+The dataset is generated from the spreadsheet into `data.js`. After editing
+`build/PerformanceXtra_Master_Sheet.xlsx`:
 
 ```bash
 pip install openpyxl
 python3 build/generate_data.py
 ```
 
-The script reads the **Master Repository** and **Dropdown Options** sheets, prefers each
-cell's hyperlink target over its display text, derives week/month/time fields, and rewrites
-the embedded JSON. It prints a summary (e.g. `Activities: 190`) so you can sanity-check.
+It reads the **Master Repository** and **Dropdown Options** sheets, prefers each cell's
+hyperlink target over its display text, derives week/month/time fields, drops subtopics that
+merely repeat the topic (so the Topic and Subtopic filters stay unambiguous), and rewrites the
+JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities: 190`).
 
-## Deploy to GitHub Pages
+## Deploy to Cloudflare Pages
 
-1. Push to `main` (or merge the PR).
-2. In the repo: **Settings → Pages → Build and deployment → Source: “GitHub Actions.”**
-3. The included workflow (`.github/workflows/deploy-pages.yml`) builds and publishes on every
-   push to `main`; the live URL appears in the workflow run. You can also trigger it manually
-   from the **Actions** tab (“Run workflow”).
+1. In Cloudflare → **Workers & Pages → Create → Pages → Connect to Git**, select this repo,
+   branch `main`. **Framework preset: None. Build command: (empty). Build output directory:
+   `/`.**
+2. The D1 database `performancextra` is bound as `DB` via `wrangler.toml`. Apply the schema
+   once (already applied to the live DB; safe to re-run):
 
-The site is plain static files, so it works equally well on Netlify, Cloudflare Pages, Vercel,
-or any static host — point them at the repo root with no build command.
+   ```bash
+   wrangler d1 execute performancextra --file db/schema.sql --remote
+   ```
+3. In **Pages → Settings → Environment variables**, set `SESSION_SECRET` to a long random
+   string (used to sign session cookies). **Do not commit it.**
+4. Push to `main` → Cloudflare builds and deploys. The first visitor creates the head-coach
+   account; everyone else joins by invite.
+
+> Because the site, API and database share **one origin**, sessions are first-party cookies
+> and there's **no CORS** to configure.
+
+### Security model
+
+- Roles come **only** from the signed, HTTP-only session cookie — never from the request body.
+- A coach can only read/write their own rows (or athletes whose `coach_id` is theirs); an
+  athlete can only read their own assignments and write their own completions.
+- Passwords are hashed with PBKDF2 (WebCrypto). Session cookies are JWT (HS256), `HttpOnly`,
+  `Secure`, `SameSite=Lax`.
