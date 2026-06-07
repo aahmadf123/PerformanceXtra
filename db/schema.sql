@@ -56,10 +56,13 @@ CREATE TABLE IF NOT EXISTS assignment_items (
 );
 
 -- Completions: which athlete finished which activity (optionally within an assignment).
+-- assignment_id is intentionally excluded from the PRIMARY KEY because it is nullable
+-- (SQLite PRIMARY KEY columns are implicitly NOT NULL). This means each athlete can
+-- complete a given activity once globally, regardless of which assignment it belongs to.
 CREATE TABLE IF NOT EXISTS completions (
   athlete_id    TEXT NOT NULL REFERENCES users(id),
   activity_id   TEXT NOT NULL,
   assignment_id TEXT REFERENCES assignments(id) ON DELETE CASCADE,
   completed_at  INTEGER NOT NULL,
-  PRIMARY KEY (athlete_id, activity_id, assignment_id)
+  PRIMARY KEY (athlete_id, activity_id)
 );

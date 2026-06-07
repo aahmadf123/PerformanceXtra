@@ -623,7 +623,7 @@
     var results = applyFilters();
     var grid = $("#repo-grid");
     grid.textContent = "";
-    $("#result-count").innerHTML = "Showing <strong>" + results.length + "</strong> of " + DATA.length + " activities";
+    $("#result-count").innerHTML = "Showing <strong>" + results.length + "</strong> of " + (isAdminView() && state.showHidden ? ALL.length : DATA.length) + " activities";
 
     if (!results.length) {
       grid.appendChild(el("div", { class: "empty-state" }, [

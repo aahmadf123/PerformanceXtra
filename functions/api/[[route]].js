@@ -124,14 +124,12 @@ function isoOrEpochToEpoch(v) {
   if (v == null || v === "") return null;
   if (typeof v === "number") return v > 1e11 ? Math.floor(v / 1000) : Math.floor(v);
   const t = Date.parse(v);
-  return isNaN(t) ? nowSec() : Math.floor(t / 1000);
+  return isNaN(t) ? null : Math.floor(t / 1000);
 }
 function randToken(nBytes) { return bytesToB64url(crypto.getRandomValues(new Uint8Array(nBytes || 24))); }
 function custId() {
-  const b = crypto.getRandomValues(new Uint8Array(4));
-  let s = "";
-  for (let i = 0; i < b.length; i++) s += b[i].toString(16).padStart(2, "0");
-  return "CUST-" + s.slice(0, 5).toUpperCase();
+  const uuid = crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
+  return "CUST-" + uuid;
 }
 async function readBody(request) {
   try { return await request.json(); } catch (e) { return {}; }
@@ -206,7 +204,8 @@ export async function onRequest(context) {
   try {
     return await route(method, path, request, env, url, secure);
   } catch (e) {
-    return err(500, "Server error: " + (e && e.message ? e.message : String(e)));
+    console.error(e);
+    return err(500, "Internal server error");
   }
 }
 
