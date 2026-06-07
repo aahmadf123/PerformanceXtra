@@ -4197,7 +4197,7 @@
     var raw = document.getElementById(id).textContent;
     // Strip the marker comments the build script leaves in place.
     var stripped = raw.replace(/<!--[\s\S]*?-->/g, "").trim();
-    try { return JSON.parse(stripped || "null") || null; }
+    try { return JSON.parse(stripped || "null"); }
     catch (e) { console.error("Failed to parse " + id, e); return null; }
   }
 
