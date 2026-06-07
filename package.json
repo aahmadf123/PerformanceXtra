@@ -1,0 +1,12 @@
+{
+  "name": "performancextra",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static site for PerformanceXtra mental workout repository",
+  "scripts": {
+    "start": "http-server . -p 8000"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
