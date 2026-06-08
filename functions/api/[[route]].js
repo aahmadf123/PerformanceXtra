@@ -127,6 +127,15 @@ function isoOrEpochToEpoch(v) {
   return isNaN(t) ? null : Math.floor(t / 1000);
 }
 function randToken(nBytes) { return bytesToB64url(crypto.getRandomValues(new Uint8Array(nBytes || 24))); }
+// Human-friendly passcode the coach emails to a student. Avoids ambiguous characters
+// (0/O, 1/I/l) and is grouped for readability, e.g. "k7mNP-q3rtv".
+function genPasscode() {
+  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
+  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+  return out.slice(0, 5) + "-" + out.slice(5);
+}
 function custId() {
   const uuid = crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase();
   return "CUST-" + uuid;
@@ -244,7 +253,7 @@ async function route(method, path, request, env, url, secure) {
   if (head === "athletes") {
     if (method === "GET" && seg.length === 1) return handleListAthletes(session, env);
     if (method === "POST" && seg.length === 1) return handleCreateAthlete(session, request, env, url);
-    if (method === "POST" && seg.length === 3 && seg[2] === "reinvite") return handleReinvite(session, env, seg[1], url);
+    if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
   }
   if (head === "custom-activities") {
     if (method === "GET" && seg.length === 1) return handleListCustom(session, env);
@@ -326,15 +335,12 @@ async function handleBootstrap(session, env) {
   const me = { id: session.uid, name: session.name, role: session.role };
   if (session.role === "coach") {
     const rows = await env.DB.prepare(
-      "SELECT id,name,email,created_at,(password_hash IS NOT NULL) AS has_password,invite_token,invite_expires FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
+      "SELECT id,name,email,created_at,(password_hash IS NOT NULL) AS has_password FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
     ).bind(session.uid).all();
     const students = {};
     for (const r of (rows.results || [])) {
       const a = await assembleAthlete(env, r);
       a.hasPassword = !!r.has_password;
-      a.pending = !r.has_password;
-      a.inviteToken = r.invite_token || null;
-      a.inviteExpires = r.invite_expires || null;
       students[r.id] = a;
     }
     const custom = await loadCustom(env, session.uid);
@@ -352,7 +358,7 @@ async function handleBootstrap(session, env) {
 
 async function handleListAthletes(session, env) {
   const rows = await env.DB.prepare(
-    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,invite_token,invite_expires FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
+    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
   ).bind(session.uid).all();
   const athletes = [];
   for (const r of (rows.results || [])) {
@@ -360,7 +366,7 @@ async function handleListAthletes(session, env) {
     const a = await env.DB.prepare("SELECT COUNT(*) AS n FROM assignments WHERE athlete_id = ?").bind(r.id).first();
     athletes.push({
       id: r.id, name: r.name, email: r.email,
-      hasPassword: !!r.has_password, inviteToken: r.invite_token, inviteExpires: r.invite_expires,
+      hasPassword: !!r.has_password,
       completedCount: c ? c.n : 0, assignmentCount: a ? a.n : 0
     });
   }
@@ -376,21 +382,23 @@ async function handleCreateAthlete(session, request, env, url) {
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
   const id = crypto.randomUUID();
-  const token = randToken(24);
-  const expires = nowSec() + INVITE_TTL;
+  const passcode = genPasscode();
+  const hash = await hashPassword(passcode);
   await env.DB.prepare(
-    "INSERT INTO users (id,email,name,role,coach_id,invite_token,invite_expires,created_at) VALUES (?,?,?,?,?,?,?,?)"
-  ).bind(id, email, name, "athlete", session.uid, token, expires, nowSec()).run();
-  return json({ athlete: { id: id, name: name, email: email }, inviteToken: token, inviteUrl: url.origin + "/?invite=" + token, inviteExpires: expires });
+    "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
+  ).bind(id, email, name, "athlete", session.uid, hash, nowSec()).run();
+  // The plaintext passcode is returned exactly once so the coach can email it. Only the
+  // PBKDF2 hash is stored; if the coach loses it they must reset to a new one.
+  return json({ athlete: { id: id, name: name, email: email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
-async function handleReinvite(session, env, athleteId, url) {
+async function handleResetPasscode(session, env, athleteId, url) {
   const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
   if (!row) return err(404, "Athlete not found");
-  const token = randToken(24);
-  const expires = nowSec() + INVITE_TTL;
-  await env.DB.prepare("UPDATE users SET invite_token = ?, invite_expires = ? WHERE id = ?").bind(token, expires, athleteId).run();
-  return json({ inviteToken: token, inviteUrl: url.origin + "/?invite=" + token, inviteExpires: expires });
+  const passcode = genPasscode();
+  const hash = await hashPassword(passcode);
+  await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
+  return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
 async function handleListAssignments(session, env, url) {

@@ -4,18 +4,17 @@ A web app that consolidates PerformanceXtra's mental-performance training resour
 into one tagged, searchable repository — with a workout builder, per-athlete completion
 tracking, and a **coach / athlete split**.
 
-It runs in **two modes from the same code**:
+It runs against a **Cloudflare Worker + D1 database**: coaches and athletes have **real
+accounts**, data is **shared across every device**, and roles are **enforced on the
+server** — an athlete can't become a coach by poking at the browser.
 
-- **Shared mode (Cloudflare Worker):** hosted on a Cloudflare Worker with static assets,
-  an API route, and a D1 database. Coaches and athletes have **real accounts**, data is
-  **shared across every device**, and roles are **enforced on the server** — an athlete
-  can't become a coach by poking at the browser.
-- **Offline mode (static):** open `index.html` directly (or on any static host) with no
-  backend. Data lives in `localStorage` on that device and a client passcode gates the coach
-  tools. This is the original behaviour, kept as a fallback/demo.
+The app is **login-first**: opening the link shows a sign-in screen. After signing in, a
+coach lands on their coaching tools and an athlete lands on their own workouts — nothing
+else is shown until you authenticate.
 
-The app auto-detects which mode to use: on boot it probes `GET /api/me`. If a Cloudflare
-backend answers, it runs in shared mode; otherwise it falls back to offline mode.
+The app boots by probing `GET /api/me`. If the Cloudflare backend answers, it runs normally.
+If the backend is unreachable (e.g. the file is opened directly with no Worker running), it
+still shows the sign-in screen, with a notice that the server is unavailable.
 
 ## Project structure
 
@@ -42,11 +41,14 @@ build/
   inline), the repository, and their progress. They can't assign, add, edit, or manage
   anything.
 
-### Adding athletes (shared mode)
+### Adding athletes
 
-A coach adds an athlete by name + email and gets a **private invite link**. The athlete opens
-it, sets their own password, and lands on **My Workouts**. There's no shared passcode to leak,
-and each athlete only ever sees their own work.
+A coach adds an athlete by **name + email**. The server **generates a random passcode**,
+stores only its hash, and returns the passcode to the coach **once** — with a one-click
+“Email them” button (prefilled `mailto:`) and a copy button. The coach sends the athlete
+their **email + passcode**; the athlete signs in with those and lands on **My Workouts**.
+There's no shared passcode to leak and no link to set a password. If a passcode is lost,
+the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 
 ## What it does
 
@@ -66,18 +68,15 @@ and each athlete only ever sees their own work.
 
 ## Run it locally
 
-Offline (no backend): just open `index.html` in a browser, or serve the folder:
-
-```bash
-python3 -m http.server   # then visit http://localhost:8000
-```
-
-With the full backend (Worker + D1 + assets) locally:
+The app needs its backend to sign in, so run the Worker + D1 + assets locally:
 
 ```bash
 npm install
 npm run dev               # serves the Worker + assets + /api/*
 ```
+
+Opening `index.html` directly (no Worker) still shows the sign-in screen, but it can't
+authenticate — it just displays a “server unavailable” notice.
 
 ## Update the activities
 
@@ -107,7 +106,8 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
 4. Push to `main` → Cloudflare builds and deploys the Worker. The first visitor creates the
-  head-coach account; everyone else joins by invite.
+  head-coach account; the coach then adds athletes, who sign in with the email + passcode
+  the coach emails them.
 
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.

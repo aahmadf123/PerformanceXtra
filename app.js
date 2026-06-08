@@ -887,14 +887,6 @@
     }
     return Promise.resolve(legacyCopy(text));
   }
-  // Human label for an invite's remaining life, given its expiry in epoch seconds.
-  function inviteExpiryLabel(expSec) {
-    if (!expSec) return "";
-    var secs = Number(expSec) - Math.floor(Date.now() / 1000);
-    if (secs <= 0) return "expired";
-    var days = Math.ceil(secs / 86400);
-    return "expires in " + days + " day" + (days === 1 ? "" : "s");
-  }
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
     ta.style.position = "fixed"; ta.style.opacity = "0";
@@ -974,13 +966,8 @@
     all.forEach(function (s) {
       var active = state.tracking.activeStudentId === s.id;
       var nameKids = [el("span", { class: "name" }, s.name)];
-      if (SERVER) {
-        if (s.pending) {
-          var exp = inviteExpiryLabel(s.inviteExpires);
-          nameKids.push(el("span", { class: "pill pill--pending", title: "Hasn't opened their invite / set a password yet" }, "Invite pending" + (exp ? " · " + exp : "")));
-        } else {
-          nameKids.push(el("span", { class: "pill pill--active", title: "Has set a password and can sign in" }, "✓ Active"));
-        }
+      if (SERVER && s.email) {
+        nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
       }
       var row = el("div", { class: "student-row" + (active ? " is-active" : "") }, [
         el("button", {
@@ -991,14 +978,9 @@
         el("span", { class: "name-wrap" }, nameKids)
       ]);
       if (SERVER) {
-        // Athletes manage their own accounts via invite. While pending, let the coach copy the
-        // existing link directly (no regenerate) so they can re-send it; offer a fresh link too.
-        if (s.pending && s.inviteToken) {
-          row.appendChild(el("button", { class: "btn btn--sm", title: "Copy this athlete's invite link to send them", "aria-label": "Copy invite link for " + s.name, onclick: function () {
-            copyText(location.origin + "/?invite=" + s.inviteToken).then(function (ok) { toast(ok ? "Invite link copied — send it to " + s.name : "Couldn't copy — use ↻ New link"); });
-          } }, "🔗 Copy invite"));
-        }
-        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: s.pending ? "Generate a fresh invite link (invalidates the old one)" : "Send a new invite so they can reset their password", "aria-label": "Re-invite " + s.name, onclick: function () { reissueInvite(s); } }, s.pending ? "↻ New link" : "↻ Re-invite"));
+        // Athletes sign in with the email + passcode the coach gave them. The plaintext
+        // passcode isn't stored, so "Reset passcode" issues a fresh one to email them.
+        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to email this athlete", "aria-label": "Reset passcode for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset passcode"));
       } else {
         row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
           var name = prompt("Rename student", s.name);
@@ -1616,16 +1598,16 @@
   }
   // Full-screen, non-dismissable gate shown when the backend is reachable but the
   // visitor has no session. Routes to an invite-accept form if ?invite= is present.
-  function showAuthGate() {
+  function showAuthGate(offline) {
     if ($("#auth-gate")) return;
     var card = el("div", { class: "auth-card" });
     var root = el("div", { class: "auth-gate", id: "auth-gate", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" }, card);
     document.body.appendChild(root);
     var invite = getQueryParam("invite");
     if (invite) renderAcceptForm(card, invite);
-    else renderLoginForm(card);
+    else renderLoginForm(card, offline);
   }
-  function renderLoginForm(card) {
+  function renderLoginForm(card, offline) {
     card.textContent = "";
     var email = el("input", { type: "email", id: "auth-email", placeholder: "you@email.com", autocomplete: "username" });
     var pass = el("input", { type: "password", id: "auth-pass", placeholder: "Password", autocomplete: "current-password" });
@@ -1642,22 +1624,27 @@
     }
     card.appendChild(authHeader());
     card.appendChild(el("h3", { class: "auth-title" }, "Sign in"));
+    card.appendChild(el("p", { class: "field-hint" }, "Coaches and athletes sign in here with their email and password. Athletes: use the email and passcode your coach sent you."));
+    if (offline) {
+      card.appendChild(el("div", { class: "warn" }, "Can’t reach the PerformanceXtra server right now, so sign-in is unavailable. If you’re running it locally, start the backend with “npm run dev”; deployed on Cloudflare it’s always on."));
+    }
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", { for: "auth-email" }, "Email"), email]),
-      el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password"), pass]),
+      el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password / passcode"), pass]),
       errBox,
       el("button", { class: "btn btn--primary btn--block", onclick: submit }, "Sign in"),
       setupRow
     ]));
     [email, pass].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } }); });
     setTimeout(function () { email.focus(); }, 30);
+    if (offline) return;
     api("/setup-status").then(function (res) {
       setupRow.textContent = "";
       if (res.ok && res.data && res.data.needsSetup) {
         setupRow.appendChild(document.createTextNode("First time here? "));
         setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the coach account"));
       } else {
-        setupRow.textContent = "Athletes: open the invite link your coach sent you.";
+        setupRow.textContent = "Athletes: sign in with the email and passcode your coach sent you.";
       }
     }).catch(function () {});
   }
@@ -1681,7 +1668,7 @@
     }
     card.appendChild(authHeader());
     card.appendChild(el("h3", { class: "auth-title" }, "Create your coach account"));
-    card.appendChild(el("p", { class: "field-hint" }, "This is the first account on this site — it becomes the head coach. Athletes get added later by invite."));
+    card.appendChild(el("p", { class: "field-hint" }, "This is the first account on this site — it becomes the head coach. You add athletes later, and each gets a passcode you email them."));
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
@@ -1725,13 +1712,13 @@
     setTimeout(function () { pass.focus(); }, 30);
   }
 
-  // Coach: add an athlete and receive a private invite link to send them (T7).
+  // Coach: add an athlete. The server generates a one-time passcode the coach emails them.
   function openAddAthleteModal(prefillName) {
     var name = el("input", { type: "text", value: prefillName || "", placeholder: "Athlete's name" });
     var email = el("input", { type: "email", placeholder: "their@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the athlete and give you a private invite link to send them. They open it, choose their own password, and from then on sign in with this email + that password — there's no shared passcode to leak."),
+      el("p", { class: "field-hint" }, "We'll create the athlete and generate a random passcode for them. Email them their email address + that passcode — they sign in with those. Nothing to set up on their end."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       errBox
@@ -1743,36 +1730,54 @@
       api("/athletes", { method: "POST", body: { name: nm, email: em } }).then(function (res) {
         if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add athlete."); errBox.hidden = false; return; }
         closeModal();
-        refreshFromServer().then(function () { renderAll(); showInviteModal(res.data); });
+        refreshFromServer().then(function () { renderAll(); showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
     openModal("Add athlete", body, [
       { label: "Cancel", onClick: closeModal },
-      { label: "Create & get invite link", accent: true, onClick: submit }
+      { label: "Create & get passcode", accent: true, onClick: submit }
     ]);
     setTimeout(function () { name.focus(); }, 30);
   }
-  function showInviteModal(data) {
-    var url = (data && data.inviteUrl) || "";
-    var who = (data && data.athlete && data.athlete.name) || "your athlete";
-    var link = el("input", { type: "text", value: url, readonly: true });
-    link.addEventListener("focus", function () { this.select(); });
+  // Show the one-time login credentials (email + passcode) the coach emails to a student.
+  function showCredentialsModal(data) {
+    var athlete = (data && data.athlete) || {};
+    var who = athlete.name || "your athlete";
+    var email = athlete.email || "";
+    var passcode = (data && data.passcode) || "";
+    var loginUrl = (data && data.loginUrl) || location.origin + "/";
+
+    var creds = "Email: " + email + "\nPasscode: " + passcode + "\nSign in at: " + loginUrl;
+    var emailField = el("input", { type: "text", value: email, readonly: true });
+    var passField = el("input", { type: "text", value: passcode, readonly: true, style: "font-family:monospace; letter-spacing:0.5px" });
+    [emailField, passField].forEach(function (i) { i.addEventListener("focus", function () { this.select(); }); });
+
+    var subject = encodeURIComponent("Your PerformanceXtra login");
+    var bodyText = encodeURIComponent(
+      "Hi " + who + ",\n\nYou've been set up on PerformanceXtra. Sign in with:\n\n" +
+      "Email: " + email + "\nPasscode: " + passcode + "\n\nSign in here: " + loginUrl +
+      "\n\nYou can keep using this passcode to sign in.\n"
+    );
+    var mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + subject + "&body=" + bodyText;
+
     var body = el("div", { class: "form-stack" }, [
-      el("p", {}, "Send this private link to " + who + ". They'll open it, set a password, and land on their workouts."),
-      el("div", { class: "field" }, [el("label", {}, "Invite link"), link]),
-      el("p", { class: "field-hint" }, "The link works once, and expires in 14 days. You can re-issue it later from the athlete's row.")
+      el("p", {}, "Send these sign-in details to " + who + ". This passcode is shown once — copy it now. If it's lost, use “Reset passcode” on their row to make a new one."),
+      el("div", { class: "field" }, [el("label", {}, "Email"), emailField]),
+      el("div", { class: "field" }, [el("label", {}, "Passcode"), passField]),
+      el("a", { class: "btn btn--block", href: mailto }, "✉ Email " + who)
     ]);
-    openModal("Athlete invite link", body, [
-      { label: "Copy link", primary: true, onClick: function () { copyText(url).then(function (ok) { toast(ok ? "Invite link copied" : "Couldn't copy — select it manually"); }); } },
+    openModal("Athlete sign-in details", body, [
+      { label: "Copy details", primary: true, onClick: function () { copyText(creds).then(function (ok) { toast(ok ? "Login details copied" : "Couldn't copy — select them manually"); }); } },
       { label: "Done", onClick: closeModal }
     ]);
-    setTimeout(function () { link.focus(); link.select(); }, 30);
+    setTimeout(function () { passField.focus(); passField.select(); }, 30);
   }
-  function reissueInvite(s) {
-    api("/athletes/" + encodeURIComponent(s.id) + "/reinvite", { method: "POST" }).then(function (res) {
-      if (!res.ok) { toast(apiError(res, "Couldn't create invite")); return; }
+  function resetPasscode(s) {
+    if (!confirm("Generate a new passcode for " + s.name + "? Their old passcode stops working.")) return;
+    api("/athletes/" + encodeURIComponent(s.id) + "/reset-passcode", { method: "POST" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
       refreshFromServer().then(function () { renderStudents(); });
-      showInviteModal({ athlete: { name: s.name }, inviteUrl: res.data.inviteUrl });
+      showCredentialsModal(res.data);
     }).catch(function () { toast("Couldn't reach the server"); });
   }
   // Coach: pull an old exported localStorage backup into the shared database (T6).
@@ -2073,12 +2078,12 @@
     }).catch(runLocalMode);   // network error → offline/static
   }
   function runLocalMode() {
+    // No backend reachable. Rather than dropping into a confusing "everything visible,
+    // fake-passcode" state, keep the experience login-first: show the sign-in gate with a
+    // clear notice. A real deployment (Cloudflare Worker + D1) makes the backend reachable
+    // and this path is never taken.
     SERVER = false;
-    state.view = isAuthed() ? "admin" : "student";
-    applyRole();
-    renderAll();
-    maybeDefaultPasscodeNudge();
-    maybeAutoTour();
+    showAuthGate(true);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
