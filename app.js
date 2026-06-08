@@ -351,6 +351,14 @@
     return { done: done, total: asg.items.length };
   }
 
+  function assignedActivityIds(student) {
+    var out = {};
+    studentAssignments(student).forEach(function (asg) {
+      (asg.items || []).forEach(function (id) { if (BY_ID[id]) out[id] = true; });
+    });
+    return Object.keys(out);
+  }
+
   // Create an assignment, routing to the server in SERVER mode. onDone runs on success.
   function createAssignmentFlow(studentId, title, note, ids, onDone) {
     if (SERVER) {
@@ -1018,11 +1026,24 @@
   // Shared progress block — used by the admin Students detail and the student
   // My Progress tab.
   function appendProgress(container, s) {
+    var athleteMode = SERVER && state.session && state.session.role === "athlete";
+    var assigned = assignedActivityIds(s);
+    var assignedMap = {};
+    assigned.forEach(function (id) { assignedMap[id] = true; });
+
     var p = computeProgress(s);
-    var pct = DATA.length ? Math.round(p.total / DATA.length * 100) : 0;
+    if (athleteMode) {
+      p = computeProgress({ completed: Object.keys(s.completed).reduce(function (acc, id) {
+        if (assignedMap[id]) acc[id] = s.completed[id];
+        return acc;
+      }, {}) });
+    }
+
+    var denom = athleteMode ? assigned.length : DATA.length;
+    var pct = denom ? Math.round(p.total / denom * 100) : 0;
     container.appendChild(el("div", { class: "progress-stat" }, [
       el("span", { class: "big" }, String(p.total)),
-      el("span", {}, "of " + DATA.length + " activities completed (" + pct + "%)")
+      el("span", {}, "of " + denom + (athleteMode ? " assigned activities" : " activities") + " completed (" + pct + "%)")
     ]));
     container.appendChild(el("div", { class: "progress-bar" }, el("span", { style: "width:" + pct + "%" })));
 
@@ -1062,7 +1083,7 @@
     if (!list.length) {
       container.appendChild(el("p", { class: "no-link" }, opts.admin
         ? "No assignments yet. Create one to give this student a focused set of activities."
-        : "No workouts assigned yet — browse the Repository to explore on your own."));
+        : "No workouts assigned yet. Ask your coach for your next set."));
       return;
     }
     list.forEach(function (asg) {
@@ -1275,7 +1296,13 @@
     var s = activeStudent();
     var c = $("#student-count");
     if (s) {
-      c.textContent = Object.keys(s.completed).length + " / " + DATA.length + " done";
+      var assigned = assignedActivityIds(s);
+      if (SERVER && state.session && state.session.role === "athlete") {
+        var doneAssigned = assigned.filter(function (id) { return !!s.completed[id]; }).length;
+        c.textContent = doneAssigned + " / " + assigned.length + " assigned done";
+      } else {
+        c.textContent = Object.keys(s.completed).length + " / " + DATA.length + " done";
+      }
     } else { c.textContent = ""; }
   }
 
@@ -1284,8 +1311,7 @@
     return isAdminView()
       ? [{ id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
          { id: "students", label: "Students" }, { id: "settings", label: "Settings" }]
-      : [{ id: "workouts", label: "My Workouts" }, { id: "repo", label: "Repository" },
-         { id: "progress", label: "My Progress" }];
+      : [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
   }
 
   function renderTabs() {
@@ -1932,7 +1958,14 @@
     fillSelect($("#b-type"), PRESENT.type, "Any type");
   }
 
+  function renderCatalogCount() {
+    var node = $("#total-count");
+    if (!node) return;
+    node.textContent = ALL.length;
+  }
+
   function renderAll() {
+    renderCatalogCount();
     renderStudentPicker();
     renderRepo();
     if (isAdminView()) {
@@ -1947,7 +1980,7 @@
   /* ----------------------------- Init ----------------------------- */
   function init() {
     if (!storageOK) $("#storage-warning").hidden = false;
-    $("#total-count").textContent = DATA.length;
+    renderCatalogCount();
 
     // Resume the admin role if this browser session already authenticated.
     state.view = isAuthed() ? "admin" : "student";
