@@ -1315,16 +1315,20 @@
     document.body.setAttribute("data-role", isAdminView() ? "admin" : "student");
     var badge = $("#role-badge");
     badge.hidden = false;
+    var picker = $(".student-picker");
+    var helpBtn = $("#help-btn");
 
     if (SERVER) {
       // Real, server-trusted session: no client passcode, no coach "preview".
       var role = state.session ? state.session.role : "athlete";
       var name = state.session ? state.session.name : "";
+      if (picker) picker.hidden = true;
+      if (helpBtn) helpBtn.hidden = true;
       $("#admin-login-btn").hidden = true;
       $("#student-view-btn").hidden = true;
       $("#logout-btn").hidden = false;
       $("#preview-banner").hidden = true;
-      if (role === "coach") { badge.textContent = "Coach" + (name ? " · " + name : ""); badge.classList.remove("is-student"); }
+      if (role === "coach") { badge.textContent = name || "Coach"; badge.classList.remove("is-student"); }
       else { badge.textContent = name || "Athlete"; badge.classList.add("is-student"); }
       applyServerChrome();
       renderTabs();
@@ -1359,7 +1363,7 @@
     }
   }
 
-  function goAdmin() { state.view = "admin"; state.tab = "repo"; applyRole(); renderAll(); }
+  function goAdmin() { state.view = "admin"; state.tab = "students"; applyRole(); renderAll(); }
   function goStudent(preview) { state.view = "student"; state.tab = "workouts"; applyRole(); renderAll(); }
   function logout() {
     if (SERVER) {
@@ -1626,7 +1630,7 @@
     card.appendChild(el("h3", { class: "auth-title" }, "Sign in"));
     card.appendChild(el("p", { class: "field-hint" }, "Coaches and athletes sign in here with their email and password. Athletes: use the email and passcode your coach sent you."));
     if (offline) {
-      card.appendChild(el("div", { class: "warn" }, "Can’t reach the PerformanceXtra server right now, so sign-in is unavailable. If you’re running it locally, start the backend with “npm run dev”; deployed on Cloudflare it’s always on."));
+      card.appendChild(el("div", { class: "warn" }, "Can’t reach the PerformanceXtra server right now, so sign-in is temporarily unavailable. Please try this link again in a moment."));
     }
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", { for: "auth-email" }, "Email"), email]),
@@ -1640,7 +1644,9 @@
     if (offline) return;
     api("/setup-status").then(function (res) {
       setupRow.textContent = "";
-      if (res.ok && res.data && res.data.needsSetup) {
+      if (res.ok && res.data && res.data.demoLogin) {
+        setupRow.textContent = "Admin demo login: " + res.data.demoLogin.email + " / " + res.data.demoLogin.password;
+      } else if (res.ok && res.data && res.data.needsSetup) {
         setupRow.appendChild(document.createTextNode("First time here? "));
         setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the coach account"));
       } else {
@@ -2060,7 +2066,7 @@
         SERVER = true;
         return loadBaseActivities().then(loadServerSnapshot).then(function () {
           state.view = state.session.role === "coach" ? "admin" : "student";
-          if (!location.hash) state.tab = state.session.role === "coach" ? "repo" : "workouts";
+          if (!location.hash) state.tab = state.session.role === "coach" ? "students" : "workouts";
           refreshSelects();
           applyRole();
           renderAll();

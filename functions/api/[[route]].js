@@ -14,6 +14,10 @@ const COOKIE = "px_session";
 const SESSION_TTL = 60 * 60 * 24 * 30;        // 30 days
 const INVITE_TTL = 60 * 60 * 24 * 14;         // 14 days
 const PBKDF2_ITER = 100000;
+const DEMO_SESSION_SECRET = "performancextra-demo-session-secret-change-me";
+const DEMO_COACH_NAME = "Demo Admin";
+const DEMO_COACH_EMAIL = "admin@performancextra.demo";
+const DEMO_COACH_PASSWORD = "Admin12345!";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -109,12 +113,17 @@ function clearCookie(secure) {
 async function getSession(request, env) {
   const token = getCookie(request, COOKIE);
   if (!token) return null;
-  return verifyJWT(token, env.SESSION_SECRET);
+  return verifyJWT(token, sessionSecret(env));
 }
 async function issueSessionHeader(user, env, secure) {
   const now = Math.floor(Date.now() / 1000);
-  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, env.SESSION_SECRET);
+  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env));
   return { "Set-Cookie": sessionCookie(token, SESSION_TTL, secure) };
+}
+
+function sessionSecret(env) {
+  const v = String(env.SESSION_SECRET || "").trim();
+  return v || DEMO_SESSION_SECRET;
 }
 
 /* ----------------------------- small utils ----------------------------- */
@@ -201,7 +210,6 @@ export async function onRequest(context) {
   const request = context.request;
   const env = context.env;
   if (!env.DB) return err(500, "Server not configured: D1 binding 'DB' missing");
-  if (!env.SESSION_SECRET) return err(500, "Server not configured: SESSION_SECRET missing");
 
   const url = new URL(request.url);
   const secure = url.protocol === "https:";
@@ -222,6 +230,11 @@ async function route(method, path, request, env, url, secure) {
   const seg = path.split("/").filter(Boolean);
   const head = seg[0] || "";
 
+  // Ensure one deterministic coach login exists for first-run demos.
+  if ((method === "GET" && path === "/setup-status") || (method === "POST" && path === "/login")) {
+    await ensureDemoCoach(env);
+  }
+
   /* -------- public (no session) -------- */
   if (method === "POST" && path === "/setup") return handleSetup(request, env, secure);
   if (method === "POST" && path === "/login") return handleLogin(request, env, secure);
@@ -229,7 +242,10 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/athletes/accept") return handleAccept(request, env, secure);
   if (method === "GET" && path === "/setup-status") {
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
-    return json({ needsSetup: !row || row.n === 0 });
+    return json({
+      needsSetup: !row || row.n === 0,
+      demoLogin: await getDemoLogin(env)
+    });
   }
 
   /* -------- session required below -------- */
@@ -267,6 +283,36 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/import") return handleImport(session, request, env);
 
   return err(404, "Not found: " + method + " " + path);
+}
+
+function demoCoachName(env) { return String(env.DEMO_COACH_NAME || DEMO_COACH_NAME).trim() || DEMO_COACH_NAME; }
+function demoCoachEmail(env) { return String(env.DEMO_COACH_EMAIL || DEMO_COACH_EMAIL).trim().toLowerCase() || DEMO_COACH_EMAIL; }
+function demoCoachPassword(env) {
+  const p = String(env.DEMO_COACH_PASSWORD || DEMO_COACH_PASSWORD);
+  return p.length >= 8 ? p : DEMO_COACH_PASSWORD;
+}
+
+async function ensureDemoCoach(env) {
+  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
+  if (count && count.n > 0) return;
+  const id = crypto.randomUUID();
+  const name = demoCoachName(env);
+  const email = demoCoachEmail(env);
+  const hash = await hashPassword(demoCoachPassword(env));
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO users (id,email,name,role,password_hash,created_at) VALUES (?,?,?,?,?,?)"
+  ).bind(id, email, name, "coach", hash, nowSec()).run();
+}
+
+async function getDemoLogin(env) {
+  const email = demoCoachEmail(env);
+  const row = await env.DB.prepare("SELECT id FROM users WHERE role='coach' AND email = ? LIMIT 1").bind(email).first();
+  if (!row) return null;
+  return {
+    name: demoCoachName(env),
+    email: email,
+    password: demoCoachPassword(env)
+  };
 }
 
 /* ----------------------------- auth handlers ----------------------------- */
