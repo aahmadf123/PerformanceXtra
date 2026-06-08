@@ -228,6 +228,7 @@ async function route(method, path, request, env, url, secure) {
   if (!session) return err(401, "Not signed in");
 
   if (method === "GET" && path === "/me") return json({ id: session.uid, name: session.name, role: session.role });
+  if (method === "GET" && path === "/activities") return handleListBaseActivities(env);
   if (method === "GET" && path === "/bootstrap") return handleBootstrap(session, env);
   if (method === "POST" && path === "/completions") return handleCompletions(session, request, env);
 
@@ -305,6 +306,18 @@ async function handleAccept(request, env, secure) {
 }
 
 /* ----------------------------- data handlers ----------------------------- */
+// The 190 built-in activities, served from D1 (seeded by db/seed_activities.sql).
+// The client uses these as the authoritative base set in SERVER mode and falls back
+// to its bundled data.js copy if this ever returns nothing.
+async function handleListBaseActivities(env) {
+  const rows = await env.DB.prepare("SELECT payload FROM base_activities ORDER BY position").all();
+  const activities = [];
+  (rows.results || []).forEach(function (r) {
+    try { activities.push(JSON.parse(r.payload)); } catch (e) {}
+  });
+  return json({ activities: activities });
+}
+
 async function handleBootstrap(session, env) {
   const me = { id: session.uid, name: session.name, role: session.role };
   if (session.role === "coach") {
