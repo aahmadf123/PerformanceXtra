@@ -179,8 +179,30 @@
    * is migrated forward on first load. */
   var LS_KEY = "performancextra.store.v2";
   var LS_KEY_V1 = "performancextra.tracking.v1";
+  var THEME_KEY = "performancextra.theme";
   var DEFAULT_PASSCODE = "pxadmin";
   var storageOK = true;
+
+  function detectTheme() {
+    try {
+      var saved = localStorage.getItem(THEME_KEY);
+      if (saved === "light" || saved === "dark") return saved;
+    } catch (e) {}
+    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  }
+  function applyTheme(theme) {
+    var next = theme === "light" ? "light" : "dark";
+    document.body.setAttribute("data-theme", next);
+    document.documentElement.style.colorScheme = next;
+    var btn = $("#theme-toggle");
+    if (btn) btn.textContent = next === "dark" ? "Light mode" : "Dark mode";
+  }
+  function toggleTheme() {
+    var current = document.body.getAttribute("data-theme") || detectTheme();
+    var next = current === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  }
 
   function emptyStore() {
     return {
@@ -1980,6 +2002,7 @@
   /* ----------------------------- Init ----------------------------- */
   function init() {
     if (!storageOK) $("#storage-warning").hidden = false;
+    applyTheme(detectTheme());
     renderCatalogCount();
 
     // Resume the admin role if this browser session already authenticated.
@@ -2054,6 +2077,8 @@
     if (serverImportBtn) serverImportBtn.addEventListener("click", function () { triggerImport("server"); });
 
     // Role controls (header + preview banner)
+    var themeBtn = $("#theme-toggle");
+    if (themeBtn) themeBtn.addEventListener("click", toggleTheme);
     $("#admin-login-btn").addEventListener("click", openLoginModal);
     $("#student-view-btn").addEventListener("click", function () { goStudent(true); });
     $("#logout-btn").addEventListener("click", logout);
