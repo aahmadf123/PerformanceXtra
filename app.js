@@ -137,7 +137,10 @@
   // (identical content) so the app still works.
   function loadBaseActivities() {
     return api("/activities").then(function (res) {
-      if (res.ok && res.data && Array.isArray(res.data.activities) && res.data.activities.length) {
+      // Only adopt the D1 copy when it's at least as complete as the bundled set.
+      // A short/partial response (corrupt or partially-seeded table) means we keep
+      // the known-good data.js copy rather than render a missing-activities set.
+      if (res.ok && res.data && Array.isArray(res.data.activities) && res.data.activities.length >= BASE.length) {
         BASE = res.data.activities;
       }
     }).catch(function () {});

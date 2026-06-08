@@ -312,9 +312,13 @@ async function handleAccept(request, env, secure) {
 async function handleListBaseActivities(env) {
   const rows = await env.DB.prepare("SELECT payload FROM base_activities ORDER BY position").all();
   const activities = [];
+  let bad = 0;
   (rows.results || []).forEach(function (r) {
-    try { activities.push(JSON.parse(r.payload)); } catch (e) {}
+    try { activities.push(JSON.parse(r.payload)); } catch (e) { bad++; }
   });
+  // Fail rather than return a partial set: a corrupt row would otherwise yield e.g.
+  // 189/190 with a 200, defeating the client's fallback to its bundled data.js copy.
+  if (bad > 0) return err(500, "Some base activities could not be read");
   return json({ activities: activities });
 }
 
