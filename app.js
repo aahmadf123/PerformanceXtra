@@ -132,6 +132,19 @@
 
   // Pull the full snapshot the UI needs and load it into state.tracking, which uses
   // the exact same shape as the local store — so every render function works unchanged.
+  // In SERVER mode the 190 base activities are the authoritative copy in D1. Pull them
+  // and swap them in for the bundled data.js set; on any failure we keep the data.js copy
+  // (identical content) so the app still works.
+  function loadBaseActivities() {
+    return api("/activities").then(function (res) {
+      // Only adopt the D1 copy when it's at least as complete as the bundled set.
+      // A short/partial response (corrupt or partially-seeded table) means we keep
+      // the known-good data.js copy rather than render a missing-activities set.
+      if (res.ok && res.data && Array.isArray(res.data.activities) && res.data.activities.length >= BASE.length) {
+        BASE = res.data.activities;
+      }
+    }).catch(function () {});
+  }
   function loadServerSnapshot() {
     return api("/bootstrap").then(function (res) {
       if (!res.ok || !res.data) throw new Error("bootstrap failed (" + res.status + ")");
@@ -874,6 +887,14 @@
     }
     return Promise.resolve(legacyCopy(text));
   }
+  // Human label for an invite's remaining life, given its expiry in epoch seconds.
+  function inviteExpiryLabel(expSec) {
+    if (!expSec) return "";
+    var secs = Number(expSec) - Math.floor(Date.now() / 1000);
+    if (secs <= 0) return "expired";
+    var days = Math.ceil(secs / 86400);
+    return "expires in " + days + " day" + (days === 1 ? "" : "s");
+  }
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
     ta.style.position = "fixed"; ta.style.opacity = "0";
@@ -953,7 +974,14 @@
     all.forEach(function (s) {
       var active = state.tracking.activeStudentId === s.id;
       var nameKids = [el("span", { class: "name" }, s.name)];
-      if (SERVER && s.pending) nameKids.push(el("span", { class: "pill pill--pending", title: "Hasn't set a password yet" }, "Invite pending"));
+      if (SERVER) {
+        if (s.pending) {
+          var exp = inviteExpiryLabel(s.inviteExpires);
+          nameKids.push(el("span", { class: "pill pill--pending", title: "Hasn't opened their invite / set a password yet" }, "Invite pending" + (exp ? " · " + exp : "")));
+        } else {
+          nameKids.push(el("span", { class: "pill pill--active", title: "Has set a password and can sign in" }, "✓ Active"));
+        }
+      }
       var row = el("div", { class: "student-row" + (active ? " is-active" : "") }, [
         el("button", {
           class: "btn btn--sm btn--ghost", title: "Set active",
@@ -963,8 +991,14 @@
         el("span", { class: "name-wrap" }, nameKids)
       ]);
       if (SERVER) {
-        // Athletes manage their own accounts via invite; offer a copyable link instead.
-        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Copy invite link", "aria-label": "Copy invite link for " + s.name, onclick: function () { reissueInvite(s); } }, "🔗 Invite"));
+        // Athletes manage their own accounts via invite. While pending, let the coach copy the
+        // existing link directly (no regenerate) so they can re-send it; offer a fresh link too.
+        if (s.pending && s.inviteToken) {
+          row.appendChild(el("button", { class: "btn btn--sm", title: "Copy this athlete's invite link to send them", "aria-label": "Copy invite link for " + s.name, onclick: function () {
+            copyText(location.origin + "/?invite=" + s.inviteToken).then(function (ok) { toast(ok ? "Invite link copied — send it to " + s.name : "Couldn't copy — use ↻ New link"); });
+          } }, "🔗 Copy invite"));
+        }
+        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: s.pending ? "Generate a fresh invite link (invalidates the old one)" : "Send a new invite so they can reset their password", "aria-label": "Re-invite " + s.name, onclick: function () { reissueInvite(s); } }, s.pending ? "↻ New link" : "↻ Re-invite"));
       } else {
         row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
           var name = prompt("Rename student", s.name);
@@ -1318,9 +1352,11 @@
 
     var authed = isAuthed();
     var preview = authed && !isAdminView();
+    // "Admin login" and "Log out" are mutually exclusive: you're either signed in or not.
+    // The "Student view" preview toggle only makes sense while signed in and in admin view.
     $("#admin-login-btn").hidden = authed;
-    $("#student-view-btn").hidden = !isAdminView();
-    $("#logout-btn").hidden = !isAdminView();
+    $("#logout-btn").hidden = !authed;
+    $("#student-view-btn").hidden = !(authed && isAdminView());
     $("#preview-banner").hidden = !preview;
     if (isAdminView()) { badge.textContent = "Coach"; badge.classList.remove("is-student"); }
     else { badge.textContent = preview ? "Student preview" : "Student"; badge.classList.add("is-student"); }
@@ -1695,7 +1731,7 @@
     var email = el("input", { type: "email", placeholder: "their@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the athlete and give you a private invite link to send them. They set their own password — there's no shared passcode to leak."),
+      el("p", { class: "field-hint" }, "We'll create the athlete and give you a private invite link to send them. They open it, choose their own password, and from then on sign in with this email + that password — there's no shared passcode to leak."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       errBox
@@ -2017,7 +2053,7 @@
       if (res.ok && res.data && res.data.id) {
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
-        return loadServerSnapshot().then(function () {
+        return loadBaseActivities().then(loadServerSnapshot).then(function () {
           state.view = state.session.role === "coach" ? "admin" : "student";
           if (!location.hash) state.tab = state.session.role === "coach" ? "repo" : "workouts";
           refreshSelects();
