@@ -6,10 +6,10 @@ tracking, and a **coach / athlete split**.
 
 It runs in **two modes from the same code**:
 
-- **Shared mode (Cloudflare):** hosted on Cloudflare Pages with a Pages Functions API and a
-  D1 database. Coaches and athletes have **real accounts**, data is **shared across every
-  device**, and roles are **enforced on the server** — an athlete can't become a coach by
-  poking at the browser.
+- **Shared mode (Cloudflare Worker):** hosted on a Cloudflare Worker with static assets,
+  an API route, and a D1 database. Coaches and athletes have **real accounts**, data is
+  **shared across every device**, and roles are **enforced on the server** — an athlete
+  can't become a coach by poking at the browser.
 - **Offline mode (static):** open `index.html` directly (or on any static host) with no
   backend. Data lives in `localStorage` on that device and a client passcode gates the coach
   tools. This is the original behaviour, kept as a fallback/demo.
@@ -24,9 +24,10 @@ index.html              # markup only (loads styles.css, data.js, app.js)
 styles.css              # all styles
 app.js                  # the whole app (one IIFE; no build step)
 data.js                 # generated dataset: window.PX_DATA + window.PX_TAXONOMY
-functions/api/[[route]].js  # Cloudflare Pages Functions API (auth + shared data)
+worker.js               # Cloudflare Worker entrypoint (serves assets + API)
+functions/api/[[route]].js  # API logic used by the Worker entrypoint
 db/schema.sql           # D1 schema (kept for version control / reproducibility)
-wrangler.toml           # Pages project config + D1 binding
+wrangler.toml           # Worker config + asset + D1 binding
 build/
   generate_data.py      # regenerates data.js from the spreadsheet
   PerformanceXtra_Master_Sheet.xlsx  # source spreadsheet (dev-only, not served)
@@ -71,11 +72,11 @@ Offline (no backend): just open `index.html` in a browser, or serve the folder:
 python3 -m http.server   # then visit http://localhost:8000
 ```
 
-With the full backend (Functions + D1) locally:
+With the full backend (Worker + D1 + assets) locally:
 
 ```bash
-npm install -g wrangler
-wrangler pages dev .      # serves the site + /api/* Functions
+npm install
+npm run dev               # serves the Worker + assets + /api/*
 ```
 
 ## Update the activities
@@ -93,21 +94,20 @@ hyperlink target over its display text, derives week/month/time fields, drops su
 merely repeat the topic (so the Topic and Subtopic filters stay unambiguous), and rewrites the
 JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities: 190`).
 
-## Deploy to Cloudflare Pages
+## Deploy to Cloudflare Workers
 
-1. In Cloudflare → **Workers & Pages → Create → Pages → Connect to Git**, select this repo,
-   branch `main`. **Framework preset: None. Build command: (empty). Build output directory:
-   `/`.**
+1. In Cloudflare → **Workers & Pages → Create → Worker → Connect to Git**, select this repo
+  and branch `main`. Use the Wrangler config in `wrangler.toml`.
 2. The D1 database `performancextra` is bound as `DB` via `wrangler.toml`. Apply the schema
    once (already applied to the live DB; safe to re-run):
 
    ```bash
    wrangler d1 execute performancextra --file db/schema.sql --remote
    ```
-3. In **Pages → Settings → Environment variables**, set `SESSION_SECRET` to a long random
+3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
-4. Push to `main` → Cloudflare builds and deploys. The first visitor creates the head-coach
-   account; everyone else joins by invite.
+4. Push to `main` → Cloudflare builds and deploys the Worker. The first visitor creates the
+  head-coach account; everyone else joins by invite.
 
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.

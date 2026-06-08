@@ -4,7 +4,9 @@
   "version": "1.0.0",
   "description": "Static site for PerformanceXtra mental workout repository",
   "scripts": {
-    "start": "http-server . -p 8000"
+    "start": "http-server . -p 8000",
+    "dev": "npx wrangler dev",
+    "deploy": "npx wrangler deploy"
   },
   "devDependencies": {
     "http-server": "^14.1.1"

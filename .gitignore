@@ -4,3 +4,4 @@ npm-debug.log*
 # Cloudflare / Wrangler
 .wrangler/
 .dev.vars
+public/

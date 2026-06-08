@@ -1,6 +1,14 @@
 name = "performancextra"
 compatibility_date = "2025-01-01"
-pages_build_output_dir = "."
+
+main = "worker.js"
+
+[build]
+command = "node build/copy-assets.mjs"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
 
 [[d1_databases]]
 binding = "DB"
