@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Generate the embedded dataset for PerformanceXtra's index.html.
+"""Generate the dataset for PerformanceXtra (``data.js``).
 
 Reads ``build/PerformanceXtra_Master_Sheet.xlsx`` and rewrites the two JSON
-blobs inside ``index.html`` (the activity data and the filter taxonomy) between
+blobs inside ``data.js`` (``window.PX_DATA`` and ``window.PX_TAXONOMY``) between
 their marker comments. Run this whenever the source spreadsheet changes:
 
     pip install openpyxl
     python3 build/generate_data.py
 
-The app itself needs no build step or server -- index.html ships with the data
-already embedded, so it works when opened directly (file://) or served.
+The app needs no build step or server -- ``data.js`` ships with the data already
+present and is loaded by ``index.html`` (alongside ``styles.css`` / ``app.js``),
+so it works when served by Cloudflare Pages or opened directly (file://).
 """
 import json
 import math
@@ -22,7 +23,7 @@ import openpyxl
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 XLSX = HERE / "PerformanceXtra_Master_Sheet.xlsx"
-HTML = ROOT / "index.html"
+DATAJS = ROOT / "data.js"
 
 MASTER_SHEET = "Master Repository"
 OPTIONS_SHEET = "Dropdown Options"
@@ -87,11 +88,18 @@ def extract_activities(ws):
         if not link:
             missing_links += 1
 
+        topic = clean(cell(row, "Topic").value)
         subtopics = []
         for label in ("Subtopic 1", "Subtopic 2"):
             sub = clean(cell(row, label).value)
-            if sub and sub not in subtopics:
-                subtopics.append(sub)
+            if not sub or sub in subtopics:
+                continue
+            # T10 data-integrity: the Topics and Subtopics dropdowns share one
+            # vocabulary, so a subtopic that merely repeats the Topic is a
+            # redundant tag and makes the two filters ambiguous. Drop it.
+            if topic and sub.casefold() == topic.casefold():
+                continue
+            subtopics.append(sub)
 
         progression = clean(cell(row, "Progression").value)
         week = parse_week(progression)
@@ -101,7 +109,7 @@ def extract_activities(ws):
         activities.append({
             "id": clean(cell(row, "Activity ID").value),
             "name": name,
-            "topic": clean(cell(row, "Topic").value),
+            "topic": topic,
             "subtopics": subtopics,
             "type": clean(cell(row, "Content Type").value),
             "week": week,
@@ -173,24 +181,24 @@ def splice(html, start, end, payload):
 def main():
     if not XLSX.exists():
         sys.exit(f"ERROR: source spreadsheet not found at {XLSX}")
-    if not HTML.exists():
-        sys.exit(f"ERROR: index.html not found at {HTML}")
+    if not DATAJS.exists():
+        sys.exit(f"ERROR: data.js not found at {DATAJS}")
 
     wb = openpyxl.load_workbook(XLSX)
     activities, missing_links = extract_activities(wb[MASTER_SHEET])
     taxonomy = extract_taxonomy(wb[OPTIONS_SHEET])
 
-    # Dump JSON; neutralise any literal "</" so the data cannot terminate the
-    # surrounding <script> tag early (\/ is a valid JSON escape for /).
+    # Dump JSON; neutralise any literal "</" so an inlined copy could never
+    # terminate a surrounding <script> tag early (\/ is a valid JSON escape).
     data_json = json.dumps(activities, ensure_ascii=False, indent=2).replace("</", "<\\/")
     tax_json = json.dumps(taxonomy, ensure_ascii=False, indent=2).replace("</", "<\\/")
 
-    html = HTML.read_text(encoding="utf-8")
-    html = splice(html, "<!-- PX_DATA_START -->", "<!-- PX_DATA_END -->", data_json)
-    html = splice(html, "<!-- PX_TAXONOMY_START -->", "<!-- PX_TAXONOMY_END -->", tax_json)
-    HTML.write_text(html, encoding="utf-8")
+    js = DATAJS.read_text(encoding="utf-8")
+    js = splice(js, "/* PX_DATA_START */", "/* PX_DATA_END */", data_json)
+    js = splice(js, "/* PX_TAXONOMY_START */", "/* PX_TAXONOMY_END */", tax_json)
+    DATAJS.write_text(js, encoding="utf-8")
 
-    print(f"Wrote {HTML.relative_to(ROOT)}")
+    print(f"Wrote {DATAJS.relative_to(ROOT)}")
     print(f"  Activities:    {len(activities)}")
     print(f"  Missing links: {missing_links}")
     print(f"  Topics:        {len(taxonomy['topics'])}")
