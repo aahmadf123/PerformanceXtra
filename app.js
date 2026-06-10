@@ -1034,84 +1034,167 @@
   // Generate a polished single-assignment PDF block used by the all-assignments export.
   function appendAssignmentPdfBlock(doc, student, asg, ctx) {
     var pageW = ctx.pageW;
+    var pageH = ctx.pageH;
     var marginX = ctx.marginX;
     var lineH = ctx.lineH;
     var ensureSpace = ctx.ensureSpace;
+    var yRef = ctx.yRef;
 
-    var prompt = "";
-    var title = asg.title;
-    var createdLine = "Assigned: " + fmtDate(asg.createdAt) + (asg.dueAt ? "   Due: " + fmtDate(asg.dueAt) : "");
-    var itemsLine = "Items: " + asg.items.length;
-    var titleLines = doc.splitTextToSize(title, pageW - marginX * 2 - 24);
-    var createdLines = doc.splitTextToSize(createdLine, pageW - marginX * 2 - 24);
-    var itemsLines = doc.splitTextToSize(itemsLine, pageW - marginX * 2 - 24);
-    var noteLines = asg.note ? doc.splitTextToSize("Coach plan: " + asg.note, pageW - marginX * 2 - 24) : [];
-
-    var cardHeight = 24 + titleLines.length * lineH + createdLines.length * lineH + itemsLines.length * lineH + (noteLines.length ? 12 + noteLines.length * lineH : 0) + 16;
-    ensureSpace(cardHeight + 10);
-
-    var y = ctx.yRef.value;
-    doc.setDrawColor(203, 213, 225);
-    doc.setFillColor(248, 250, 252);
-    doc.roundedRect(marginX, y, pageW - marginX * 2, cardHeight, 8, 8, "FD");
-
-    var cy = y + 18;
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.text(titleLines, marginX + 12, cy);
-    cy += titleLines.length * lineH + 4;
-
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(9.5);
-    doc.text(createdLines, marginX + 12, cy);
-    cy += createdLines.length * lineH;
-    doc.text(itemsLines, marginX + 12, cy);
-    cy += itemsLines.length * lineH;
-
-    if (noteLines.length) {
-      cy += 6;
-      doc.setTextColor(51, 65, 85);
-      doc.text(noteLines, marginX + 12, cy);
-      doc.setTextColor(17, 24, 39);
+    function textBlock(lines, x, y, opts) {
+      opts = opts || {};
+      if (opts.font) doc.setFont("helvetica", opts.font);
+      if (opts.size) doc.setFontSize(opts.size);
+      if (opts.color) doc.setTextColor(opts.color[0], opts.color[1], opts.color[2]);
+      doc.text(lines, x, y);
+      if (opts.color) doc.setTextColor(17, 24, 39);
+      return y + (lines.length * lineH);
     }
 
-    ctx.yRef.value = y + cardHeight + 12;
+    function drawLinedBox(x, y, width, height) {
+      doc.setDrawColor(148, 163, 184);
+      doc.rect(x, y, width, height);
+      var lineY = y + 16;
+      while (lineY < y + height - 6) {
+        doc.line(x + 8, lineY, x + width - 8, lineY);
+        lineY += 16;
+      }
+    }
+
+    var title = asg.title;
+    var headerWidth = pageW - marginX * 2;
+    var titleLines = doc.splitTextToSize(title, headerWidth - 22);
+    var subLines = doc.splitTextToSize(
+      "Assigned " + fmtDate(asg.createdAt) + (asg.dueAt ? "  ·  Due " + fmtDate(asg.dueAt) : "") + "  ·  " + asg.items.length + " activities",
+      headerWidth - 22
+    );
+    var noteLines = asg.note ? doc.splitTextToSize(asg.note, headerWidth - 22) : [];
+    var headerHeight = 26 + (titleLines.length * lineH) + (subLines.length * lineH) + (noteLines.length ? (12 + noteLines.length * lineH) : 0);
+
+    var cardHeight = headerHeight + 14;
+    ensureSpace(cardHeight + 10);
+
+    var y = yRef.value;
+    doc.setDrawColor(163, 190, 36);
+    doc.setFillColor(244, 251, 220);
+    doc.roundedRect(marginX, y, headerWidth, headerHeight, 9, 9, "FD");
+
+    var cy = y + 18;
+    cy = textBlock(titleLines, marginX + 11, cy, { font: "bold", size: 12.5 });
+    cy += 2;
+    cy = textBlock(subLines, marginX + 11, cy, { font: "normal", size: 9.5, color: [55, 65, 81] });
+
+    if (noteLines.length) {
+      cy += 5;
+      cy = textBlock(["Coach plan:"], marginX + 11, cy, { font: "bold", size: 9.5, color: [194, 65, 12] });
+      cy = textBlock(noteLines, marginX + 11, cy + 1, { font: "normal", size: 9.2, color: [30, 41, 59] });
+    }
+
+    yRef.value = y + headerHeight + 12;
 
     asg.items.forEach(function (id, idx) {
       var a = BY_ID[id];
       if (!a) return;
-      prompt = a.reflection || "Write your reflection for this activity.";
-      var itemTitle = (idx + 1) + ". " + a.name;
-      var meta = [a.type || "Activity", a.topic || null, a.progression || null, a.time || null].filter(Boolean).join("  |  ");
-      var instructionText = a.instructions || "No additional instructions provided.";
-      var promptText = "Reflection prompt: " + prompt;
-      var itemTitleLines = doc.splitTextToSize(itemTitle, pageW - marginX * 2 - 24);
-      var metaLines = doc.splitTextToSize(meta, pageW - marginX * 2 - 24);
-      var instLines = doc.splitTextToSize("Instructions: " + instructionText, pageW - marginX * 2 - 24);
-      var promptLines = doc.splitTextToSize(promptText, pageW - marginX * 2 - 24);
 
-      var itemHeight = 18 + itemTitleLines.length * lineH + metaLines.length * lineH + instLines.length * lineH + promptLines.length * lineH + 22;
+      var prompt = a.reflection || "Write your reflection for this activity.";
+      var done = !!student.completed[id];
+      var doneText = done ? ("Completed on " + fmtDate(student.completed[id])) : "Not marked completed";
+      var itemTitle = (idx + 1) + ". " + a.name;
+      var meta = [
+        a.type || "Activity",
+        a.topic || null,
+        (a.subtopics || []).length ? ("Subtopics: " + a.subtopics.join(", ")) : null,
+        a.progression || null,
+        a.frequency || null,
+        a.time || null
+      ].filter(Boolean).join("  |  ");
+      var linkText = a.link || "No external link (coach-led or on-court activity)";
+      var instructionText = a.instructions || "No additional instructions provided.";
+      var existing = getReflectionEntry(student, asg.id, id);
+      var submittedLines = (existing && existing.text)
+        ? doc.splitTextToSize("Existing reflection: " + existing.text, headerWidth - 42)
+        : [];
+
+      var itemTitleLines = doc.splitTextToSize(itemTitle, headerWidth - 42);
+      var metaLines = doc.splitTextToSize(meta, headerWidth - 42);
+      var statusLines = doc.splitTextToSize("Status: " + doneText, headerWidth - 42);
+      var linkLines = doc.splitTextToSize("Resource link: " + linkText, headerWidth - 42);
+      var instLabel = ["Instructions:"];
+      var instLines = doc.splitTextToSize(instructionText, headerWidth - 42);
+      var promptLabel = ["Reflection prompt:"];
+      var promptLines = doc.splitTextToSize(prompt, headerWidth - 42);
+
+      var writingBoxH = 84;
+      var itemHeight = 28
+        + (itemTitleLines.length * lineH)
+        + (metaLines.length * lineH)
+        + (statusLines.length * lineH)
+        + (linkLines.length * lineH)
+        + lineH
+        + (instLines.length * lineH)
+        + lineH
+        + (promptLines.length * lineH)
+        + (submittedLines.length ? (lineH + submittedLines.length * lineH) : 0)
+        + 10
+        + writingBoxH
+        + 12;
+
       ensureSpace(itemHeight + 8);
 
-      var iy = ctx.yRef.value;
-      doc.setDrawColor(226, 232, 240);
-      doc.rect(marginX + 8, iy, pageW - marginX * 2 - 16, itemHeight);
-      var ty = iy + 14;
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10.5);
-      doc.text(itemTitleLines, marginX + 14, ty);
-      ty += itemTitleLines.length * lineH + 2;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(71, 85, 105);
-      doc.text(metaLines, marginX + 14, ty);
-      ty += metaLines.length * lineH + 2;
-      doc.setTextColor(17, 24, 39);
-      doc.text(instLines, marginX + 14, ty);
-      ty += instLines.length * lineH + 2;
-      doc.text(promptLines, marginX + 14, ty);
-      ctx.yRef.value = iy + itemHeight + 8;
+      var iy = yRef.value;
+      doc.setDrawColor(203, 213, 225);
+      doc.setFillColor(255, 255, 255);
+      doc.roundedRect(marginX, iy, headerWidth, itemHeight, 8, 8, "FD");
+
+      var ty = iy + 18;
+      ty = textBlock(itemTitleLines, marginX + 12, ty, { font: "bold", size: 10.5 });
+      ty += 1;
+      ty = textBlock(metaLines, marginX + 12, ty, { font: "normal", size: 8.7, color: [71, 85, 105] });
+      ty += 1;
+      ty = textBlock(statusLines, marginX + 12, ty, { font: "bold", size: 8.7, color: done ? [21, 128, 61] : [180, 83, 9] });
+      ty += 1;
+      ty = textBlock(linkLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [37, 99, 235] });
+      ty += 4;
+      ty = textBlock(instLabel, marginX + 12, ty, { font: "bold", size: 9.3 });
+      ty = textBlock(instLines, marginX + 12, ty, { font: "normal", size: 8.8 });
+      ty += 3;
+      ty = textBlock(promptLabel, marginX + 12, ty, { font: "bold", size: 9.3 });
+      ty = textBlock(promptLines, marginX + 12, ty, { font: "normal", size: 8.8 });
+
+      if (submittedLines.length) {
+        ty += 3;
+        ty = textBlock(submittedLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [15, 118, 110] });
+      }
+
+      ty += 6;
+      textBlock(["Reflection response:"], marginX + 12, ty, { font: "bold", size: 9.2 });
+      drawLinedBox(marginX + 12, ty + 4, headerWidth - 24, writingBoxH);
+
+      yRef.value = iy + itemHeight + 8;
     });
+
+    var asgReflection = getReflectionEntry(student, asg.id, "__assignment__");
+    var asgReflectionText = asgReflection && asgReflection.text
+      ? doc.splitTextToSize("Existing assignment reflection: " + asgReflection.text, headerWidth - 24)
+      : [];
+    var assignmentBoxH = 92 + (asgReflectionText.length ? (asgReflectionText.length * lineH + 8) : 0);
+    ensureSpace(assignmentBoxH + 10);
+    var ay = yRef.value;
+    doc.setDrawColor(251, 146, 60);
+    doc.setFillColor(255, 247, 237);
+    doc.roundedRect(marginX, ay, headerWidth, assignmentBoxH, 8, 8, "FD");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.8);
+    doc.text("Assignment-level reflection", marginX + 12, ay + 16);
+    if (asgReflectionText.length) {
+      textBlock(asgReflectionText, marginX + 12, ay + 30, { font: "normal", size: 8.5, color: [124, 45, 18] });
+    }
+    drawLinedBox(marginX + 12, ay + assignmentBoxH - 58, headerWidth - 24, 44);
+    yRef.value = ay + assignmentBoxH + 14;
+
+    ensureSpace(18);
+    doc.setDrawColor(226, 232, 240);
+    doc.line(marginX, yRef.value, pageW - marginX, yRef.value);
+    yRef.value += 10;
   }
 
   function downloadAllAssignmentsPdf(student) {
@@ -1183,6 +1266,7 @@
     list.forEach(function (asg) {
       appendAssignmentPdfBlock(doc, student, asg, {
         pageW: pageW,
+        pageH: pageH,
         marginX: marginX,
         lineH: lineH,
         yRef: yRef,
