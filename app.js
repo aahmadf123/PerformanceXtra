@@ -311,7 +311,15 @@
     if (done) student.completed[activityId] = new Date().toISOString();
     else delete student.completed[activityId];
     if (SERVER) {
-      api("/completions", { method: "POST", body: { activity_id: activityId, assignment_id: assignmentId || null, done: done } })
+      api("/completions", {
+        method: "POST",
+        body: {
+          activity_id: activityId,
+          assignment_id: assignmentId || null,
+          athlete_id: (state.session && state.session.role === "coach") ? student.id : null,
+          done: done
+        }
+      })
         .then(function (res) { if (!res.ok) toast(apiError(res, "Couldn't save — please retry")); })
         .catch(function () { toast("Couldn't reach the server"); });
     } else {
@@ -1023,13 +1031,97 @@
     downloadFile(filename, assignmentToText(student, asg), "text/plain");
     toast("Assignment downloaded (.txt)");
   }
-  // Generate a polished assignment PDF with printable reflection space.
-  function downloadAssignmentPdf(student, asg) {
+  // Generate a polished single-assignment PDF block used by the all-assignments export.
+  function appendAssignmentPdfBlock(doc, student, asg, ctx) {
+    var pageW = ctx.pageW;
+    var marginX = ctx.marginX;
+    var lineH = ctx.lineH;
+    var ensureSpace = ctx.ensureSpace;
+
+    var prompt = "";
+    var title = asg.title;
+    var createdLine = "Assigned: " + fmtDate(asg.createdAt) + (asg.dueAt ? "   Due: " + fmtDate(asg.dueAt) : "");
+    var itemsLine = "Items: " + asg.items.length;
+    var titleLines = doc.splitTextToSize(title, pageW - marginX * 2 - 24);
+    var createdLines = doc.splitTextToSize(createdLine, pageW - marginX * 2 - 24);
+    var itemsLines = doc.splitTextToSize(itemsLine, pageW - marginX * 2 - 24);
+    var noteLines = asg.note ? doc.splitTextToSize("Coach plan: " + asg.note, pageW - marginX * 2 - 24) : [];
+
+    var cardHeight = 24 + titleLines.length * lineH + createdLines.length * lineH + itemsLines.length * lineH + (noteLines.length ? 12 + noteLines.length * lineH : 0) + 16;
+    ensureSpace(cardHeight + 10);
+
+    var y = ctx.yRef.value;
+    doc.setDrawColor(203, 213, 225);
+    doc.setFillColor(248, 250, 252);
+    doc.roundedRect(marginX, y, pageW - marginX * 2, cardHeight, 8, 8, "FD");
+
+    var cy = y + 18;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text(titleLines, marginX + 12, cy);
+    cy += titleLines.length * lineH + 4;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.text(createdLines, marginX + 12, cy);
+    cy += createdLines.length * lineH;
+    doc.text(itemsLines, marginX + 12, cy);
+    cy += itemsLines.length * lineH;
+
+    if (noteLines.length) {
+      cy += 6;
+      doc.setTextColor(51, 65, 85);
+      doc.text(noteLines, marginX + 12, cy);
+      doc.setTextColor(17, 24, 39);
+    }
+
+    ctx.yRef.value = y + cardHeight + 12;
+
+    asg.items.forEach(function (id, idx) {
+      var a = BY_ID[id];
+      if (!a) return;
+      prompt = a.reflection || "Write your reflection for this activity.";
+      var itemTitle = (idx + 1) + ". " + a.name;
+      var meta = [a.type || "Activity", a.topic || null, a.progression || null, a.time || null].filter(Boolean).join("  |  ");
+      var instructionText = a.instructions || "No additional instructions provided.";
+      var promptText = "Reflection prompt: " + prompt;
+      var itemTitleLines = doc.splitTextToSize(itemTitle, pageW - marginX * 2 - 24);
+      var metaLines = doc.splitTextToSize(meta, pageW - marginX * 2 - 24);
+      var instLines = doc.splitTextToSize("Instructions: " + instructionText, pageW - marginX * 2 - 24);
+      var promptLines = doc.splitTextToSize(promptText, pageW - marginX * 2 - 24);
+
+      var itemHeight = 18 + itemTitleLines.length * lineH + metaLines.length * lineH + instLines.length * lineH + promptLines.length * lineH + 22;
+      ensureSpace(itemHeight + 8);
+
+      var iy = ctx.yRef.value;
+      doc.setDrawColor(226, 232, 240);
+      doc.rect(marginX + 8, iy, pageW - marginX * 2 - 16, itemHeight);
+      var ty = iy + 14;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10.5);
+      doc.text(itemTitleLines, marginX + 14, ty);
+      ty += itemTitleLines.length * lineH + 2;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      doc.text(metaLines, marginX + 14, ty);
+      ty += metaLines.length * lineH + 2;
+      doc.setTextColor(17, 24, 39);
+      doc.text(instLines, marginX + 14, ty);
+      ty += instLines.length * lineH + 2;
+      doc.text(promptLines, marginX + 14, ty);
+      ctx.yRef.value = iy + itemHeight + 8;
+    });
+  }
+
+  function downloadAllAssignmentsPdf(student) {
     if (!window.jspdf || !window.jspdf.jsPDF) {
-      toast("PDF generator unavailable, opening print view instead");
-      printAssignment(student, asg);
+      toast("PDF generator unavailable on this device");
       return;
     }
+
+    var list = studentAssignments(student);
+    if (!list.length) { toast("No assignments to download"); return; }
 
     var jsPDF = window.jspdf.jsPDF;
     var doc = new jsPDF({ unit: "pt", format: "letter" });
@@ -1038,13 +1130,13 @@
     var marginX = 44;
     var topY = 44;
     var bottomY = pageH - 54;
-    var y = topY;
+    var yRef = { value: topY };
     var lineH = 14;
 
     function ensureSpace(heightNeeded) {
-      if (y + heightNeeded <= bottomY) return;
+      if (yRef.value + heightNeeded <= bottomY) return;
       doc.addPage();
-      y = topY;
+      yRef.value = topY;
       drawRunningHeader();
     }
 
@@ -1073,117 +1165,29 @@
     drawRunningHeader();
 
     doc.setFillColor(201, 242, 78);
-    doc.roundedRect(marginX, y, pageW - marginX * 2, 86, 12, 12, "F");
+    doc.roundedRect(marginX, yRef.value, pageW - marginX * 2, 86, 12, 12, "F");
     doc.setFont("helvetica", "bold");
     doc.setFontSize(18);
     doc.setTextColor(20, 24, 10);
-    doc.text(asg.title, marginX + 16, y + 28);
+    doc.text("Assigned Workouts", marginX + 16, yRef.value + 28);
 
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text("Student: " + student.name, marginX + 16, y + 48);
-    doc.text("Assigned: " + fmtDate(asg.createdAt) + (asg.dueAt ? "   Due: " + fmtDate(asg.dueAt) : ""), marginX + 16, y + 64);
-    doc.text("Items: " + asg.items.length, marginX + 16, y + 78);
+    doc.text("Student: " + student.name, marginX + 16, yRef.value + 48);
+    doc.text("Workouts: " + list.length, marginX + 16, yRef.value + 64);
+    doc.text("Generated: " + fmtDate(new Date().toISOString()), marginX + 16, yRef.value + 78);
 
-    y += 106;
+    yRef.value += 106;
     doc.setTextColor(17, 24, 39);
 
-    if (asg.note) {
-      var noteText = doc.splitTextToSize(asg.note, pageW - marginX * 2 - 20);
-      var noteHeight = Math.max(44, noteText.length * lineH + 20);
-      ensureSpace(noteHeight + 10);
-      doc.setDrawColor(249, 115, 22);
-      doc.setFillColor(255, 247, 237);
-      doc.roundedRect(marginX, y, pageW - marginX * 2, noteHeight, 8, 8, "FD");
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(11);
-      doc.text("Coach Plan", marginX + 12, y + 18);
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(10);
-      doc.text(noteText, marginX + 12, y + 34);
-      y += noteHeight + 14;
-    }
-
-    asg.items.forEach(function (id, idx) {
-      var a = BY_ID[id];
-      if (!a) return;
-
-      var prompt = a.reflection || "Write your reflection for this activity.";
-      var title = (idx + 1) + ". " + a.name;
-      var meta = [a.type || "Activity", a.topic || null, a.progression || null, a.time || null].filter(Boolean).join("  |  ");
-      var linkText = a.link || "No external link (coach-led or on-court task)";
-      var instructionText = a.instructions || "No additional instructions provided.";
-      var existing = getReflectionEntry(student, asg.id, id);
-
-      var titleLines = doc.splitTextToSize(title, pageW - marginX * 2 - 24);
-      var metaLines = doc.splitTextToSize(meta, pageW - marginX * 2 - 24);
-      var linkLines = doc.splitTextToSize("Resource: " + linkText, pageW - marginX * 2 - 24);
-      var instructionLines = doc.splitTextToSize("Instructions: " + instructionText, pageW - marginX * 2 - 24);
-      var promptLines = doc.splitTextToSize("Reflection prompt: " + prompt, pageW - marginX * 2 - 24);
-
-      var headerHeight = 18 + titleLines.length * lineH + metaLines.length * lineH + linkLines.length * lineH;
-      var instHeight = 16 + instructionLines.length * lineH;
-      var promptHeight = 16 + promptLines.length * lineH;
-      var reflectionBlockH = existing && existing.text ? 18 + doc.splitTextToSize("Submitted reflection: " + existing.text, pageW - marginX * 2 - 24).length * lineH : 0;
-      var writingBoxH = 104;
-      var cardHeight = headerHeight + instHeight + promptHeight + reflectionBlockH + writingBoxH + 36;
-
-      ensureSpace(cardHeight + 10);
-
-      doc.setDrawColor(203, 213, 225);
-      doc.setFillColor(248, 250, 252);
-      doc.roundedRect(marginX, y, pageW - marginX * 2, cardHeight, 8, 8, "FD");
-
-      var cy = y + 20;
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12);
-      doc.text(titleLines, marginX + 12, cy);
-      cy += titleLines.length * lineH + 4;
-
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9);
-      doc.setTextColor(71, 85, 105);
-      doc.text(metaLines, marginX + 12, cy);
-      cy += metaLines.length * lineH;
-      doc.text(linkLines, marginX + 12, cy);
-      cy += linkLines.length * lineH + 8;
-      doc.setTextColor(17, 24, 39);
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      doc.text("Plan", marginX + 12, cy);
-      cy += 14;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9.5);
-      doc.text(instructionLines, marginX + 12, cy);
-      cy += instructionLines.length * lineH + 10;
-
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(10);
-      doc.text("Reflection", marginX + 12, cy);
-      cy += 14;
-      doc.setFont("helvetica", "normal");
-      doc.setFontSize(9.5);
-      doc.text(promptLines, marginX + 12, cy);
-      cy += promptLines.length * lineH + 10;
-
-      if (existing && existing.text) {
-        var submittedLines = doc.splitTextToSize("Submitted reflection: " + existing.text, pageW - marginX * 2 - 24);
-        doc.setTextColor(15, 118, 110);
-        doc.text(submittedLines, marginX + 12, cy);
-        cy += submittedLines.length * lineH + 8;
-        doc.setTextColor(17, 24, 39);
-      }
-
-      doc.setDrawColor(148, 163, 184);
-      doc.rect(marginX + 12, cy, pageW - marginX * 2 - 24, writingBoxH);
-      var lineY = cy + 18;
-      for (var l = 0; l < 5; l++) {
-        doc.line(marginX + 18, lineY, pageW - marginX * 2 - 18, lineY);
-        lineY += 18;
-      }
-
-      y += cardHeight + 12;
+    list.forEach(function (asg) {
+      appendAssignmentPdfBlock(doc, student, asg, {
+        pageW: pageW,
+        marginX: marginX,
+        lineH: lineH,
+        yRef: yRef,
+        ensureSpace: ensureSpace
+      });
     });
 
     var totalPages = doc.getNumberOfPages();
@@ -1193,9 +1197,9 @@
     }
 
     var date = new Date().toISOString().slice(0, 10);
-    var filename = "performancextra-" + safeFilePart(student.name) + "-" + safeFilePart(asg.title) + "-" + date + ".pdf";
+    var filename = "performancextra-" + safeFilePart(student.name) + "-all-assignments-" + date + ".pdf";
     doc.save(filename);
-    toast("Assignment downloaded (.pdf)");
+    toast("All assignments downloaded (.pdf)");
   }
 
   function downloadAllAssignmentsTxt(student) {
@@ -1411,9 +1415,6 @@
       var card = el("div", { class: "assignment" });
 
       var actions = el("div", { class: "assignment-actions" });
-      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Print assignment", "aria-label": "Print assignment", onclick: function () { printAssignment(s, asg); } }, "🖨"));
-      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Download assignment as .pdf", "aria-label": "Download assignment as PDF", onclick: function () { downloadAssignmentPdf(s, asg); } }, "⬇ PDF"));
-      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Download assignment as .txt", "aria-label": "Download assignment as text", onclick: function () { downloadAssignmentTxt(s, asg); } }, "⬇ TXT"));
       if (opts.admin) {
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", "aria-label": "Delete assignment", onclick: function () {
           if (confirm("Delete assignment “" + asg.title + "”?")) { deleteAssignmentFlow(s.id, asg.id); }
@@ -1447,11 +1448,11 @@
           el("strong", {}, a.name), a.time ? (" · " + a.time) : "", a.type ? (" · " + a.type) : ""
         ]));
         if (a.link) item.appendChild(el("a", { class: "btn btn--sm", href: a.link, target: "_blank", rel: "noopener" }, "Open ↗"));
-        if (opts.actionable) {
+        if (opts.actionable || opts.admin) {
           var btn = el("button", { class: "btn btn--sm done-btn", "aria-pressed": done ? "true" : "false", onclick: function () {
             setCompletion(s, id, !s.completed[id], asg.id);
             renderAll();
-          } }, done ? "✓ Done" : "Mark done");
+          } }, done ? "✓ Done" : (opts.admin ? "Mark done" : "Mark done"));
           item.appendChild(btn);
         }
         // Show the activity's instructions & reflection inline so the athlete (and
@@ -1563,6 +1564,7 @@
       return;
     }
     var headActions = el("div", { class: "section-head-actions" }, [
+      el("button", { class: "btn btn--sm", title: "Download all assignments as .pdf", onclick: function () { downloadAllAssignmentsPdf(s); } }, "⬇ Download all as PDF"),
       el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT"),
       el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
     ]);
@@ -1600,12 +1602,6 @@
         el("p", {}, "Ask your coach to set you up. (Coach? Use “Admin login”, top right.)")
       ])));
       return;
-    }
-    var asgList = studentAssignments(s);
-    if (asgList.length) {
-      panel.appendChild(el("div", { class: "workouts-toolbar" }, [
-        el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT")
-      ]));
     }
     appendAssignmentList(panel, s, { actionable: true });
   }

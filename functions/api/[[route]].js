@@ -511,28 +511,41 @@ async function handleDeleteAssignment(session, env, asgId) {
 }
 
 async function handleCompletions(session, request, env) {
-  if (session.role !== "athlete") return err(403, "Only athletes can mark their own work done");
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
   const assignmentId = b.assignment_id || b.assignmentId || null;
+  const athleteIdInput = String(b.athlete_id || b.athleteId || "").trim();
   const done = b.done !== false;     // default: mark done
   if (!activityId) return err(400, "activity_id is required");
+
+  var athleteId = session.uid;
+  if (session.role === "coach") {
+    athleteId = athleteIdInput;
+    if (!athleteId) return err(400, "athlete_id is required for coach updates");
+    const ownsAthlete = await env.DB.prepare(
+      "SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'"
+    ).bind(athleteId, session.uid).first();
+    if (!ownsAthlete) return err(403, "Not your athlete");
+  } else if (session.role !== "athlete") {
+    return err(403, "Only athletes or their coach can mark work done");
+  }
+
   if (assignmentId) {
-    const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND athlete_id = ?").bind(assignmentId, session.uid).first();
-    if (!owns) return err(403, "Not your assignment");
+    const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND athlete_id = ?").bind(assignmentId, athleteId).first();
+    if (!owns) return err(403, "Assignment not found for this athlete");
   }
   if (done) {
     if (assignmentId) {
       await env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)")
-        .bind(session.uid, activityId, assignmentId, nowSec()).run();
+        .bind(athleteId, activityId, assignmentId, nowSec()).run();
     } else {
-      const ex = await env.DB.prepare("SELECT 1 AS x FROM completions WHERE athlete_id = ? AND activity_id = ? AND assignment_id IS NULL").bind(session.uid, activityId).first();
-      if (!ex) await env.DB.prepare("INSERT INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(session.uid, activityId, null, nowSec()).run();
+      const ex = await env.DB.prepare("SELECT 1 AS x FROM completions WHERE athlete_id = ? AND activity_id = ? AND assignment_id IS NULL").bind(athleteId, activityId).first();
+      if (!ex) await env.DB.prepare("INSERT INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, activityId, null, nowSec()).run();
     }
   } else {
-    await env.DB.prepare("DELETE FROM completions WHERE athlete_id = ? AND activity_id = ?").bind(session.uid, activityId).run();
+    await env.DB.prepare("DELETE FROM completions WHERE athlete_id = ? AND activity_id = ?").bind(athleteId, activityId).run();
   }
-  return json({ ok: true, done: done });
+  return json({ ok: true, done: done, athlete_id: athleteId });
 }
 
 async function handleReflections(session, request, env) {
