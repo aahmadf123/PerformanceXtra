@@ -178,10 +178,20 @@ async function assembleAthlete(env, row) {
       items: (items.results || []).map(function (x) { return x.activity_id; })
     });
   }
+
+  const reflections = {};
+  const refl = await env.DB.prepare(
+    "SELECT assignment_id, activity_id, text, updated_at FROM reflections WHERE athlete_id = ?"
+  ).bind(row.id).all();
+  (refl.results || []).forEach(function (r) {
+    const key = String(r.assignment_id || "") + "::" + String(r.activity_id || "");
+    reflections[key] = { text: r.text || "", updatedAt: epochToIso(r.updated_at || nowSec()) };
+  });
+
   return {
     id: row.id, name: row.name, email: row.email || null,
     createdAt: epochToIso(row.created_at || nowSec()),
-    completed: completed, assignments: assignments
+    completed: completed, assignments: assignments, reflections: reflections
   };
 }
 async function loadCustom(env, coachId) {
@@ -256,6 +266,7 @@ async function route(method, path, request, env, url, secure) {
   if (method === "GET" && path === "/activities") return handleListBaseActivities(env);
   if (method === "GET" && path === "/bootstrap") return handleBootstrap(session, env);
   if (method === "POST" && path === "/completions") return handleCompletions(session, request, env);
+  if (method === "POST" && path === "/reflections") return handleReflections(session, request, env);
 
   if (head === "assignments") {
     if (method === "GET" && seg.length === 1) return handleListAssignments(session, env, url);
@@ -492,6 +503,7 @@ async function handleDeleteAssignment(session, env, asgId) {
   if (!row) return err(404, "Assignment not found");
   await env.DB.batch([
     env.DB.prepare("DELETE FROM completions WHERE assignment_id = ?").bind(asgId),
+    env.DB.prepare("DELETE FROM reflections WHERE assignment_id = ?").bind(asgId),
     env.DB.prepare("DELETE FROM assignment_items WHERE assignment_id = ?").bind(asgId),
     env.DB.prepare("DELETE FROM assignments WHERE id = ?").bind(asgId)
   ]);
@@ -521,6 +533,33 @@ async function handleCompletions(session, request, env) {
     await env.DB.prepare("DELETE FROM completions WHERE athlete_id = ? AND activity_id = ?").bind(session.uid, activityId).run();
   }
   return json({ ok: true, done: done });
+}
+
+async function handleReflections(session, request, env) {
+  if (session.role !== "athlete") return err(403, "Only athletes can submit reflections");
+  const b = await readBody(request);
+  const activityId = String(b.activity_id || b.activityId || "").trim();
+  const assignmentId = String(b.assignment_id || b.assignmentId || "").trim();
+  const text = String(b.text || "").trim();
+  if (!activityId) return err(400, "activity_id is required");
+
+  if (assignmentId) {
+    const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND athlete_id = ?").bind(assignmentId, session.uid).first();
+    if (!owns) return err(403, "Not your assignment");
+  }
+
+  if (!text) {
+    await env.DB.prepare(
+      "DELETE FROM reflections WHERE athlete_id = ? AND assignment_id = ? AND activity_id = ?"
+    ).bind(session.uid, assignmentId, activityId).run();
+    return json({ ok: true, cleared: true, updatedAt: epochToIso(nowSec()) });
+  }
+
+  await env.DB.prepare(
+    "INSERT INTO reflections (athlete_id,assignment_id,activity_id,text,updated_at) VALUES (?,?,?,?,?) " +
+    "ON CONFLICT(athlete_id,assignment_id,activity_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at"
+  ).bind(session.uid, assignmentId, activityId, text, nowSec()).run();
+  return json({ ok: true, updatedAt: epochToIso(nowSec()) });
 }
 
 async function handleListCustom(session, env) {
@@ -629,6 +668,23 @@ async function handleImport(session, request, env) {
       summary.completions++;
     });
     if (compStmts.length) await env.DB.batch(compStmts);
+
+    const reflections = (s.reflections && typeof s.reflections === "object") ? s.reflections : {};
+    const reflStmts = [];
+    Object.keys(reflections).forEach(function (k) {
+      const entry = reflections[k];
+      const txt = (entry && typeof entry === "object") ? String(entry.text || "").trim() : String(entry || "").trim();
+      if (!txt) return;
+      const parts = k.split("::");
+      const asgId = parts[0] || "";
+      const aid = parts.slice(1).join("::");
+      if (!aid) return;
+      const ts = (entry && typeof entry === "object" && entry.updatedAt) ? isoOrEpochToEpoch(entry.updatedAt) : nowSec();
+      reflStmts.push(env.DB.prepare(
+        "INSERT OR REPLACE INTO reflections (athlete_id,assignment_id,activity_id,text,updated_at) VALUES (?,?,?,?,?)"
+      ).bind(athleteId, asgId, aid, txt, ts || nowSec()));
+    });
+    if (reflStmts.length) await env.DB.batch(reflStmts);
   }
   return json({ ok: true, summary: summary });
 }

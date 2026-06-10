@@ -223,11 +223,12 @@
       if (obj.hidden && typeof obj.hidden === "object") s.hidden = obj.hidden;
       if (obj.settings && obj.settings.passcodeHash) s.settings.passcodeHash = obj.settings.passcodeHash;
     }
-    // Every student needs a completed map and an assignments array.
+    // Every student needs completed, assignments, and per-item reflections.
     Object.keys(s.students).forEach(function (id) {
       var st = s.students[id];
       if (!st.completed || typeof st.completed !== "object") st.completed = {};
       if (!Array.isArray(st.assignments)) st.assignments = [];
+      if (!st.reflections || typeof st.reflections !== "object") st.reflections = {};
     });
     return s;
   }
@@ -319,6 +320,71 @@
     }
   }
 
+  function reflectionKey(assignmentId, activityId) {
+    return String(assignmentId || "") + "::" + String(activityId || "");
+  }
+  function ensureReflections(student) {
+    if (!student.reflections || typeof student.reflections !== "object") student.reflections = {};
+    return student.reflections;
+  }
+  function getReflectionEntry(student, assignmentId, activityId) {
+    var map = ensureReflections(student);
+    return map[reflectionKey(assignmentId, activityId)] || null;
+  }
+  function setReflectionEntry(student, assignmentId, activityId, text, updatedAt) {
+    var map = ensureReflections(student);
+    var key = reflectionKey(assignmentId, activityId);
+    var clean = String(text || "").trim();
+    if (!clean) {
+      delete map[key];
+      return;
+    }
+    map[key] = { text: clean, updatedAt: updatedAt || new Date().toISOString() };
+  }
+  function fmtDateTime(iso) {
+    try {
+      return new Date(iso).toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "numeric", minute: "2-digit"
+      });
+    } catch (e) {
+      return (iso || "").slice(0, 16).replace("T", " ");
+    }
+  }
+  function saveReflectionFlow(student, assignmentId, activityId, text, onDone) {
+    if (!student) { if (onDone) onDone(false, "No student selected"); return; }
+    var key = reflectionKey(assignmentId, activityId);
+    var prev = getReflectionEntry(student, assignmentId, activityId);
+    setReflectionEntry(student, assignmentId, activityId, text);
+
+    if (!SERVER) {
+      saveTracking();
+      if (onDone) onDone(true);
+      return;
+    }
+    if (!state.session || state.session.role !== "athlete") {
+      if (prev) ensureReflections(student)[key] = prev; else delete ensureReflections(student)[key];
+      if (onDone) onDone(false, "Only athletes can submit reflections");
+      return;
+    }
+    api("/reflections", {
+      method: "POST",
+      body: { assignment_id: assignmentId, activity_id: activityId, text: String(text || "") }
+    }).then(function (res) {
+      if (!res.ok) {
+        if (prev) ensureReflections(student)[key] = prev; else delete ensureReflections(student)[key];
+        if (onDone) onDone(false, apiError(res, "Couldn't save reflection"));
+        return;
+      }
+      var entry = getReflectionEntry(student, assignmentId, activityId);
+      if (entry && res.data && res.data.updatedAt) entry.updatedAt = res.data.updatedAt;
+      if (onDone) onDone(true);
+    }).catch(function () {
+      if (prev) ensureReflections(student)[key] = prev; else delete ensureReflections(student)[key];
+      if (onDone) onDone(false, "Couldn't reach the server");
+    });
+  }
+
   function toggleComplete(activityId) {
     var s = activeStudent();
     if (!s) { toast("Select a student first"); return false; }
@@ -335,7 +401,7 @@
     name = (name || "").trim();
     if (!name) return null;
     var id = genId();
-    students()[id] = { id: id, name: name, createdAt: new Date().toISOString(), completed: {}, assignments: [] };
+    students()[id] = { id: id, name: name, createdAt: new Date().toISOString(), completed: {}, assignments: [], reflections: {} };
     if (!state.tracking.activeStudentId) state.tracking.activeStudentId = id;
     saveTracking();
     return id;
@@ -365,6 +431,10 @@
     var s = students()[studentId];
     if (!s || !Array.isArray(s.assignments)) return;
     s.assignments = s.assignments.filter(function (a) { return a.id !== asgId; });
+    var map = ensureReflections(s);
+    Object.keys(map).forEach(function (k) {
+      if (k.indexOf(asgId + "::") === 0) delete map[k];
+    });
     saveTracking();
   }
   function assignmentProgress(s, asg) {
@@ -547,6 +617,7 @@
     view: "student",        // "admin" once authed; "student" otherwise (or coach preview)
     session: null,          // server-trusted {id,name,role} when SERVER mode is active
     showHidden: false,      // admin toggle to surface hidden activities in the repo
+    reflectionTimers: {},
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
     workout: { criteria: null, results: [] },
     tracking: loadStore()
@@ -917,6 +988,46 @@
     }
     return Promise.resolve(legacyCopy(text));
   }
+
+  function assignmentToText(student, asg) {
+    var lines = [];
+    lines.push("PERFORMANCEXTRA — ASSIGNED WORKOUT");
+    lines.push("Athlete: " + student.name);
+    lines.push("Assignment: " + asg.title);
+    lines.push("Assigned: " + fmtDate(asg.createdAt) + (asg.dueAt ? " · Due: " + fmtDate(asg.dueAt) : ""));
+    if (asg.note) {
+      lines.push("");
+      lines.push("Coach note:");
+      lines.push(asg.note);
+    }
+    lines.push("");
+    asg.items.forEach(function (id, idx) {
+      var a = BY_ID[id];
+      if (!a) return;
+      var meta = [a.type || "—", a.time || ""].filter(Boolean).join(", ");
+      lines.push((idx + 1) + ". " + a.name + " [" + meta + "]");
+      lines.push("   Status: " + (student.completed[id] ? "Completed" : "Pending"));
+      lines.push("   Link: " + (a.link || "No link (on-court)"));
+      if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
+      if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
+      var refl = getReflectionEntry(student, asg.id, id);
+      if (refl && refl.text) {
+        lines.push("   Student reflection: " + refl.text.replace(/\n/g, "\n      "));
+        lines.push("   Reflection updated: " + fmtDateTime(refl.updatedAt));
+      }
+      lines.push("");
+    });
+    return lines.join("\n");
+  }
+  function safeFilePart(v) {
+    return String(v || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "assignment";
+  }
+  function downloadAssignmentTxt(student, asg) {
+    var date = new Date().toISOString().slice(0, 10);
+    var filename = "performancextra-" + safeFilePart(student.name) + "-" + safeFilePart(asg.title) + "-" + date + ".txt";
+    downloadFile(filename, assignmentToText(student, asg), "text/plain");
+    toast("Assignment downloaded (.txt)");
+  }
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
     ta.style.position = "fixed"; ta.style.opacity = "0";
@@ -1075,26 +1186,100 @@
         el("div", {}, [el("div", { class: "detail-label", style: "margin-bottom:8px" }, "By progression"), bars(p.byWeek)])
       ]));
 
-      container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
-      var cl = el("div", { class: "completed-list" });
-      Object.keys(s.completed)
-        .sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); })
-        .forEach(function (aid) {
-          var a = BY_ID[aid];
-          if (!a) return;
-          var canUndo = !SERVER || (state.session && state.session.role === "athlete");
-          cl.appendChild(el("div", { class: "completed-row" }, [
-            el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
-            el("span", { class: "c-name" }, a.name),
-            canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
-              setCompletion(s, aid, false, null); renderAll();
-            } }, "Undo") : null
-          ]));
-        });
-      container.appendChild(cl);
+      var canUndo = !SERVER || (state.session && state.session.role === "athlete");
+      var showCondensedAdmin = isAdminView() && (!SERVER || (state.session && state.session.role === "coach"));
+      if (showCondensedAdmin) {
+        container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed workouts"));
+        appendCondensedCompleted(container, s, canUndo);
+      } else {
+        container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
+        var cl = el("div", { class: "completed-list" });
+        Object.keys(s.completed)
+          .sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); })
+          .forEach(function (aid) {
+            var a = BY_ID[aid];
+            if (!a) return;
+            cl.appendChild(el("div", { class: "completed-row" }, [
+              el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
+              el("span", { class: "c-name" }, a.name),
+              canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
+                setCompletion(s, aid, false, null); renderAll();
+              } }, "Undo") : null
+            ]));
+          });
+        container.appendChild(cl);
+      }
     } else {
       container.appendChild(el("p", { class: "no-link" }, "No activities completed yet."));
     }
+  }
+
+  function appendCondensedCompleted(container, s, canUndo) {
+    var wrap = el("div", { class: "completed-groups" });
+    var covered = {};
+    var groups = 0;
+    studentAssignments(s).forEach(function (asg) {
+      var doneIds = (asg.items || []).filter(function (id) { return !!s.completed[id] && !!BY_ID[id]; });
+      if (!doneIds.length) return;
+      groups++;
+      doneIds.forEach(function (id) { covered[id] = true; });
+      var latest = doneIds.map(function (id) { return s.completed[id]; }).filter(Boolean).sort().slice(-1)[0] || null;
+
+      var det = el("details", { class: "completed-group" });
+      det.appendChild(el("summary", { class: "completed-group-summary" }, [
+        el("span", { class: "cg-title" }, asg.title),
+        el("span", { class: "cg-meta" }, doneIds.length + " / " + (asg.items || []).length + " done" + (latest ? " · Last " + fmtDate(latest) : ""))
+      ]));
+
+      var body = el("div", { class: "completed-group-body" });
+      doneIds.sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); });
+      doneIds.forEach(function (aid) {
+        var a = BY_ID[aid];
+        if (!a) return;
+        body.appendChild(el("div", { class: "completed-row" }, [
+          el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
+          el("span", { class: "c-name" }, a.name),
+          el("span", { class: "c-date" }, fmtDate(s.completed[aid])),
+          canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
+            setCompletion(s, aid, false, asg.id); renderAll();
+          } }, "Undo") : null
+        ]));
+      });
+      det.appendChild(body);
+      wrap.appendChild(det);
+    });
+
+    var extras = Object.keys(s.completed).filter(function (id) { return !!BY_ID[id] && !covered[id]; });
+    if (extras.length) {
+      groups++;
+      var ex = el("details", { class: "completed-group" });
+      ex.appendChild(el("summary", { class: "completed-group-summary" }, [
+        el("span", { class: "cg-title" }, "Completed outside assignments"),
+        el("span", { class: "cg-meta" }, String(extras.length))
+      ]));
+      var exBody = el("div", { class: "completed-group-body" });
+      extras.sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); });
+      extras.forEach(function (aid) {
+        var a = BY_ID[aid];
+        if (!a) return;
+        exBody.appendChild(el("div", { class: "completed-row" }, [
+          el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
+          el("span", { class: "c-name" }, a.name),
+          el("span", { class: "c-date" }, fmtDate(s.completed[aid])),
+          canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
+            setCompletion(s, aid, false, null); renderAll();
+          } }, "Undo") : null
+        ]));
+      });
+      ex.appendChild(exBody);
+      wrap.appendChild(ex);
+    }
+
+    if (!groups) {
+      container.appendChild(el("p", { class: "no-link" }, "No workouts completed yet."));
+      return;
+    }
+    container.appendChild(wrap);
   }
 
   // Render a student's assignments. opts.admin adds a delete control; opts.actionable
@@ -1116,6 +1301,7 @@
 
       var actions = el("div", { class: "assignment-actions" });
       actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Print / Save as PDF", "aria-label": "Print assignment", onclick: function () { printAssignment(s, asg); } }, "🖨"));
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Download assignment as .txt", "aria-label": "Download assignment as text", onclick: function () { downloadAssignmentTxt(s, asg); } }, "⬇ TXT"));
       if (opts.admin) {
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", "aria-label": "Delete assignment", onclick: function () {
           if (confirm("Delete assignment “" + asg.title + "”?")) { deleteAssignmentFlow(s.id, asg.id); }
@@ -1164,6 +1350,47 @@
           if (a.instructions) det.appendChild(detailBlock("Instructions", a.instructions));
           if (a.reflection) det.appendChild(detailBlock("Reflection prompt", a.reflection));
           item.appendChild(det);
+        }
+        if (a.reflection && opts.actionable) {
+          var existing = getReflectionEntry(s, asg.id, id);
+          var ta = el("textarea", {
+            class: "reflection-input",
+            placeholder: "Type your reflection response here...",
+            "aria-label": "Reflection response for " + a.name
+          });
+          ta.value = existing && existing.text ? existing.text : "";
+          var status = el("div", { class: "reflection-status" }, existing && existing.updatedAt
+            ? ("Saved " + fmtDateTime(existing.updatedAt))
+            : "Not submitted yet");
+          ta.addEventListener("input", function () {
+            var timerKey = [s.id, asg.id, id].join("::");
+            clearTimeout(state.reflectionTimers[timerKey]);
+            status.textContent = "Saving...";
+            state.reflectionTimers[timerKey] = setTimeout(function () {
+              saveReflectionFlow(s, asg.id, id, ta.value, function (ok, msg) {
+                if (ok) {
+                  var latest = getReflectionEntry(s, asg.id, id);
+                  status.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Not submitted yet";
+                } else {
+                  status.textContent = msg || "Could not save";
+                  toast(msg || "Couldn't save reflection");
+                }
+              });
+            }, 450);
+          });
+          item.appendChild(el("div", { class: "reflection-box" }, [
+            el("div", { class: "detail-label" }, "Your reflection"),
+            ta,
+            status
+          ]));
+        }
+        if (a.reflection && opts.admin) {
+          var submitted = getReflectionEntry(s, asg.id, id);
+          item.appendChild(el("div", { class: "reflection-read" }, [
+            el("div", { class: "detail-label" }, "Student reflection"),
+            el("div", { class: "detail-text" }, submitted && submitted.text ? submitted.text : "No reflection submitted yet."),
+            submitted && submitted.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(submitted.updatedAt)) : null
+          ]));
         }
         card.appendChild(item);
       });
@@ -1244,6 +1471,27 @@
         return;
       }
       incoming = normalizeStore(incoming);   // upgrade v1 / fill missing fields
+      function reflTs(entry) {
+        if (!entry || !entry.updatedAt) return 0;
+        var t = Date.parse(entry.updatedAt);
+        return isNaN(t) ? 0 : t;
+      }
+      function mergeReflections(target, incomingMap) {
+        var t = target && typeof target === "object" ? target : {};
+        var inc = incomingMap && typeof incomingMap === "object" ? incomingMap : {};
+        Object.keys(inc).forEach(function (k) {
+          var incomingEntry = inc[k];
+          if (!incomingEntry || !String(incomingEntry.text || "").trim()) return;
+          var current = t[k];
+          if (!current || reflTs(incomingEntry) >= reflTs(current)) {
+            t[k] = {
+              text: String(incomingEntry.text || "").trim(),
+              updatedAt: incomingEntry.updatedAt || new Date().toISOString()
+            };
+          }
+        });
+        return t;
+      }
       if (pendingImportMode === "replace") {
         // Keep the current passcode unless the backup carries one.
         if (!incoming.settings.passcodeHash) incoming.settings.passcodeHash = passcodeHash();
@@ -1263,6 +1511,7 @@
           var have = {};
           (existing.assignments || []).forEach(function (x) { have[x.id] = true; });
           (inc.assignments || []).forEach(function (x) { if (!have[x.id]) existing.assignments.push(x); });
+          existing.reflections = mergeReflections(existing.reflections, inc.reflections);
         });
         if (!cur.activeStudentId && incoming.activeStudentId) cur.activeStudentId = incoming.activeStudentId;
         // Bring over custom activities the current device doesn't have.

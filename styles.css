@@ -389,6 +389,14 @@
   .completed-list { display: flex; flex-direction: column; gap: 7px; max-height: 360px; overflow: auto; }
   .completed-row { display: flex; align-items: center; gap: 11px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: .86rem; background: var(--surface-2); }
   .completed-row .c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .completed-row .c-date { color: var(--muted); font-size: .74rem; font-family: var(--mono); white-space: nowrap; }
+  .completed-groups { display: flex; flex-direction: column; gap: 8px; }
+  .completed-group { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; }
+  .completed-group-summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; font-size: .84rem; }
+  .completed-group-summary::-webkit-details-marker { display: none; }
+  .completed-group-summary .cg-title { font-weight: 700; color: var(--ink); }
+  .completed-group-summary .cg-meta { color: var(--muted); font-size: .76rem; font-family: var(--mono); }
+  .completed-group-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 7px; }
   .note-banner { background: var(--surface-2); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); color: var(--ink-soft); padding: 13px 17px; border-radius: var(--radius-sm); font-size: .86rem; margin-bottom: 20px; }
   .note-banner strong { color: var(--ink); }
   .backup-bar { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -504,6 +512,9 @@
   .assign-item details.detail { flex-basis:100%; }
   .assign-item.is-done .ai-name { color: var(--muted); }
   .assign-item.is-done .ai-name strong { text-decoration: line-through; }
+  .reflection-box, .reflection-read { flex-basis: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); padding: 10px 12px; margin-top: 2px; }
+  .reflection-input { width: 100%; min-height: 88px; margin-top: 6px; }
+  .reflection-status { margin-top: 6px; font-size: .74rem; color: var(--muted); }
 
   /* ---------- Sections / toolbars ---------- */
   .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:6px 0 14px; flex-wrap:wrap; }

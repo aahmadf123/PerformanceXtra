@@ -81,3 +81,15 @@ CREATE TABLE IF NOT EXISTS completions (
   completed_at  INTEGER NOT NULL,
   PRIMARY KEY (athlete_id, activity_id)
 );
+
+-- Reflections: athlete text responses to assignment reflection prompts.
+-- assignment_id uses empty string when no assignment context exists.
+CREATE TABLE IF NOT EXISTS reflections (
+  athlete_id    TEXT NOT NULL REFERENCES users(id),
+  assignment_id TEXT NOT NULL DEFAULT '',
+  activity_id   TEXT NOT NULL,
+  text          TEXT NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  PRIMARY KEY (athlete_id, assignment_id, activity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reflections_athlete ON reflections(athlete_id);
