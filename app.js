@@ -1023,8 +1023,6 @@
     downloadFile(filename, assignmentToText(student, asg), "text/plain");
     toast("Assignment downloaded (.txt)");
   }
-<<<<<<< HEAD
-
   // Generate a polished assignment PDF with printable reflection space.
   function downloadAssignmentPdf(student, asg) {
     if (!window.jspdf || !window.jspdf.jsPDF) {
@@ -1200,7 +1198,6 @@
     toast("Assignment downloaded (.pdf)");
   }
 
-=======
   function downloadAllAssignmentsTxt(student) {
     var list = studentAssignments(student);
     if (!list.length) { toast("No assignments to download"); return; }
@@ -1210,7 +1207,6 @@
     downloadFile(filename, sections.join("\n" + "=".repeat(60) + "\n\n"), "text/plain");
     toast("All assignments downloaded (.txt)");
   }
->>>>>>> 9c111bd7b72d06300ad2043bafd72ede11a03c23
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
     ta.style.position = "fixed"; ta.style.opacity = "0";
