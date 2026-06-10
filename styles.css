@@ -391,13 +391,6 @@
   .completed-row { display: flex; align-items: center; gap: 11px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); font-size: .86rem; background: var(--surface-2); }
   .completed-row .c-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .completed-row .c-date { color: var(--muted); font-size: .74rem; font-family: var(--mono); white-space: nowrap; }
-  .completed-groups { display: flex; flex-direction: column; gap: 8px; }
-  .completed-group { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; }
-  .completed-group-summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; font-size: .84rem; }
-  .completed-group-summary::-webkit-details-marker { display: none; }
-  .completed-group-summary .cg-title { font-weight: 700; color: var(--ink); }
-  .completed-group-summary .cg-meta { color: var(--muted); font-size: .76rem; font-family: var(--mono); }
-  .completed-group-body { padding: 0 10px 10px; display: flex; flex-direction: column; gap: 7px; }
   .note-banner { background: var(--surface-2); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); color: var(--ink-soft); padding: 13px 17px; border-radius: var(--radius-sm); font-size: .86rem; margin-bottom: 20px; }
   .note-banner strong { color: var(--ink); }
   .backup-bar { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -536,6 +529,9 @@
   .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:6px 0 14px; flex-wrap:wrap; }
   .section-head h3 { font-size:1.1rem; }
   .section-head-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .asg-summary { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:-6px 0 14px; font-size:.82rem; color:var(--muted); font-family:var(--mono); }
+  .asg-summary .asg-summary-item { color:var(--ink-soft); }
+  .asg-summary .asg-summary-sep { color:var(--line); }
   .repo-toolbar { display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-bottom:16px; flex-wrap:wrap; }
   .settings-layout { display:grid; grid-template-columns: 1fr 1fr; gap:24px; align-items:start; }
   .settings-row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }
