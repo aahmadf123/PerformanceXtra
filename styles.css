@@ -515,10 +515,23 @@
   .reflection-box, .reflection-read { flex-basis: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); padding: 10px 12px; margin-top: 2px; }
   .reflection-input { width: 100%; min-height: 88px; margin-top: 6px; }
   .reflection-status { margin-top: 6px; font-size: .74rem; color: var(--muted); }
+  .assignment-reflection { margin-top: 14px; border-color: var(--line-strong); border-left: 3px solid var(--accent); }
+
+  /* ---------- Student workouts toolbar + condensed completed assignments ---------- */
+  .workouts-toolbar { display:flex; justify-content:flex-end; margin-bottom:14px; }
+  .completed-assignments { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; margin-top: 14px; }
+  .completed-assignments-summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; font-size: .86rem; }
+  .completed-assignments-summary::-webkit-details-marker { display: none; }
+.completed-assignments-summary::before { content: "▸"; color: var(--muted); transition: transform .2s ease; }
+  .completed-assignments[open] > .completed-assignments-summary::before { transform: rotate(90deg); }
+  .completed-assignments-summary .ca-title { font-weight: 700; color: var(--ink); flex: 1; }
+  .completed-assignments-summary .ca-meta { color: var(--muted); font-size: .76rem; font-family: var(--mono); }
+  .completed-assignments-body { padding: 0 12px 12px; display: flex; flex-direction: column; gap: 14px; }
 
   /* ---------- Sections / toolbars ---------- */
   .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:6px 0 14px; flex-wrap:wrap; }
   .section-head h3 { font-size:1.1rem; }
+  .section-head-actions { display:flex; gap:8px; flex-wrap:wrap; }
   .repo-toolbar { display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-bottom:16px; flex-wrap:wrap; }
   .settings-layout { display:grid; grid-template-columns: 1fr 1fr; gap:24px; align-items:start; }
   .settings-row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; }

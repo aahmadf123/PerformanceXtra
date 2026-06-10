@@ -1017,6 +1017,13 @@
       }
       lines.push("");
     });
+    var asgRefl = getReflectionEntry(student, asg.id, "__assignment__");
+    if (asgRefl && asgRefl.text) {
+      lines.push("ASSIGNMENT REFLECTION:");
+      lines.push(asgRefl.text.replace(/\n/g, "\n   "));
+      lines.push("Submitted: " + fmtDateTime(asgRefl.updatedAt));
+      lines.push("");
+    }
     return lines.join("\n");
   }
   function safeFilePart(v) {
@@ -1027,6 +1034,15 @@
     var filename = "performancextra-" + safeFilePart(student.name) + "-" + safeFilePart(asg.title) + "-" + date + ".txt";
     downloadFile(filename, assignmentToText(student, asg), "text/plain");
     toast("Assignment downloaded (.txt)");
+  }
+  function downloadAllAssignmentsTxt(student) {
+    var list = studentAssignments(student);
+    if (!list.length) { toast("No assignments to download"); return; }
+    var sections = list.map(function (asg) { return assignmentToText(student, asg); });
+    var date = new Date().toISOString().slice(0, 10);
+    var filename = "performancextra-" + safeFilePart(student.name) + "-all-assignments-" + date + ".txt";
+    downloadFile(filename, sections.join("\n" + "=".repeat(60) + "\n\n"), "text/plain");
+    toast("All assignments downloaded (.txt)");
   }
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
@@ -1293,7 +1309,7 @@
         : "No workouts assigned yet. Ask your coach for your next set."));
       return;
     }
-    list.forEach(function (asg) {
+    function buildAssignmentCard(asg) {
       var prog = assignmentProgress(s, asg);
       var pct = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
       var complete = prog.total > 0 && prog.done === prog.total;
@@ -1394,8 +1410,83 @@
         }
         card.appendChild(item);
       });
-      container.appendChild(card);
-    });
+
+      // Assignment-level reflection textbox (student) or read-only view (coach).
+      var ASSIGN_REFL_KEY = "__assignment__";
+      if (opts.actionable) {
+        var asgRefl = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
+        var asgTa = el("textarea", {
+          class: "reflection-input",
+          placeholder: "Write your overall reflection for this assignment here\u2026",
+          "aria-label": "Assignment reflection for " + asg.title
+        });
+        asgTa.value = asgRefl && asgRefl.text ? asgRefl.text : "";
+        var asgStatus = el("div", { class: "reflection-status" }, asgRefl && asgRefl.updatedAt
+          ? ("Saved " + fmtDateTime(asgRefl.updatedAt))
+          : "Not submitted yet");
+        asgTa.addEventListener("input", function () {
+          var timerKey = [s.id, asg.id, ASSIGN_REFL_KEY].join("::");
+          clearTimeout(state.reflectionTimers[timerKey]);
+          asgStatus.textContent = "Saving...";
+          state.reflectionTimers[timerKey] = setTimeout(function () {
+            saveReflectionFlow(s, asg.id, ASSIGN_REFL_KEY, asgTa.value, function (ok, msg) {
+              if (ok) {
+                var latest = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
+                asgStatus.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Not submitted yet";
+              } else {
+                asgStatus.textContent = msg || "Could not save";
+                toast(msg || "Couldn't save reflection");
+              }
+            });
+          }, 450);
+        });
+        card.appendChild(el("div", { class: "reflection-box assignment-reflection" }, [
+          el("div", { class: "detail-label" }, "Your reflection for this assignment"),
+          asgTa,
+          asgStatus
+        ]));
+      }
+      if (opts.admin) {
+        var asgReflAdmin = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
+        card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
+          el("div", { class: "detail-label" }, "Student reflection"),
+          el("div", { class: "detail-text" }, asgReflAdmin && asgReflAdmin.text ? asgReflAdmin.text : "No reflection submitted yet."),
+          asgReflAdmin && asgReflAdmin.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(asgReflAdmin.updatedAt)) : null
+        ]));
+      }
+      return card;
+    }
+
+    function isAssignmentComplete(asg) {
+      var prog = assignmentProgress(s, asg);
+      return prog.total > 0 && prog.done === prog.total;
+    }
+
+    // On the admin/coach side, collapse fully-completed assignments into one
+    // expandable section so the coach doesn't scroll past finished work to find
+    // what's still in progress.
+    if (opts.admin) {
+      var activeAsgs = list.filter(function (asg) { return !isAssignmentComplete(asg); });
+      var doneAsgs = list.filter(isAssignmentComplete);
+      if (!activeAsgs.length) {
+        container.appendChild(el("p", { class: "no-link" }, "No assignments in progress \u2014 everything assigned is complete."));
+      }
+      activeAsgs.forEach(function (asg) { container.appendChild(buildAssignmentCard(asg)); });
+      if (doneAsgs.length) {
+        var det = el("details", { class: "completed-assignments" });
+        det.appendChild(el("summary", { class: "completed-assignments-summary" }, [
+          el("span", { class: "ca-title" }, "Completed assignments"),
+          el("span", { class: "ca-meta" }, String(doneAsgs.length) + (doneAsgs.length === 1 ? " assignment" : " assignments"))
+        ]));
+        var body = el("div", { class: "completed-assignments-body" });
+        doneAsgs.forEach(function (asg) { body.appendChild(buildAssignmentCard(asg)); });
+        det.appendChild(body);
+        container.appendChild(det);
+      }
+      return;
+    }
+
+    list.forEach(function (asg) { container.appendChild(buildAssignmentCard(asg)); });
   }
 
   function renderStudentDetail() {
@@ -1409,9 +1500,13 @@
       ]));
       return;
     }
+    var headActions = el("div", { class: "section-head-actions" }, [
+      el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT"),
+      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
+    ]);
     detail.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, s.name + " — Assignments"),
-      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
+      headActions
     ]));
     appendAssignmentList(detail, s, { admin: true });
 
@@ -1430,6 +1525,12 @@
         el("p", {}, "Ask your coach to set you up. (Coach? Use “Admin login”, top right.)")
       ])));
       return;
+    }
+    var asgList = studentAssignments(s);
+    if (asgList.length) {
+      panel.appendChild(el("div", { class: "workouts-toolbar" }, [
+        el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT")
+      ]));
     }
     appendAssignmentList(panel, s, { actionable: true });
   }
