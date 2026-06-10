@@ -372,10 +372,11 @@
   /* ---------- Students ---------- */
   .students-layout { display: grid; grid-template-columns: 340px 1fr; gap: 24px; align-items: start; }
   .student-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
-  .student-row { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); transition: border-color .15s, background .15s; }
+  .student-row { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-sm); transition: border-color .15s, background .15s; }
   .student-row:hover { border-color: var(--line-strong); background: var(--surface-2); }
   .student-row.is-active { border-color: rgba(201,242,78,.5); background: var(--accent-dim); }
-  .student-row .name { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .student-row .name { font-weight: 600; font-size: 1rem; min-width: 0; word-break: break-word; }
+  .student-row-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .add-student { display: flex; gap: 8px; }
   .progress-stat { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
   .progress-stat .big { font-family: var(--display); font-size: 2.6rem; font-weight: 800; color: var(--accent); letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
@@ -542,8 +543,8 @@
   .server-only[hidden], .local-only[hidden] { display: none !important; }
 
   /* ---------- Invite pill / student row ---------- */
-  .name-wrap { display:flex; align-items:center; gap:8px; flex:1; min-width:0; flex-wrap:wrap; }
-  .student-email { font-size:.78rem; color: var(--muted); word-break: break-all; font-family: var(--mono); }
+  .name-wrap { display:flex; flex-direction:column; gap:2px; min-width:0; }
+  .student-email { font-size:.78rem; color: var(--muted); word-break: break-all; font-family: var(--mono); line-height: 1.4; }
   .pill { font-family: var(--mono); font-size:.62rem; font-weight:700; text-transform:uppercase; letter-spacing:.08em; padding:3px 9px; border-radius:999px; }
   .pill--pending { color:var(--warn); background:rgba(245,196,81,.12); border:1px solid rgba(245,196,81,.3); }
   .pill--active { color: var(--accent-strong); background: var(--accent-dim); border:1px solid rgba(201,242,78,.3); }

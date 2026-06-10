@@ -1127,26 +1127,26 @@
         nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
       }
       var row = el("div", { class: "student-row" + (active ? " is-active" : "") }, [
-        el("button", {
-          class: "btn btn--sm btn--ghost", title: "Set active",
-          "aria-pressed": active ? "true" : "false",
-          onclick: function () { setActiveStudent(s.id); renderAll(); }
-        }, active ? "● Active" : "○ Set active"),
         el("span", { class: "name-wrap" }, nameKids)
       ]);
+      var rowActions = el("div", { class: "student-row-actions" });
+      rowActions.appendChild(el("button", {
+        class: "btn btn--sm btn--ghost", title: "Set active",
+        "aria-pressed": active ? "true" : "false",
+        onclick: function () { setActiveStudent(s.id); renderAll(); }
+      }, active ? "● Active" : "○ Set active"));
       if (SERVER) {
-        // Athletes sign in with the email + passcode the coach gave them. The plaintext
-        // passcode isn't stored, so "Reset passcode" issues a fresh one to email them.
-        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to email this athlete", "aria-label": "Reset passcode for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset passcode"));
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to email this athlete", "aria-label": "Reset passcode for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset passcode"));
       } else {
-        row.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
           var name = prompt("Rename student", s.name);
           if (name) { renameStudent(s.id, name); renderAll(); }
         } }, "✎"));
-        row.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete", "aria-label": "Delete " + s.name, onclick: function () {
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete", "aria-label": "Delete " + s.name, onclick: function () {
           if (confirm("Delete " + s.name + " and their progress?")) { deleteStudent(s.id); renderAll(); }
         } }, "✕"));
       }
+      row.appendChild(rowActions);
       list.appendChild(row);
     });
 
@@ -1367,47 +1367,7 @@
           if (a.reflection) det.appendChild(detailBlock("Reflection prompt", a.reflection));
           item.appendChild(det);
         }
-        if (a.reflection && opts.actionable) {
-          var existing = getReflectionEntry(s, asg.id, id);
-          var ta = el("textarea", {
-            class: "reflection-input",
-            placeholder: "Type your reflection response here...",
-            "aria-label": "Reflection response for " + a.name
-          });
-          ta.value = existing && existing.text ? existing.text : "";
-          var status = el("div", { class: "reflection-status" }, existing && existing.updatedAt
-            ? ("Saved " + fmtDateTime(existing.updatedAt))
-            : "Not submitted yet");
-          ta.addEventListener("input", function () {
-            var timerKey = [s.id, asg.id, id].join("::");
-            clearTimeout(state.reflectionTimers[timerKey]);
-            status.textContent = "Saving...";
-            state.reflectionTimers[timerKey] = setTimeout(function () {
-              saveReflectionFlow(s, asg.id, id, ta.value, function (ok, msg) {
-                if (ok) {
-                  var latest = getReflectionEntry(s, asg.id, id);
-                  status.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Not submitted yet";
-                } else {
-                  status.textContent = msg || "Could not save";
-                  toast(msg || "Couldn't save reflection");
-                }
-              });
-            }, 450);
-          });
-          item.appendChild(el("div", { class: "reflection-box" }, [
-            el("div", { class: "detail-label" }, "Your reflection"),
-            ta,
-            status
-          ]));
-        }
-        if (a.reflection && opts.admin) {
-          var submitted = getReflectionEntry(s, asg.id, id);
-          item.appendChild(el("div", { class: "reflection-read" }, [
-            el("div", { class: "detail-label" }, "Student reflection"),
-            el("div", { class: "detail-text" }, submitted && submitted.text ? submitted.text : "No reflection submitted yet."),
-            submitted && submitted.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(submitted.updatedAt)) : null
-          ]));
-        }
+
         card.appendChild(item);
       });
 
