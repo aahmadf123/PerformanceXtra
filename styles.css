@@ -522,7 +522,7 @@
   .completed-assignments { border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); overflow: hidden; margin-top: 14px; }
   .completed-assignments-summary { cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 14px; font-size: .86rem; }
   .completed-assignments-summary::-webkit-details-marker { display: none; }
-  .completed-assignments-summary::before { content: "▸"; margin-right: 8px; color: var(--muted); transition: transform .2s ease; }
+.completed-assignments-summary::before { content: "▸"; color: var(--muted); transition: transform .2s ease; }
   .completed-assignments[open] > .completed-assignments-summary::before { transform: rotate(90deg); }
   .completed-assignments-summary .ca-title { font-weight: 700; color: var(--ink); flex: 1; }
   .completed-assignments-summary .ca-meta { color: var(--muted); font-size: .76rem; font-family: var(--mono); }
