@@ -1010,11 +1010,7 @@
       lines.push("   Link: " + (a.link || "No link (on-court)"));
       if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
       if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
-      var refl = getReflectionEntry(student, asg.id, id);
-      if (refl && refl.text) {
-        lines.push("   Student reflection: " + refl.text.replace(/\n/g, "\n      "));
-        lines.push("   Reflection updated: " + fmtDateTime(refl.updatedAt));
-      }
+
       lines.push("");
     });
     var asgRefl = getReflectionEntry(student, asg.id, "__assignment__");
