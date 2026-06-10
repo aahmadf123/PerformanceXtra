@@ -1028,6 +1028,182 @@
     downloadFile(filename, assignmentToText(student, asg), "text/plain");
     toast("Assignment downloaded (.txt)");
   }
+
+  // Generate a polished assignment PDF with printable reflection space.
+  function downloadAssignmentPdf(student, asg) {
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+      toast("PDF generator unavailable, opening print view instead");
+      printAssignment(student, asg);
+      return;
+    }
+
+    var jsPDF = window.jspdf.jsPDF;
+    var doc = new jsPDF({ unit: "pt", format: "letter" });
+    var pageW = doc.internal.pageSize.getWidth();
+    var pageH = doc.internal.pageSize.getHeight();
+    var marginX = 44;
+    var topY = 44;
+    var bottomY = pageH - 54;
+    var y = topY;
+    var lineH = 14;
+
+    function ensureSpace(heightNeeded) {
+      if (y + heightNeeded <= bottomY) return;
+      doc.addPage();
+      y = topY;
+      drawRunningHeader();
+    }
+
+    function drawRunningHeader() {
+      doc.setFillColor(12, 16, 25);
+      doc.rect(0, 0, pageW, 34, "F");
+      doc.setFont("helvetica", "bold");
+      doc.setTextColor(224, 231, 239);
+      doc.setFontSize(9);
+      doc.text("PerformanceXtra Assignment Sheet", marginX, 22);
+      doc.setTextColor(107, 114, 128);
+      doc.setFont("helvetica", "normal");
+      doc.text("Student: " + student.name, pageW - marginX, 22, { align: "right" });
+      doc.setTextColor(17, 24, 39);
+    }
+
+    function drawFooter(pageNum, totalPages) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(8);
+      doc.setTextColor(107, 114, 128);
+      doc.text("Generated " + fmtDateTime(new Date().toISOString()), marginX, pageH - 20);
+      doc.text("Page " + pageNum + " of " + totalPages, pageW - marginX, pageH - 20, { align: "right" });
+      doc.setTextColor(17, 24, 39);
+    }
+
+    drawRunningHeader();
+
+    doc.setFillColor(201, 242, 78);
+    doc.roundedRect(marginX, y, pageW - marginX * 2, 86, 12, 12, "F");
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(18);
+    doc.setTextColor(20, 24, 10);
+    doc.text(asg.title, marginX + 16, y + 28);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.text("Student: " + student.name, marginX + 16, y + 48);
+    doc.text("Assigned: " + fmtDate(asg.createdAt) + (asg.dueAt ? "   Due: " + fmtDate(asg.dueAt) : ""), marginX + 16, y + 64);
+    doc.text("Items: " + asg.items.length, marginX + 16, y + 78);
+
+    y += 106;
+    doc.setTextColor(17, 24, 39);
+
+    if (asg.note) {
+      var noteText = doc.splitTextToSize(asg.note, pageW - marginX * 2 - 20);
+      var noteHeight = Math.max(44, noteText.length * lineH + 20);
+      ensureSpace(noteHeight + 10);
+      doc.setDrawColor(249, 115, 22);
+      doc.setFillColor(255, 247, 237);
+      doc.roundedRect(marginX, y, pageW - marginX * 2, noteHeight, 8, 8, "FD");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(11);
+      doc.text("Coach Plan", marginX + 12, y + 18);
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.text(noteText, marginX + 12, y + 34);
+      y += noteHeight + 14;
+    }
+
+    asg.items.forEach(function (id, idx) {
+      var a = BY_ID[id];
+      if (!a) return;
+
+      var prompt = a.reflection || "Write your reflection for this activity.";
+      var title = (idx + 1) + ". " + a.name;
+      var meta = [a.type || "Activity", a.topic || null, a.progression || null, a.time || null].filter(Boolean).join("  |  ");
+      var linkText = a.link || "No external link (coach-led or on-court task)";
+      var instructionText = a.instructions || "No additional instructions provided.";
+      var existing = getReflectionEntry(student, asg.id, id);
+
+      var titleLines = doc.splitTextToSize(title, pageW - marginX * 2 - 24);
+      var metaLines = doc.splitTextToSize(meta, pageW - marginX * 2 - 24);
+      var linkLines = doc.splitTextToSize("Resource: " + linkText, pageW - marginX * 2 - 24);
+      var instructionLines = doc.splitTextToSize("Instructions: " + instructionText, pageW - marginX * 2 - 24);
+      var promptLines = doc.splitTextToSize("Reflection prompt: " + prompt, pageW - marginX * 2 - 24);
+
+      var headerHeight = 18 + titleLines.length * lineH + metaLines.length * lineH + linkLines.length * lineH;
+      var instHeight = 16 + instructionLines.length * lineH;
+      var promptHeight = 16 + promptLines.length * lineH;
+      var reflectionBlockH = existing && existing.text ? 18 + doc.splitTextToSize("Submitted reflection: " + existing.text, pageW - marginX * 2 - 24).length * lineH : 0;
+      var writingBoxH = 104;
+      var cardHeight = headerHeight + instHeight + promptHeight + reflectionBlockH + writingBoxH + 36;
+
+      ensureSpace(cardHeight + 10);
+
+      doc.setDrawColor(203, 213, 225);
+      doc.setFillColor(248, 250, 252);
+      doc.roundedRect(marginX, y, pageW - marginX * 2, cardHeight, 8, 8, "FD");
+
+      var cy = y + 20;
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(12);
+      doc.text(titleLines, marginX + 12, cy);
+      cy += titleLines.length * lineH + 4;
+
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(71, 85, 105);
+      doc.text(metaLines, marginX + 12, cy);
+      cy += metaLines.length * lineH;
+      doc.text(linkLines, marginX + 12, cy);
+      cy += linkLines.length * lineH + 8;
+      doc.setTextColor(17, 24, 39);
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("Plan", marginX + 12, cy);
+      cy += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
+      doc.text(instructionLines, marginX + 12, cy);
+      cy += instructionLines.length * lineH + 10;
+
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(10);
+      doc.text("Reflection", marginX + 12, cy);
+      cy += 14;
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9.5);
+      doc.text(promptLines, marginX + 12, cy);
+      cy += promptLines.length * lineH + 10;
+
+      if (existing && existing.text) {
+        var submittedLines = doc.splitTextToSize("Submitted reflection: " + existing.text, pageW - marginX * 2 - 24);
+        doc.setTextColor(15, 118, 110);
+        doc.text(submittedLines, marginX + 12, cy);
+        cy += submittedLines.length * lineH + 8;
+        doc.setTextColor(17, 24, 39);
+      }
+
+      doc.setDrawColor(148, 163, 184);
+      doc.rect(marginX + 12, cy, pageW - marginX * 2 - 24, writingBoxH);
+      var lineY = cy + 18;
+      for (var l = 0; l < 5; l++) {
+        doc.line(marginX + 18, lineY, pageW - marginX * 2 - 18, lineY);
+        lineY += 18;
+      }
+
+      y += cardHeight + 12;
+    });
+
+    var totalPages = doc.getNumberOfPages();
+    for (var p = 1; p <= totalPages; p++) {
+      doc.setPage(p);
+      drawFooter(p, totalPages);
+    }
+
+    var date = new Date().toISOString().slice(0, 10);
+    var filename = "performancextra-" + safeFilePart(student.name) + "-" + safeFilePart(asg.title) + "-" + date + ".pdf";
+    doc.save(filename);
+    toast("Assignment downloaded (.pdf)");
+  }
+
   function legacyCopy(text) {
     var ta = el("textarea", {}, text);
     ta.style.position = "fixed"; ta.style.opacity = "0";
@@ -1300,7 +1476,8 @@
       var card = el("div", { class: "assignment" });
 
       var actions = el("div", { class: "assignment-actions" });
-      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Print / Save as PDF", "aria-label": "Print assignment", onclick: function () { printAssignment(s, asg); } }, "🖨"));
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Print assignment", "aria-label": "Print assignment", onclick: function () { printAssignment(s, asg); } }, "🖨"));
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Download assignment as .pdf", "aria-label": "Download assignment as PDF", onclick: function () { downloadAssignmentPdf(s, asg); } }, "⬇ PDF"));
       actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Download assignment as .txt", "aria-label": "Download assignment as text", onclick: function () { downloadAssignmentTxt(s, asg); } }, "⬇ TXT"));
       if (opts.admin) {
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", "aria-label": "Delete assignment", onclick: function () {
