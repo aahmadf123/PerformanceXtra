@@ -302,7 +302,6 @@
     var s = activeStudent();
     return s ? s.completed : {};
   }
-  function isDone(activityId) { return !!completedMap()[activityId]; }
 
   // Mark/unmark an activity done for a student. Optimistically updates the in-memory
   // map (so the UI flips instantly), then persists: to the server (athlete only) in
@@ -385,18 +384,6 @@
     });
   }
 
-  function toggleComplete(activityId) {
-    var s = activeStudent();
-    if (!s) { toast("Select a student first"); return false; }
-    // In SERVER mode only an athlete may complete their own activities (the coach
-    // can't tick boxes on a student's behalf — the athlete does that themselves).
-    if (SERVER && (!state.session || state.session.role !== "athlete")) {
-      toast("Athletes mark their own activities done"); return false;
-    }
-    setCompletion(s, activityId, !s.completed[activityId], null);
-    return true;
-  }
-
   function addStudent(name) {
     name = (name || "").trim();
     if (!name) return null;
@@ -441,6 +428,28 @@
     var done = 0;
     asg.items.forEach(function (id) { if (s.completed[id]) done++; });
     return { done: done, total: asg.items.length };
+  }
+
+  // At-a-glance counts for a student's assignments: how many are still in progress
+  // (not fully done) vs. fully completed, plus the timestamp of their most recent
+  // completion. Used for the admin per-student summary line.
+  function assignmentStatusSummary(s) {
+    var list = studentAssignments(s);
+    var completed = 0;
+    list.forEach(function (asg) {
+      var prog = assignmentProgress(s, asg);
+      if (prog.total > 0 && prog.done === prog.total) completed++;
+    });
+    var times = Object.keys(s.completed || {})
+      .map(function (id) { return s.completed[id]; })
+      .filter(Boolean)
+      .sort();
+    return {
+      total: list.length,
+      completed: completed,
+      inProgress: list.length - completed,
+      lastActivity: times.length ? times[times.length - 1] : null
+    };
   }
 
   function assignedActivityIds(student) {
@@ -657,7 +666,7 @@
 
   function createCard(a) {
     var hidden = isHidden(a.id);
-    var card = el("article", { class: "card" + (isDone(a.id) ? " is-done" : "") + (hidden ? " is-hidden-activity" : ""), "data-id": a.id });
+    var card = el("article", { class: "card" + (hidden ? " is-hidden-activity" : ""), "data-id": a.id });
 
     card.appendChild(el("div", { class: "card-head" }, [
       el("div", {}, [
@@ -684,32 +693,15 @@
       card.appendChild(det);
     }
 
+    // The Repository is the shared activity catalog (coach-only tab). Completion is a
+    // per-student, per-assignment fact, so it is NOT shown here — it lives in the
+    // student's My Workouts and the admin's per-student Students/Progress views.
     var foot = el("div", { class: "card-foot" });
     if (a.link) {
       foot.appendChild(el("a", { class: "btn btn--sm btn--primary", href: a.link, target: "_blank", rel: "noopener" }, "Open resource ↗"));
     } else {
       foot.appendChild(el("span", { class: "no-link" }, "No link (on-court)"));
     }
-    var hasStudent = !!activeStudent();
-    var coachInServer = SERVER && (!state.session || state.session.role !== "athlete");
-    var canComplete = hasStudent && !coachInServer;
-    var done = isDone(a.id);
-    var doneBtn = el("button", {
-      class: "btn btn--sm done-btn",
-      "aria-pressed": done ? "true" : "false",
-      disabled: !canComplete,
-      title: canComplete ? "" : (coachInServer ? "Athletes mark their own activities done" : "Add a student first"),
-      onclick: function () {
-        if (toggleComplete(a.id)) {
-          var nowDone = isDone(a.id);
-          doneBtn.setAttribute("aria-pressed", nowDone ? "true" : "false");
-          doneBtn.textContent = nowDone ? "✓ Completed" : "Mark done";
-          card.classList.toggle("is-done", nowDone);
-          updateStudentCount();
-        }
-      }
-    }, done ? "✓ Completed" : "Mark done");
-    foot.appendChild(doneBtn);
     card.appendChild(foot);
 
     if (isAdminView()) {
@@ -1200,10 +1192,10 @@
 
       var canUndo = !SERVER || (state.session && state.session.role === "athlete");
       var showCondensedAdmin = isAdminView() && (!SERVER || (state.session && state.session.role === "coach"));
-      if (showCondensedAdmin) {
-        container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed workouts"));
-        appendCondensedCompleted(container, s, canUndo);
-      } else {
+      // For the coach/admin view we no longer repeat a completed-workouts list here:
+      // completed assignments are already consolidated into the single collapsible in
+      // the assignment list above. The student My Progress tab keeps its flat list.
+      if (!showCondensedAdmin) {
         container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
         var cl = el("div", { class: "completed-list" });
         Object.keys(s.completed)
@@ -1224,74 +1216,6 @@
     } else {
       container.appendChild(el("p", { class: "no-link" }, "No activities completed yet."));
     }
-  }
-
-  function appendCondensedCompleted(container, s, canUndo) {
-    var wrap = el("div", { class: "completed-groups" });
-    var covered = {};
-    var groups = 0;
-    studentAssignments(s).forEach(function (asg) {
-      var doneIds = (asg.items || []).filter(function (id) { return !!s.completed[id] && !!BY_ID[id]; });
-      if (!doneIds.length) return;
-      groups++;
-      doneIds.forEach(function (id) { covered[id] = true; });
-      var latest = doneIds.map(function (id) { return s.completed[id]; }).filter(Boolean).sort().slice(-1)[0] || null;
-
-      var det = el("details", { class: "completed-group" });
-      det.appendChild(el("summary", { class: "completed-group-summary" }, [
-        el("span", { class: "cg-title" }, asg.title),
-        el("span", { class: "cg-meta" }, doneIds.length + " / " + (asg.items || []).length + " done" + (latest ? " · Last " + fmtDate(latest) : ""))
-      ]));
-
-      var body = el("div", { class: "completed-group-body" });
-      doneIds.sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); });
-      doneIds.forEach(function (aid) {
-        var a = BY_ID[aid];
-        if (!a) return;
-        body.appendChild(el("div", { class: "completed-row" }, [
-          el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
-          el("span", { class: "c-name" }, a.name),
-          el("span", { class: "c-date" }, fmtDate(s.completed[aid])),
-          canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
-            setCompletion(s, aid, false, asg.id); renderAll();
-          } }, "Undo") : null
-        ]));
-      });
-      det.appendChild(body);
-      wrap.appendChild(det);
-    });
-
-    var extras = Object.keys(s.completed).filter(function (id) { return !!BY_ID[id] && !covered[id]; });
-    if (extras.length) {
-      groups++;
-      var ex = el("details", { class: "completed-group" });
-      ex.appendChild(el("summary", { class: "completed-group-summary" }, [
-        el("span", { class: "cg-title" }, "Completed outside assignments"),
-        el("span", { class: "cg-meta" }, String(extras.length))
-      ]));
-      var exBody = el("div", { class: "completed-group-body" });
-      extras.sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); });
-      extras.forEach(function (aid) {
-        var a = BY_ID[aid];
-        if (!a) return;
-        exBody.appendChild(el("div", { class: "completed-row" }, [
-          el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
-          el("span", { class: "c-name" }, a.name),
-          el("span", { class: "c-date" }, fmtDate(s.completed[aid])),
-          canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
-            setCompletion(s, aid, false, null); renderAll();
-          } }, "Undo") : null
-        ]));
-      });
-      ex.appendChild(exBody);
-      wrap.appendChild(ex);
-    }
-
-    if (!groups) {
-      container.appendChild(el("p", { class: "no-link" }, "No workouts completed yet."));
-      return;
-    }
-    container.appendChild(wrap);
   }
 
   // Render a student's assignments. opts.admin adds a delete control; opts.actionable
@@ -1429,10 +1353,16 @@
       }
       activeAsgs.forEach(function (asg) { container.appendChild(buildAssignmentCard(asg)); });
       if (doneAsgs.length) {
+        var doneTimes = [];
+        doneAsgs.forEach(function (asg) {
+          (asg.items || []).forEach(function (id) { if (s.completed[id]) doneTimes.push(s.completed[id]); });
+        });
+        doneTimes.sort();
+        var lastDone = doneTimes.length ? doneTimes[doneTimes.length - 1] : null;
         var det = el("details", { class: "completed-assignments" });
         det.appendChild(el("summary", { class: "completed-assignments-summary" }, [
           el("span", { class: "ca-title" }, "Completed assignments"),
-          el("span", { class: "ca-meta" }, String(doneAsgs.length) + (doneAsgs.length === 1 ? " assignment" : " assignments"))
+          el("span", { class: "ca-meta" }, String(doneAsgs.length) + (doneAsgs.length === 1 ? " assignment" : " assignments") + (lastDone ? " · last " + fmtDate(lastDone) : ""))
         ]));
         var body = el("div", { class: "completed-assignments-body" });
         doneAsgs.forEach(function (asg) { body.appendChild(buildAssignmentCard(asg)); });
@@ -1464,6 +1394,19 @@
       el("h3", {}, s.name + " — Assignments"),
       headActions
     ]));
+    if (studentAssignments(s).length) {
+      var sum = assignmentStatusSummary(s);
+      var summaryParts = [
+        el("span", { class: "asg-summary-item" }, sum.inProgress + " in progress"),
+        el("span", { class: "asg-summary-sep" }, "·"),
+        el("span", { class: "asg-summary-item" }, sum.completed + " completed")
+      ];
+      if (sum.lastActivity) {
+        summaryParts.push(el("span", { class: "asg-summary-sep" }, "·"));
+        summaryParts.push(el("span", { class: "asg-summary-item" }, "last activity " + fmtDate(sum.lastActivity)));
+      }
+      detail.appendChild(el("div", { class: "asg-summary" }, summaryParts));
+    }
     appendAssignmentList(detail, s, { admin: true });
 
     detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
