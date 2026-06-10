@@ -1501,7 +1501,7 @@
       return;
     }
     var headActions = el("div", { class: "section-head-actions" }, [
-      el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all TXT"),
+      el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT"),
       el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
     ]);
     detail.appendChild(el("div", { class: "section-head" }, [
