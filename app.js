@@ -14,6 +14,7 @@
   var ALL = [];   // every activity, including hidden — used for BY_ID lookups & admin management
   var DATA = [];  // visible activities — what students, the builder and filters see
   var BY_ID = {};
+  var SEARCH_INDEX = {}; // normalized text + word index for smart search scoring
   var PRESENT = { topic: [], subtopic: [], type: [], progression: [], frequency: [] };
 
   // The spreadsheet's dropdown sheet reuses one 36-term vocabulary for both
@@ -51,7 +52,11 @@
     custom.forEach(function (a) { merged.push(applyOverride(a, overrides[a.id])); });
     ALL = merged;
     BY_ID = {};
-    ALL.forEach(function (a) { BY_ID[a.id] = a; });
+    SEARCH_INDEX = {};
+    ALL.forEach(function (a) {
+      BY_ID[a.id] = a;
+      SEARCH_INDEX[a.id] = buildSearchIndex(a);
+    });
     DATA = ALL.filter(function (a) { return !hidden[a.id]; });
     PRESENT = {
       topic: ordered(TAX.topics, distinctPresent("topic")),
@@ -94,6 +99,99 @@
 
   function norm(s) {
     return (s || "").toString().toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  }
+
+  function searchText(a) {
+    return [
+      a.id,
+      a.name,
+      a.topic,
+      (a.subtopics || []).join(" "),
+      a.type,
+      a.progression,
+      a.frequency,
+      a.time,
+      a.instructions,
+      a.reflection,
+      a.link
+    ].filter(Boolean).join(" ");
+  }
+
+  function tokenizeSearch(s) {
+    return norm(s).replace(/[^a-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+  }
+
+  function buildSearchIndex(a) {
+    var hay = norm(searchText(a)).replace(/[^a-z0-9\s]+/g, " ").replace(/\s+/g, " ").trim();
+    var seen = {};
+    var words = [];
+    hay.split(" ").forEach(function (w) {
+      if (!w || seen[w]) return;
+      seen[w] = true;
+      words.push(w);
+    });
+    return { hay: hay, words: words };
+  }
+
+  function editDistanceAtMost(a, b, maxDist) {
+    if (a === b) return 0;
+    if (Math.abs(a.length - b.length) > maxDist) return maxDist + 1;
+    var prev = [];
+    var cur = [];
+    for (var j = 0; j <= b.length; j++) prev[j] = j;
+    for (var i = 1; i <= a.length; i++) {
+      cur[0] = i;
+      var rowMin = cur[0];
+      for (var k = 1; k <= b.length; k++) {
+        var cost = a.charCodeAt(i - 1) === b.charCodeAt(k - 1) ? 0 : 1;
+        var val = Math.min(prev[k] + 1, cur[k - 1] + 1, prev[k - 1] + cost);
+        cur[k] = val;
+        if (val < rowMin) rowMin = val;
+      }
+      if (rowMin > maxDist) return maxDist + 1;
+      var tmp = prev; prev = cur; cur = tmp;
+    }
+    return prev[b.length];
+  }
+
+  function fuzzyTokenHit(token, words) {
+    if (!token || token.length < 4) return false;
+    for (var i = 0; i < words.length; i++) {
+      var w = words[i];
+      if (!w || Math.abs(w.length - token.length) > 2) continue;
+      if (w.charAt(0) !== token.charAt(0)) continue;
+      if (editDistanceAtMost(token, w, 2) <= 2) return true;
+    }
+    return false;
+  }
+
+  function smartSearchScore(a, query) {
+    var q = norm(query || "").trim();
+    if (!q) return 1;
+    var idx = SEARCH_INDEX[a.id] || buildSearchIndex(a);
+    var tokens = tokenizeSearch(q);
+    if (!tokens.length) return 1;
+
+    var score = 0;
+    var matched = 0;
+    if (idx.hay.indexOf(q) !== -1) score += 8;
+
+    tokens.forEach(function (t) {
+      if (idx.words.indexOf(t) !== -1) {
+        matched++; score += 5; return;
+      }
+      if (idx.hay.indexOf(t) !== -1) {
+        matched++; score += 3; return;
+      }
+      if (fuzzyTokenHit(t, idx.words)) {
+        matched++; score += 1.6;
+      }
+    });
+
+    if (!matched) return 0;
+    var minNeeded = tokens.length === 1 ? 1 : Math.ceil(tokens.length * 0.6);
+    if (matched < minNeeded) return 0;
+    return score + (matched / tokens.length);
   }
 
   function toast(msg) {
@@ -647,22 +745,30 @@
   /* ----------------------------- Repository ----------------------------- */
   function applyFilters() {
     var f = state.filters;
-    var q = norm(f.search);
+    var q = norm(f.search).trim();
     // Admins can opt to see hidden activities (to unhide/edit them); everyone
     // else only ever sees the visible set.
     var source = (isAdminView() && state.showHidden) ? ALL : DATA;
-    return source.filter(function (a) {
+    var out = [];
+    source.forEach(function (a) {
       if (f.topic && a.topic !== f.topic) return false;
       if (f.subtopic && (a.subtopics || []).indexOf(f.subtopic) === -1) return false;
       if (f.type && a.type !== f.type) return false;
       if (f.progression && a.progression !== f.progression) return false;
       if (f.frequency && a.frequency !== f.frequency) return false;
       if (q) {
-        var hay = norm(a.name + " " + (a.topic || "") + " " + (a.subtopics || []).join(" "));
-        if (hay.indexOf(q) === -1) return false;
+        var score = smartSearchScore(a, q);
+        if (score <= 0) return false;
+        out.push({ a: a, score: score });
+      } else {
+        out.push({ a: a, score: 0 });
       }
-      return true;
     });
+    if (!q) return out.map(function (x) { return x.a; });
+    out.sort(function (x, y) {
+      return y.score - x.score || x.a.name.localeCompare(y.a.name);
+    });
+    return out.map(function (x) { return x.a; });
   }
 
   function detailBlock(label, text) {
@@ -2028,12 +2134,13 @@
 
     function updateCount() { countEl.textContent = Object.keys(selected).length + " selected"; }
     function refresh() {
-      var q = norm(search.value);
+      var q = norm(search.value).trim();
       listWrap.textContent = "";
-      var matches = DATA.filter(function (a) {
-        if (!q) return true;
-        return norm(a.name + " " + (a.topic || "") + " " + (a.subtopics || []).join(" ")).indexOf(q) !== -1;
-      }).slice(0, 200);
+      var ranked = DATA.map(function (a) {
+        return { a: a, score: q ? smartSearchScore(a, q) : 1 };
+      }).filter(function (x) { return x.score > 0; });
+      ranked.sort(function (x, y) { return y.score - x.score || x.a.name.localeCompare(y.a.name); });
+      var matches = ranked.slice(0, 200).map(function (x) { return x.a; });
       if (!matches.length) { listWrap.appendChild(el("div", { class: "picker-row" }, "No activities match.")); return; }
       matches.forEach(function (a) {
         var cb = el("input", { type: "checkbox" });
