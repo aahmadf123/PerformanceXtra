@@ -632,3 +632,42 @@
     body.printing-assignment #print-area { position: static; left: auto; width: auto; visibility: visible; color: #111; }
     body.printing-assignment #print-area * { visibility: visible; color: #111; }
   }
+
+  /* ---------- Content / CMS (admin) ---------- */
+  .cms-subnav { margin-bottom: 16px; width: max-content; max-width: 100%; }
+  .cms-toolbar { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 6px 0 14px; }
+  .cms-search { flex: 1 1 240px; }
+  .cms-count { font-family: var(--mono); font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
+  .chip--accent { background: var(--accent-dim); color: var(--accent-strong); border-color: rgba(201,242,78,.25); }
+
+  .cms-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+  .cms-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-top: 1px solid var(--line); background: var(--surface); }
+  .cms-row:first-child { border-top: none; }
+  .cms-row:hover { background: var(--surface-2); }
+  .cms-row.is-hidden { opacity: .58; }
+  .cms-cell--name { flex: 1 1 auto; min-width: 0; }
+  .cms-cell--name strong { display: block; font-size: .92rem; }
+  .cms-meta { font-size: .76rem; color: var(--muted); margin-top: 2px; }
+  .cms-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cms-actions { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+
+  .cms-tax-group { padding: 16px 0; border-top: 1px solid var(--line); }
+  .cms-tax-group:first-of-type { border-top: none; padding-top: 6px; }
+  .cms-tax-list { display: flex; flex-direction: column; margin: 10px 0; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; }
+  .cms-tax-list .no-link { padding: 12px 14px; margin: 0; }
+  .cms-tax-row { display: flex; align-items: center; gap: 12px; padding: 9px 14px; border-top: 1px solid var(--line); background: var(--surface); }
+  .cms-tax-row:first-child { border-top: none; }
+  .cms-tax-row:hover { background: var(--surface-2); }
+  .cms-tax-name { flex: 1 1 auto; font-weight: 600; min-width: 0; word-break: break-word; }
+  .cms-tax-usage { font-family: var(--mono); font-size: .66rem; color: var(--muted); white-space: nowrap; }
+  .cms-tax-add { display: flex; gap: 8px; align-items: center; }
+  .cms-tax-add input { flex: 1 1 auto; max-width: 320px; }
+
+  /* clickable links inside coach-authored notes */
+  .note-link { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; word-break: break-word; }
+  .btn.has-custom-link { border-color: var(--line-glow); }
+
+  @media (max-width: 560px) {
+    .cms-row, .cms-tax-row { flex-wrap: wrap; }
+    .cms-actions { width: 100%; }
+  }

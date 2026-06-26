@@ -53,14 +53,23 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 ## What it does
 
 - **Repository** — browse all activities. Search by name/topic/subtopic and filter by Topic,
-  Subtopic, Content Type, Progression (Week 1–17 / Extra), and Frequency. Each card shows its
-  tags and time, links to the resource, and expands to show instructions and reflection
-  prompts. Coaches also get per-card **Edit / Hide / Assign** controls and **+ Add activity**.
+  Subtopic, Content Type, Progression (Week 1–17 / Extra), and Frequency. The Topic, Subtopic
+  and Content Type lists are **alphabetical**, and picking a Topic narrows the Subtopic list to
+  only those that exist under it (no dead-end searches). Each card shows its tags and time,
+  links to the resource, and expands to show instructions and reflection prompts. Coaches also
+  get per-card **Edit / Hide / Assign** controls and **+ Add activity**.
 - **Workout Builder** *(coach)* — assemble a session from criteria like *“Month 1,
   Confidence.”* Print, copy, download, or **Assign to an athlete**.
 - **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
   activities with an optional note), track per-athlete progress, and **export the roster to
-  CSV** or a single assignment to a printable PDF.
+  CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
+  to each athlete. URLs typed into an assignment note render as **clickable links**, and any
+  assigned activity can be given a **per-student custom link** (e.g. a doc in that athlete's
+  private folder) that overrides the activity's default link for that student only.
+- **Content** *(coach)* — a built-in CMS to manage the activity library **and** the Topic /
+  Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or delete activities,
+  and add / rename / merge / remove taxonomy values (renames cascade across every activity).
+  Everything is stored in D1, so it survives redeploys — no spreadsheet edit or developer needed.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
   and a **Mark done** button on each item.
 - **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
@@ -116,6 +125,15 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 
    ```bash
    wrangler d1 execute performancextra --file db/schema.sql --remote
+   ```
+
+   On an **existing** database, also apply the incremental migrations (the app degrades
+   gracefully until they're applied — custom links and in-app taxonomy editing simply stay
+   off):
+
+   ```bash
+   wrangler d1 execute performancextra --file db/migrations/0001_assignment_item_custom_url.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0002_taxonomy.sql --remote
    ```
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**

@@ -112,7 +112,6 @@
               <label><input type="radio" name="scope" value="any" checked><span>Any</span></label>
               <label><input type="radio" name="scope" value="month"><span>By month</span></label>
               <label><input type="radio" name="scope" value="week"><span>By week</span></label>
-              <label><input type="radio" name="scope" value="extra"><span>Extra</span></label>
             </div>
           </div>
           <div class="field" id="month-field" hidden><label for="b-month">Month</label><select id="b-month"></select></div>
@@ -168,6 +167,17 @@
 
       <div class="panel" id="student-detail"></div>
     </div>
+  </section>
+
+  <!-- ===================== Content (admin CMS) ===================== -->
+  <section id="view-content" class="view" aria-labelledby="content-h">
+    <div class="view-intro">
+      <h2 id="content-h">Content</h2>
+      <p>Manage your activity library and the Topic, Subtopic and Content-type lists used across the whole app. Changes save to your team database and take effect right away — no developer needed.</p>
+    </div>
+    <div class="cms-subnav seg" id="cms-subnav" role="tablist" aria-label="Content sections"></div>
+    <div class="panel cms-pane" id="cms-activities"></div>
+    <div class="panel cms-pane" id="cms-taxonomy" hidden></div>
   </section>
 
   <!-- ===================== My Workouts (student) ===================== -->
