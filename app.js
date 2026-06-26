@@ -2829,10 +2829,14 @@
     var sub = state.cmsTab === "taxonomy" ? "taxonomy" : "activities";
     nav.textContent = "";
     [["activities", "Activities"], ["taxonomy", "Topics & types"]].forEach(function (pair) {
-      var input = el("input", { type: "radio", name: "cms-sub" });
+      var input = el("input", { type: "radio", name: "cms-sub", value: pair[0] });
       if (sub === pair[0]) input.checked = true;
+      input.addEventListener("change", function () {
+        if (!input.checked) return;
+        state.cmsTab = input.value || pair[0];
+        renderContent();
+      });
       var lbl = el("label", {}, [input, el("span", {}, pair[1])]);
-      lbl.addEventListener("click", function () { state.cmsTab = pair[0]; renderContent(); });
       nav.appendChild(lbl);
     });
     $("#cms-activities").hidden = sub !== "activities";

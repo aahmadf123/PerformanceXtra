@@ -152,6 +152,14 @@ function custId() {
 async function readBody(request) {
   try { return await request.json(); } catch (e) { return {}; }
 }
+function isMissingColumnError(err, column) {
+  const msg = String((err && err.message) || "").toLowerCase();
+  const col = String(column || "").toLowerCase();
+  return !!(col && (
+    msg.includes("no such column: " + col) ||
+    msg.includes("has no column named " + col)
+  ));
+}
 
 /* ----------------------------- D1 assembly helpers ----------------------------- */
 async function assembleAthlete(env, row) {
@@ -174,6 +182,7 @@ async function assembleAthlete(env, row) {
         "SELECT activity_id, custom_url FROM assignment_items WHERE assignment_id = ? ORDER BY position"
       ).bind(a.id).all();
     } catch (e) {
+      if (!isMissingColumnError(e, "custom_url")) throw e;
       itemsRes = await env.DB.prepare(
         "SELECT activity_id FROM assignment_items WHERE assignment_id = ? ORDER BY position"
       ).bind(a.id).all();
@@ -523,8 +532,16 @@ async function handleUpdateAssignmentItem(session, request, env, asgId) {
   const url = cleanUrl(b.custom_url != null ? b.custom_url : b.customUrl);
   const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND coach_id = ?").bind(asgId, session.uid).first();
   if (!owns) return err(404, "Assignment not found");
-  await env.DB.prepare("UPDATE assignment_items SET custom_url = ? WHERE assignment_id = ? AND activity_id = ?")
-    .bind(url, asgId, activityId).run();
+  const hasItem = await env.DB.prepare("SELECT 1 AS ok FROM assignment_items WHERE assignment_id = ? AND activity_id = ?")
+    .bind(asgId, activityId).first();
+  if (!hasItem) return err(404, "Activity not found in assignment");
+  try {
+    await env.DB.prepare("UPDATE assignment_items SET custom_url = ? WHERE assignment_id = ? AND activity_id = ?")
+      .bind(url, asgId, activityId).run();
+  } catch (e) {
+    if (!isMissingColumnError(e, "custom_url")) throw e;
+    if (url !== null) return err(409, "custom_url migration not applied yet");
+  }
   return json({ ok: true, custom_url: url });
 }
 
@@ -682,7 +699,7 @@ async function handleSaveOverride(session, request, env) {
  * Stores the coach's managed topic/subtopic/type vocabulary, and on a rename or
  * remove, cascades the value change across their activities: base activities via
  * the override layer (never touching the shared seed) and custom activities in
- * place. All writes go through one DB.batch so the change is atomic. */
+ * place. Vocabulary writes are atomic per kind; cascades are applied in chunks. */
 const TAX_FIELD = { topic: "topic", subtopic: "subtopics", type: "type" };
 
 async function handleSaveTaxonomy(session, request, env) {
@@ -715,16 +732,24 @@ async function handleSaveTaxonomy(session, request, env) {
 
   try {
     await env.DB.batch(listStmts);
-    // The cascade can touch many activities; chunk it to stay well under D1's
-    // per-batch statement limit. Each statement is an idempotent value rewrite,
-    // so chunked (non-atomic) application is safe — re-running completes it.
-    for (let i = 0; i < cascade.length; i += 50) {
-      await env.DB.batch(cascade.slice(i, i + 50));
-    }
   } catch (e) {
-    return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?): " + (e && e.message ? e.message : "db error"));
+    return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
   }
-  return json({ ok: true, taxonomy: await loadTaxonomy(env, coachId) });
+  let cascadeError = null;
+  // The cascade can touch many activities; chunk it to stay well under D1's
+  // per-batch statement limit. Each statement is an idempotent value rewrite,
+  // so chunked (non-atomic) application is safe — re-running completes it.
+  for (let i = 0; i < cascade.length; i += 50) {
+    try {
+      await env.DB.batch(cascade.slice(i, i + 50));
+    } catch (e) {
+      cascadeError = e && e.message ? e.message : "db error";
+      break;
+    }
+  }
+  const out = { ok: true, taxonomy: await loadTaxonomy(env, coachId) };
+  if (cascadeError) out.cascade = { ok: false, error: cascadeError };
+  return json(out);
 }
 
 // Build (but don't run) the statements that rewrite `from`→`to` (or remove,
@@ -830,9 +855,25 @@ async function handleImport(session, request, env) {
       const items = Array.isArray(asg.items) ? asg.items : [];
       const seen = {};
       const itemStmts = [];
+      const itemStmtsFallback = [];
       let pos = 0;
-      items.forEach(function (aid) { if (typeof aid === "string" && aid && !seen[aid]) { seen[aid] = true; const cu = (asg.itemLinks && asg.itemLinks[aid]) ? cleanUrl(asg.itemLinks[aid]) : null; itemStmts.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position,custom_url) VALUES (?,?,?,?)").bind(newId, aid, pos++, cu)); } });
-      if (itemStmts.length) await env.DB.batch(itemStmts);
+      items.forEach(function (aid) {
+        if (typeof aid === "string" && aid && !seen[aid]) {
+          seen[aid] = true;
+          const p = pos++;
+          const cu = (asg.itemLinks && asg.itemLinks[aid]) ? cleanUrl(asg.itemLinks[aid]) : null;
+          itemStmts.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position,custom_url) VALUES (?,?,?,?)").bind(newId, aid, p, cu));
+          itemStmtsFallback.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(newId, aid, p));
+        }
+      });
+      if (itemStmts.length) {
+        try {
+          await env.DB.batch(itemStmts);
+        } catch (e) {
+          if (!isMissingColumnError(e, "custom_url")) throw e;
+          await env.DB.batch(itemStmtsFallback);
+        }
+      }
     }
     const completed = s.completed || {};
     const compStmts = [];
