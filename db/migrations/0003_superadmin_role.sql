@@ -1,0 +1,18 @@
+-- Migration 0003: add a super-admin tier above coaches.
+--
+-- Implemented as an additive flag column rather than a new role value, on purpose:
+-- changing the users.role CHECK constraint would require dropping and rebuilding the
+-- users table, but on Cloudflare D1 you cannot cleanly drop a table that other tables
+-- reference by foreign key (the DROP's implicit delete trips a FOREIGN KEY constraint
+-- failure at commit, and D1 rolls the whole migration back). ADD COLUMN is FK-safe.
+--
+-- A super admin is a users row with is_superadmin=1; role stays 'coach'. Login maps
+-- is_superadmin=1 to the effective session role 'superadmin' (see handleLogin), so all
+-- route guards and the UI treat it as a distinct top tier without any schema rebuild.
+--
+-- Apply to the live DB:
+--   wrangler d1 execute performancextra --file db/migrations/0003_superadmin_role.sql --remote
+--
+-- Additive and idempotent-ish: re-running errors with "duplicate column" only if already
+-- applied, which is safe to ignore.
+ALTER TABLE users ADD COLUMN is_superadmin INTEGER NOT NULL DEFAULT 0;

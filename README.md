@@ -2,11 +2,12 @@
 
 A web app that consolidates PerformanceXtra's mental-performance training resources
 into one tagged, searchable repository — with a workout builder, per-athlete completion
-tracking, and a **coach / athlete split**.
+tracking, and **super-admin / coach / athlete** roles.
 
-It runs against a **Cloudflare Worker + D1 database**: coaches and athletes have **real
-accounts**, data is **shared across every device**, and roles are **enforced on the
-server** — an athlete can't become a coach by poking at the browser.
+It runs against a **Cloudflare Worker + D1 database**: a super admin creates coach accounts,
+coaches manage their own athletes, everyone has **real accounts**, data is **shared across
+every device**, and roles are **enforced on the server** — an athlete can't become a coach by
+poking at the browser.
 
 The app is **login-first**: opening the link shows a sign-in screen. After signing in, a
 coach lands on their coaching tools and an athlete lands on their own workouts — nothing
@@ -32,14 +33,24 @@ build/
   PerformanceXtra_Master_Sheet.xlsx  # source spreadsheet (dev-only, not served)
 ```
 
-## Two views: coach and athlete
+## Roles: super admin, coach, athlete
 
+- **Super admin** signs in to a dedicated screen that does one thing: **create and manage
+  coach accounts** (and reset a coach's passcode). The production super admin is seeded by a
+  migration (see Deploy).
 - **Coach** can: browse the repository, build workouts, **assign** activities to specific
   athletes, **add** custom activities, **edit or hide** any activity, manage athletes, and
   export rosters/assignments.
 - **Athletes** see only their own assigned workouts (with instructions and reflection prompts
   inline), the repository, and their progress. They can't assign, add, edit, or manage
   anything.
+
+### Adding coaches
+
+The **super admin** adds a coach by **name + email**. The server generates a one-time passcode,
+shown **once**; the super admin sends the coach their email + passcode. The coach signs in,
+manages their own athletes, and can change their password in Settings. **Reset passcode** on a
+coach's row issues a fresh one if it's lost.
 
 ### Adding athletes
 
@@ -63,9 +74,10 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 - **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
   activities with an optional note), track per-athlete progress, and **export the roster to
   CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
-  to each athlete. URLs typed into an assignment note render as **clickable links**, and any
-  assigned activity can be given a **per-student custom link** (e.g. a doc in that athlete's
-  private folder) that overrides the activity's default link for that student only.
+  to each athlete. Assignment notes support **clickable links** — both bare URLs and
+  `[label](https://…)` markdown — and any activity can be given a **student-level custom link**
+  (e.g. a doc in that athlete's private folder): set it once per student and it overrides the
+  activity's default link for that student across **every** assignment.
 - **Content** *(coach)* — a built-in CMS to manage the activity library **and** the Topic /
   Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or delete activities,
   and add / rename / merge / remove taxonomy values (renames cascade across every activity).
@@ -89,11 +101,14 @@ authenticate — it just displays a “server unavailable” notice.
 
 ### First-run setup
 
-On a brand-new database there are no accounts yet. The sign-in screen detects this and
-shows a **“Create the coach account”** link: the first visitor sets their own name, email,
-and password, which becomes the head coach. From there the coach adds athletes, who sign in
-with the email + passcode the coach sends them. No credentials are hard-coded or shown on
-the page.
+The production **super-admin** account is created by applying the seed migration
+(`db/migrations/0004_seed_superadmin.sql`) — see Deploy. Sign in with those credentials and
+**change the password immediately** in Settings. The super admin then creates coach accounts,
+and each coach adds their own athletes (email + one-time passcode).
+
+If the seed was never applied and **no super admin exists**, the sign-in screen shows a
+**“Create the admin account”** link so the first visitor can bootstrap one. No credentials are
+hard-coded or shown on the page.
 
 ## Update the activities
 
@@ -121,22 +136,29 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/schema.sql --remote
    ```
 
-   On an **existing** database, also apply the incremental migrations (the app degrades
-   gracefully until they're applied — custom links and in-app taxonomy editing simply stay
-   off):
+   On an **existing** database, also apply the incremental migrations in order (the app
+   degrades gracefully until they're applied):
 
    ```bash
    wrangler d1 execute performancextra --file db/migrations/0001_assignment_item_custom_url.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0002_taxonomy.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0003_superadmin_role.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0004_seed_superadmin.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0005_student_activity_links.sql --remote
    ```
+
+   `0003` adds the super-admin role, `0004` seeds the super-admin login (email
+   `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
+   sign-in**; edit the migration first if you want different credentials), and `0005` moves
+   custom links to the student level. Validate `0003` against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
   If unset, the app auto-provisions a strong random secret once and stores it in D1, so
   sign-in still works securely — but setting your own `SESSION_SECRET` is recommended for
   production so the secret is under your control and survives a database reset.
-4. Push to `main` → Cloudflare builds and deploys the Worker. The first visitor creates the
-  head-coach account; the coach then adds athletes, who sign in with the email + passcode
-  the coach emails them.
+4. Push to `main` → Cloudflare builds and deploys the Worker. Sign in as the seeded super
+  admin, change the password, then create coach accounts; each coach adds their own athletes,
+  who sign in with the email + passcode the coach sends them.
 
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.

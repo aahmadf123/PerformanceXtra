@@ -10,14 +10,22 @@
 
 PRAGMA foreign_keys = ON;
 
--- Users: both coaches and athletes; role is server-trusted (never from request body).
+-- Users: coaches and athletes; role is server-trusted (never from request body).
+-- Hierarchy: super admin -> creates/manages coaches; coach -> manages athletes
+-- (coach_id = the coach's id). The super admin is a row with is_superadmin=1; login
+-- maps that to the effective role 'superadmin' in the session (we keep role itself as
+-- 'coach'/'athlete' so the CHECK and all FK references are unchanged — important because
+-- D1 can't drop/rebuild this referenced table cleanly). The production super-admin
+-- account is seeded by db/migrations/0004_seed_superadmin.sql (change its password
+-- after first login).
 CREATE TABLE IF NOT EXISTS users (
   id             TEXT PRIMARY KEY,            -- uuid
   email          TEXT UNIQUE NOT NULL,
   name           TEXT NOT NULL,
   role           TEXT NOT NULL CHECK (role IN ('coach','athlete')),
+  is_superadmin  INTEGER NOT NULL DEFAULT 0,  -- 1 = super admin (effective role 'superadmin' at login)
   password_hash  TEXT,                        -- nullable until athlete sets password via invite
-  coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches
+  coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches/super admin
   invite_token   TEXT,                        -- one-time token for athlete first login
   invite_expires INTEGER,                     -- epoch seconds
   created_at     INTEGER NOT NULL
@@ -67,9 +75,22 @@ CREATE TABLE IF NOT EXISTS assignment_items (
   assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
   activity_id   TEXT NOT NULL,
   position      INTEGER NOT NULL,
-  custom_url    TEXT,                          -- per-student link override (e.g. a doc in the athlete's private folder)
+  custom_url    TEXT,                          -- DEPRECATED: superseded by student_activity_links (kept for rollback)
   PRIMARY KEY (assignment_id, activity_id)
 );
+
+-- Student-level custom links: a coach overrides an activity's link for one athlete
+-- (e.g. a doc in that athlete's private folder). Scoped to (athlete, activity), so it
+-- applies to every assignment of that activity for that student. Replaces the older
+-- per-assignment assignment_items.custom_url (migrated by 0005_student_activity_links.sql).
+CREATE TABLE IF NOT EXISTS student_activity_links (
+  athlete_id  TEXT NOT NULL REFERENCES users(id),
+  activity_id TEXT NOT NULL,                  -- base ACT-xxx or CUST-xxx
+  url         TEXT NOT NULL,                  -- absolute https:// link
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (athlete_id, activity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_student_links_athlete ON student_activity_links(athlete_id);
 
 -- Completions: which athlete finished which activity (optionally within an assignment).
 -- assignment_id is intentionally excluded from the PRIMARY KEY because it is nullable

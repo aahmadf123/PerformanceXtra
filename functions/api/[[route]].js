@@ -189,6 +189,16 @@ function isMissingColumnError(err, column) {
     msg.includes("has no column named " + col)
   ));
 }
+// Format check + rejects obviously-fake / reserved domains so production accounts use
+// real emails. Reserved TLDs per RFC 2606 / 6761 plus the old .demo placeholder.
+function isPlausibleRealEmail(email) {
+  const e = String(email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return false;
+  const domain = e.split("@")[1] || "";
+  if (/\.(demo|invalid|local|localhost|test|example)$/.test(domain)) return false;
+  if (/^example\.(com|org|net)$/.test(domain)) return false;
+  return true;
+}
 
 /* ----------------------------- D1 assembly helpers ----------------------------- */
 async function assembleAthlete(env, row) {
@@ -197,6 +207,17 @@ async function assembleAthlete(env, row) {
     "SELECT activity_id, MIN(completed_at) AS completed_at FROM completions WHERE athlete_id = ? GROUP BY activity_id"
   ).bind(row.id).all();
   (comp.results || []).forEach(function (c) { completed[c.activity_id] = epochToIso(c.completed_at); });
+
+  // Student-level custom links (preferred). Falls back to the legacy per-assignment
+  // custom_url column if migration 0005 hasn't been applied to this database yet.
+  let studentLinks = {};
+  let haveLinkTable = true;
+  try {
+    const lr = await env.DB.prepare(
+      "SELECT activity_id, url FROM student_activity_links WHERE athlete_id = ?"
+    ).bind(row.id).all();
+    (lr.results || []).forEach(function (x) { if (x.url) studentLinks[x.activity_id] = x.url; });
+  } catch (e) { haveLinkTable = false; }
 
   const asg = await env.DB.prepare(
     "SELECT id,title,note,due_at,created_at FROM assignments WHERE athlete_id = ? ORDER BY created_at DESC"
@@ -217,8 +238,13 @@ async function assembleAthlete(env, row) {
       ).bind(a.id).all();
     }
     const itemRows = itemsRes.results || [];
+    // Project the student-level link onto each assignment so the client keeps using
+    // asg.itemLinks unchanged; fall back to the legacy per-assignment column pre-0005.
     const itemLinks = {};
-    itemRows.forEach(function (x) { if (x.custom_url) itemLinks[x.activity_id] = x.custom_url; });
+    itemRows.forEach(function (x) {
+      const link = haveLinkTable ? studentLinks[x.activity_id] : x.custom_url;
+      if (link) itemLinks[x.activity_id] = link;
+    });
     assignments.push({
       id: a.id,
       title: a.title,
@@ -242,7 +268,8 @@ async function assembleAthlete(env, row) {
   return {
     id: row.id, name: row.name, email: row.email || null,
     createdAt: epochToIso(row.created_at || nowSec()),
-    completed: completed, assignments: assignments, reflections: reflections
+    completed: completed, assignments: assignments, reflections: reflections,
+    activityLinks: studentLinks
   };
 }
 async function loadCustom(env, coachId) {
@@ -312,7 +339,7 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/logout") return json({ ok: true }, 200, { "Set-Cookie": clearCookie(secure) });
   if (method === "POST" && path === "/athletes/accept") return handleAccept(request, env, secure);
   if (method === "GET" && path === "/setup-status") {
-    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
+    const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE is_superadmin=1").first();
     return json({ needsSetup: !row || row.n === 0 });
   }
 
@@ -334,6 +361,14 @@ async function route(method, path, request, env, url, secure) {
     if (method === "DELETE" && seg.length === 2) return handleDeleteAssignment(session, env, seg[1]);
   }
 
+  /* -------- super-admin only: manage coach accounts -------- */
+  if (head === "coaches") {
+    if (session.role !== "superadmin") return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListCoaches(env);
+    if (method === "POST" && seg.length === 1) return handleCreateCoach(request, env, url);
+    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetCoachPasscode(env, seg[1], url);
+  }
+
   /* -------- coach-only below -------- */
   if (session.role !== "coach") return err(403, "Coaches only");
 
@@ -341,6 +376,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "GET" && seg.length === 1) return handleListAthletes(session, env);
     if (method === "POST" && seg.length === 1) return handleCreateAthlete(session, request, env, url);
     if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
+    if (method === "POST" && seg.length === 3 && seg[2] === "links") return handleSetStudentLink(session, request, env, seg[1]);
   }
   if (head === "custom-activities") {
     if (method === "GET" && seg.length === 1) return handleListCustom(session, env);
@@ -361,19 +397,29 @@ async function route(method, path, request, env, url, secure) {
 }
 
 /* ----------------------------- auth handlers ----------------------------- */
+// Recovery bootstrap: create the first super-admin if none exists. The production
+// super admin is normally seeded by db/migrations/0004_seed_superadmin.sql; this path
+// only matters if that seed was never applied (or the row was removed).
+// The effective session role: a row flagged is_superadmin is the super admin (its
+// stored role stays 'coach' so the CHECK and FK references never had to change).
+function effectiveRole(user) {
+  return (user && user.is_superadmin) ? "superadmin" : (user && user.role);
+}
+
 async function handleSetup(request, env, secure) {
-  const existing = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
+  const existing = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE is_superadmin=1").first();
   if (existing && existing.n > 0) return err(403, "Setup already complete — sign in instead");
   const b = await readBody(request);
   const name = String(b.name || "").trim();
   const email = String(b.email || "").trim().toLowerCase();
   const password = String(b.password || "");
   if (!name || !email || password.length < 8) return err(400, "Name, email, and an 8+ character password are required");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address");
   const id = crypto.randomUUID();
   const hash = await hashPassword(password);
-  await env.DB.prepare("INSERT INTO users (id,email,name,role,password_hash,created_at) VALUES (?,?,?,?,?,?)")
-    .bind(id, email, name, "coach", hash, nowSec()).run();
-  const user = { id: id, name: name, role: "coach" };
+  await env.DB.prepare("INSERT INTO users (id,email,name,role,is_superadmin,password_hash,created_at) VALUES (?,?,?,?,?,?,?)")
+    .bind(id, email, name, "coach", 1, hash, nowSec()).run();
+  const user = { id: id, name: name, role: "superadmin" };
   return json(user, 200, await issueSessionHeader(user, env, secure));
 }
 
@@ -386,8 +432,8 @@ async function handleLogin(request, env, secure) {
   if (!user || !user.password_hash || !(await verifyPassword(password, user.password_hash))) {
     return err(401, "Invalid email or password");
   }
-  const out = { id: user.id, name: user.name, role: user.role };
-  return json(out, 200, await issueSessionHeader(user, env, secure));
+  const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user) };
+  return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
 }
 
 async function handleAccept(request, env, secure) {
@@ -446,6 +492,9 @@ async function handleListBaseActivities(env) {
 
 async function handleBootstrap(session, env) {
   const me = { id: session.uid, name: session.name, role: session.role };
+  if (session.role === "superadmin") {
+    return json({ me: me, coaches: await listCoaches(env) });
+  }
   if (session.role === "coach") {
     const rows = await env.DB.prepare(
       "SELECT id,name,email,created_at,(password_hash IS NOT NULL) AS has_password FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
@@ -492,7 +541,7 @@ async function handleCreateAthlete(session, request, env, url) {
   const name = String(b.name || "").trim();
   const email = String(b.email || "").trim().toLowerCase();
   if (!name || !email) return err(400, "Name and email are required");
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return err(400, "That doesn't look like a valid email");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
   const id = crypto.randomUUID();
@@ -513,6 +562,77 @@ async function handleResetPasscode(session, env, athleteId, url) {
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
   return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
+}
+
+/* --------------------- super-admin: coach management --------------------- */
+// Every coach with their athlete count. Used by GET /coaches and the superadmin bootstrap.
+async function listCoaches(env) {
+  const rows = await env.DB.prepare(
+    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users WHERE role='coach' AND is_superadmin=0 ORDER BY name"
+  ).all();
+  const coaches = [];
+  for (const r of (rows.results || [])) {
+    const c = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE coach_id = ? AND role='athlete'").bind(r.id).first();
+    coaches.push({ id: r.id, name: r.name, email: r.email, hasPassword: !!r.has_password, studentCount: c ? c.n : 0 });
+  }
+  return coaches;
+}
+
+async function handleListCoaches(env) {
+  return json({ coaches: await listCoaches(env) });
+}
+
+// Super admin creates a coach. Like creating an athlete, the server generates a
+// one-time passcode the super admin relays to the coach; only the hash is stored.
+async function handleCreateCoach(request, env, url) {
+  const b = await readBody(request);
+  const name = String(b.name || "").trim();
+  const email = String(b.email || "").trim().toLowerCase();
+  if (!name || !email) return err(400, "Name and email are required");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+  const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
+  if (dupe) return err(409, "A user with that email already exists");
+  const id = crypto.randomUUID();
+  const passcode = genPasscode();
+  const hash = await hashPassword(passcode);
+  await env.DB.prepare(
+    "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
+  ).bind(id, email, name, "coach", null, hash, nowSec()).run();
+  return json({ coach: { id: id, name: name, email: email }, passcode: passcode, loginUrl: url.origin + "/" });
+}
+
+async function handleResetCoachPasscode(env, coachId, url) {
+  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND role='coach' AND is_superadmin=0").bind(coachId).first();
+  if (!row) return err(404, "Coach not found");
+  const passcode = genPasscode();
+  const hash = await hashPassword(passcode);
+  await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, coachId).run();
+  return json({ coach: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
+}
+
+// Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)
+// so it applies to every assignment of that activity for this student.
+async function handleSetStudentLink(session, request, env, athleteId) {
+  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  if (!owns) return err(404, "Athlete not found");
+  const b = await readBody(request);
+  const activityId = String(b.activity_id || b.activityId || "").trim();
+  if (!activityId) return err(400, "activity_id is required");
+  const url = cleanUrl(b.url != null ? b.url : (b.custom_url != null ? b.custom_url : b.customUrl));
+  try {
+    if (url === null) {
+      await env.DB.prepare("DELETE FROM student_activity_links WHERE athlete_id = ? AND activity_id = ?")
+        .bind(athleteId, activityId).run();
+    } else {
+      await env.DB.prepare(
+        "INSERT INTO student_activity_links (athlete_id,activity_id,url,updated_at) VALUES (?,?,?,?) " +
+        "ON CONFLICT(athlete_id,activity_id) DO UPDATE SET url = excluded.url, updated_at = excluded.updated_at"
+      ).bind(athleteId, activityId, url, nowSec()).run();
+    }
+  } catch (e) {
+    return err(409, "Student links aren't available yet — apply migration 0005");
+  }
+  return json({ ok: true, activity_id: activityId, url: url });
 }
 
 async function handleListAssignments(session, env, url) {

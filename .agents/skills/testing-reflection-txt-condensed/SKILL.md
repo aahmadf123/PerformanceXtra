@@ -17,7 +17,7 @@ Use the header user chip + "Log out" to switch roles. To review a student as adm
 
 ## Devin Secrets Needed
 
-No stored Devin secrets required. Test credentials are provided by the user per-session (admin demo login + per-student passcodes). If not provided, ask the user for the admin login and at least one student passcode. Do not hardcode them in the skill.
+No stored Devin secrets required. Test credentials are provided by the user per-session (coach login + per-student passcodes). If not provided, ask the user for the coach login and at least one student passcode. Do not hardcode them in the skill.
 
 ## Feature locations
 
@@ -40,4 +40,4 @@ Use a unique marker string (e.g. `REFLECT-MARKER-42`) to prove data round-trips 
 - Verify the downloaded TXT with the shell `cat`/`grep` tool against `~/Downloads/` rather than eyeballing the browser download chip.
 - The condensed collapsible only applies to the **admin** view — don't expect it in the student My Workouts view.
 - If a feature appears missing, first confirm production actually serves the merged code (`curl .../app.js | grep <symbol>`) before assuming a bug; a stale cache or unmerged branch is a common cause.
-- Test data may already exist for the demo students; if no assignment exists, create one as admin (Students → + New assignment) before testing.
+- Test data may already exist for the test students; if no assignment exists, create one as the coach (Students → + New assignment) before testing.

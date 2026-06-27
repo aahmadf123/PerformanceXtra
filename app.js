@@ -286,6 +286,7 @@
       if (!res.ok || !res.data) throw new Error("bootstrap failed (" + res.status + ")");
       var d = res.data;
       state.session = d.me;
+      state.coaches = d.coaches || [];
       state.tracking = normalizeStore({
         students: d.students || {},
         activeStudentId: d.activeStudentId || (state.tracking && state.tracking.activeStudentId) || null,
@@ -622,12 +623,14 @@
     var a = BY_ID[id];
     return (a && a.link) || null;
   }
-  // Set or clear a per-student custom URL for one activity in an assignment.
+  // Set or clear a student-level custom URL for one activity. Scoped to (student,
+  // activity), so it applies to every assignment of that activity for this student.
+  // asgId is unused server-side but kept for call-site compatibility.
   function setItemLinkFlow(studentId, asgId, activityId, url, onDone) {
     var clean = (url == null ? "" : String(url)).trim();
     if (SERVER) {
-      api("/assignments/" + encodeURIComponent(asgId) + "/items", {
-        method: "POST", body: { activity_id: activityId, custom_url: clean }
+      api("/athletes/" + encodeURIComponent(studentId) + "/links", {
+        method: "POST", body: { activity_id: activityId, url: clean }
       }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save link")); return; }
         refreshFromServer().then(function () { if (onDone) onDone(); });
@@ -635,10 +638,14 @@
       return;
     }
     var s = students()[studentId];
-    var asg = s && studentAssignments(s).filter(function (a) { return a.id === asgId; })[0];
-    if (!asg) { toast("Assignment not found"); return; }
-    if (!asg.itemLinks) asg.itemLinks = {};
-    if (clean) asg.itemLinks[activityId] = clean; else delete asg.itemLinks[activityId];
+    if (!s) { toast("Student not found"); return; }
+    // Store at the student level and mirror onto every assignment so itemLink() works.
+    if (!s.activityLinks) s.activityLinks = {};
+    if (clean) s.activityLinks[activityId] = clean; else delete s.activityLinks[activityId];
+    studentAssignments(s).forEach(function (a) {
+      if (!a.itemLinks) a.itemLinks = {};
+      if (clean) a.itemLinks[activityId] = clean; else delete a.itemLinks[activityId];
+    });
     saveTracking();
     if (onDone) onDone();
   }
@@ -2072,15 +2079,25 @@
   // for coach-authored notes.
   function linkifyInto(node, text) {
     var s = String(text == null ? "" : text);
-    var re = /(https?:\/\/[^\s<]+)/g;
+    // Match a markdown [label](url) OR a bare http(s) URL. Markdown is tried first so
+    // its URL isn't also caught as a bare URL. The markdown URL group requires an
+    // http(s):// scheme, so anything else (e.g. javascript:) never becomes an anchor —
+    // it falls through and is emitted as literal text. Everything is built from real
+    // text/anchor nodes (never innerHTML), so coach-authored notes stay XSS-safe.
+    var re = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<]+)/g;
     var last = 0, m;
     while ((m = re.exec(s))) {
       if (m.index > last) node.appendChild(document.createTextNode(s.slice(last, m.index)));
-      var url = m[0], trail = "";
-      // Don't swallow trailing sentence punctuation into the link.
-      while (/[.,;:!?)\]]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
-      node.appendChild(el("a", { href: url, target: "_blank", rel: "noopener", class: "note-link" }, url));
-      if (trail) node.appendChild(document.createTextNode(trail));
+      if (m[1] != null) {
+        // [label](url) — render the friendly label text.
+        node.appendChild(el("a", { href: m[2], target: "_blank", rel: "noopener", class: "note-link" }, m[1]));
+      } else {
+        var url = m[3], trail = "";
+        // Don't swallow trailing sentence punctuation into the link.
+        while (/[.,;:!?)\]]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
+        node.appendChild(el("a", { href: url, target: "_blank", rel: "noopener", class: "note-link" }, url));
+        if (trail) node.appendChild(document.createTextNode(trail));
+      }
       last = m.index + m[0].length;
     }
     if (last < s.length) node.appendChild(document.createTextNode(s.slice(last)));
@@ -2343,7 +2360,7 @@
       ])
     ]);
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "This link is used for " + (asg.title || "this assignment") + " only, just for this student — handy for a document in their private folder. It replaces the activity's normal link for them."),
+      el("p", { class: "field-hint" }, "This link is just for this student — handy for a document in their private folder. Set it once and it applies wherever this activity is assigned to them, replacing the activity's normal link for them."),
       (a && a.link) ? el("p", { class: "field-hint" }, "Default link (everyone else): " + a.link) : null,
       howto,
       el("div", { class: "field" }, [
@@ -2554,7 +2571,7 @@
       setupRow.textContent = "";
       if (res.ok && res.data && res.data.needsSetup) {
         setupRow.appendChild(document.createTextNode("First time here? "));
-        setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the coach account"));
+        setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the admin account"));
       } else {
         setupRow.textContent = "Athletes: sign in with the email and passcode your coach sent you.";
       }
@@ -2579,8 +2596,8 @@
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
     card.appendChild(authHeader());
-    card.appendChild(el("h3", { class: "auth-title" }, "Create your coach account"));
-    card.appendChild(el("p", { class: "field-hint" }, "This is the first account on this site — it becomes the head coach. You add athletes later, and each gets a passcode you email them."));
+    card.appendChild(el("h3", { class: "auth-title" }, "Create the admin account"));
+    card.appendChild(el("p", { class: "field-hint" }, "This is the first account on this site — it becomes the super admin. You add coaches afterwards, and each coach manages their own athletes."));
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
@@ -2653,8 +2670,8 @@
   }
   // Show the one-time login credentials (email + passcode) the coach emails to a student.
   function showCredentialsModal(data) {
-    var athlete = (data && data.athlete) || {};
-    var who = athlete.name || "your athlete";
+    var athlete = (data && (data.athlete || data.coach)) || {};
+    var who = athlete.name || "this person";
     var email = athlete.email || "";
     var passcode = (data && data.passcode) || "";
     var loginUrl = (data && data.loginUrl) || location.origin + "/";
@@ -2678,7 +2695,7 @@
       el("div", { class: "field" }, [el("label", {}, "Passcode"), passField]),
       el("a", { class: "btn btn--block", href: mailto }, "✉ Email " + who)
     ]);
-    openModal("Athlete sign-in details", body, [
+    openModal("Sign-in details", body, [
       { label: "Copy details", primary: true, onClick: function () { copyText(creds).then(function (ok) { toast(ok ? "Login details copied" : "Couldn't copy — select them manually"); }); } },
       { label: "Done", onClick: closeModal }
     ]);
@@ -2690,6 +2707,110 @@
       if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
       refreshFromServer().then(function () { renderStudents(); });
       showCredentialsModal(res.data);
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  /* ----------------------------- Super admin ----------------------------- */
+  // A dedicated, full-page screen (no coach tabs/student picker) for managing coach
+  // accounts. Rendered straight into <main> so modals (z-index 200) sit above it.
+  function renderSuperadminApp() {
+    document.body.setAttribute("data-role", "admin");
+    var picker = $(".student-picker"); if (picker) picker.hidden = true;
+    var helpBtn = $("#help-btn"); if (helpBtn) helpBtn.hidden = true;
+    $("#admin-login-btn").hidden = true;
+    $("#student-view-btn").hidden = true;
+    $("#logout-btn").hidden = false;
+    $("#preview-banner").hidden = true;
+    var badge = $("#role-badge");
+    badge.hidden = false;
+    badge.textContent = (state.session && state.session.name) || "Super admin";
+    badge.classList.remove("is-student");
+    var tabs = $("#tabs"); if (tabs) tabs.textContent = "";
+    var main = $("main");
+    main.textContent = "";
+    main.appendChild(renderCoachesView());
+  }
+
+  function renderCoachesView() {
+    var wrap = el("section", { class: "view is-active" }, [
+      el("div", { class: "view-intro" }, [
+        el("h2", {}, "Coaches"),
+        el("p", {}, "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
+      ])
+    ]);
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "All coaches"),
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddCoachModal(); } }, "+ Add coach")
+    ]));
+    panel.appendChild(el("div", { class: "student-list", id: "coach-list" }));
+    wrap.appendChild(panel);
+    renderCoachList(wrap.querySelector("#coach-list"));
+    return wrap;
+  }
+
+  function renderCoachList(list) {
+    list = list || $("#coach-list");
+    if (!list) return;
+    list.textContent = "";
+    var coaches = state.coaches || [];
+    if (!coaches.length) {
+      list.appendChild(el("p", { class: "no-link" }, "No coaches yet. Add your first coach to get started."));
+      return;
+    }
+    coaches.forEach(function (c) {
+      var meta = c.studentCount + " student" + (c.studentCount === 1 ? "" : "s") + (c.hasPassword ? "" : " · no password set yet");
+      var nameKids = [el("span", { class: "name" }, c.name), el("span", { class: "student-email", title: "Signs in with this email" }, c.email)];
+      var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+      var actions = el("div", { class: "student-row-actions" }, [
+        el("span", { class: "student-row-meta" }, meta),
+        el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send this coach", onclick: function () { resetCoachPasscode(c); } }, "↻ Reset passcode")
+      ]);
+      row.appendChild(actions);
+      list.appendChild(row);
+    });
+  }
+
+  // Re-pull just the coaches list (no refreshSelects — the coach/student DOM isn't present here).
+  function refreshCoaches() {
+    return api("/bootstrap").then(function (res) {
+      if (res.ok && res.data && Array.isArray(res.data.coaches)) { state.coaches = res.data.coaches; renderCoachList(); }
+    }).catch(function () { toast("Couldn't refresh coaches"); });
+  }
+
+  // Super admin: add a coach. The server generates a one-time passcode to relay to them.
+  function openAddCoachModal() {
+    var name = el("input", { type: "text", placeholder: "Coach's name" });
+    var email = el("input", { type: "email", placeholder: "coach@email.com", autocomplete: "off" });
+    var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "We'll create the coach and generate a one-time passcode. Send them their email + that passcode — they sign in with those and can set their own password afterwards."),
+      el("div", { class: "field" }, [el("label", {}, "Name"), name]),
+      el("div", { class: "field" }, [el("label", {}, "Email"), email]),
+      errBox
+    ]);
+    function submit() {
+      errBox.hidden = true;
+      var nm = name.value.trim(), em = email.value.trim();
+      if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
+      api("/coaches", { method: "POST", body: { name: nm, email: em } }).then(function (res) {
+        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add coach."); errBox.hidden = false; return; }
+        closeModal();
+        refreshCoaches().then(function () { showCredentialsModal(res.data); });
+      }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
+    }
+    openModal("Add coach", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Create & get passcode", accent: true, onClick: submit }
+    ]);
+    setTimeout(function () { name.focus(); }, 30);
+  }
+
+  function resetCoachPasscode(c) {
+    if (!confirm("Generate a new passcode for " + c.name + "? Their old passcode stops working.")) return;
+    api("/coaches/" + encodeURIComponent(c.id) + "/reset-passcode", { method: "POST" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
+      refreshCoaches().then(function () { showCredentialsModal(res.data); });
     }).catch(function () { toast("Couldn't reach the server"); });
   }
   // Coach: pull an old exported localStorage backup into the shared database (T6).
@@ -3203,6 +3324,8 @@
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
         return loadBaseActivities().then(loadServerSnapshot).then(function () {
+          // Super admins get a dedicated coach-management screen, not the coach/student app.
+          if (state.session.role === "superadmin") { renderSuperadminApp(); return; }
           state.view = state.session.role === "coach" ? "admin" : "student";
           if (!location.hash) state.tab = state.session.role === "coach" ? "students" : "workouts";
           refreshSelects();
