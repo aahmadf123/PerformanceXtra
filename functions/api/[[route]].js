@@ -113,17 +113,22 @@ function clearCookie(secure) {
 async function getSession(request, env) {
   const token = getCookie(request, COOKIE);
   if (!token) return null;
-  return verifyJWT(token, sessionSecret(env));
+  const secure = new URL(request.url).protocol === "https:";
+  return verifyJWT(token, sessionSecret(env, secure));
 }
 async function issueSessionHeader(user, env, secure) {
   const now = Math.floor(Date.now() / 1000);
-  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env));
+  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env, secure));
   return { "Set-Cookie": sessionCookie(token, SESSION_TTL, secure) };
 }
 
-function sessionSecret(env) {
+function sessionSecret(env, secure) {
   const v = String(env.SESSION_SECRET || "").trim();
-  return v || FALLBACK_SESSION_SECRET;
+  if (!v) {
+    if (secure) throw new Error("SESSION_SECRET environment variable is not set — refusing to use fallback on HTTPS");
+    return FALLBACK_SESSION_SECRET;
+  }
+  return v;
 }
 
 /* ----------------------------- small utils ----------------------------- */
@@ -477,12 +482,12 @@ async function handleListAssignments(session, env, url) {
   return json({ athlete_id: athleteId, assignments: data.assignments, completed: data.completed });
 }
 
-// Accept only absolute http(s) URLs; reject javascript:/data:/etc. Returns the
-// trimmed URL or null (which clears any existing custom link).
+// Accept only absolute HTTPS URLs; reject http://, javascript:, data:, etc.
+// Returns the trimmed URL or null (which clears any existing custom link).
 function cleanUrl(u) {
   const s = String(u == null ? "" : u).trim();
   if (!s) return null;
-  return /^https?:\/\//i.test(s) ? s : null;
+  return /^https:\/\//i.test(s) ? s : null;
 }
 
 // Set/clear a per-student custom link for one activity inside an assignment.
@@ -692,26 +697,35 @@ async function handleSaveTaxonomy(session, request, env) {
     cascade = await buildTaxCascade(env, coachId, kind, String(b.value), null);
   }
 
-  // Apply the value cascade FIRST, in chunks (it can touch many activities, so
-  // chunking stays well under D1's per-batch limit). Crucially, the old value
-  // stays in the stored vocabulary until the cascade fully succeeds: if a chunk
-  // fails the coach can still see and re-select the value to retry, and because
-  // each rewrite is idempotent the retry simply finishes the remaining rows.
+  // Preflight: verify the taxonomy table is accessible before touching any
+  // data. If this fails (e.g. the table hasn't been migrated yet) we return
+  // an error and leave everything unchanged.
+  try {
+    await env.DB.prepare("SELECT 1 FROM taxonomy LIMIT 1").first();
+  } catch (e) {
+    return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
+  }
+
+  // Apply the cascade FIRST in chunks (it can touch many activities, so
+  // chunking stays well under D1's per-batch limit). Running this before
+  // committing the vocabulary means that on chunk failure the old value is
+  // still present in the stored vocabulary, so the coach retains a Rename/
+  // Remove control and can retry — each cascade statement is idempotent.
   for (let i = 0; i < cascade.length; i += 50) {
     try {
       await env.DB.batch(cascade.slice(i, i + 50));
     } catch (e) {
-      return err(500, "Couldn't update the activities for this change — your lists were left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
+      return err(500, "Couldn't update the activities for this change — your vocabulary was left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
     }
   }
 
-  // Cascade complete (or none needed) — now replace the stored vocabulary for
-  // this kind in one atomic batch.
+  // All cascade chunks succeeded — now atomically commit the new vocabulary.
   try {
     await env.DB.batch(listStmts);
   } catch (e) {
     return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
   }
+
   return json({ ok: true, taxonomy: await loadTaxonomy(env, coachId) });
 }
 

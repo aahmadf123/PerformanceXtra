@@ -800,7 +800,7 @@
       api("/taxonomy", { method: "POST", body: {
         kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
       } }).then(function (res) {
-        if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
+        if (!res.ok) { toast(apiError(res, "Couldn't save")); refreshFromServer(); return; }
         refreshFromServer().then(function () { if (onDone) onDone(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
@@ -2322,7 +2322,7 @@
     var current = (asg.itemLinks && asg.itemLinks[activityId]) || "";
     var input = el("input", { type: "url", placeholder: "https://… (blank = use the default link)", style: "flex:1 1 auto; min-width:0;" });
     input.value = current;
-    function validUrl(v) { return /^https?:\/\//i.test(v); }
+    function validUrl(v) { return /^https:\/\//i.test(v); }
     // "Test" opens whatever's typed in a new tab, so the coach can confirm the
     // link loads (and that the student would be able to open it) before saving.
     var testBtn = el("button", { class: "btn btn--sm", type: "button", onclick: function () {
