@@ -2915,6 +2915,13 @@
   }
   function toHex(v) { v = String(v || "").trim(); return /^#[0-9a-fA-F]{6}$/.test(v) ? v : ""; }
   function safeUrl(u) { u = String(u || "").trim(); return /^https:\/\//i.test(u) ? u : ""; }
+  function safeMaxWidth(v) {
+    v = String(v == null ? "" : v).trim();
+    var m = v.match(/^([0-9]{1,4})(px|%)$/);
+    if (!m) return "";
+    var n = Number(m[1]);
+    return (isFinite(n) && n <= 2000) ? (String(n) + m[2]) : "";
+  }
 
   function renderAppearance() {
     var view = $("#view-appearance");
@@ -3198,7 +3205,8 @@
     image: function (p) {
       var src = safeUrl(p.src);
       if (!src) return null;
-      return el("img", { class: "pb-image", src: src, alt: p.alt || "", style: p.width ? ("max-width:" + p.width) : "" });
+      var width = safeMaxWidth(p.width);
+      return el("img", { class: "pb-image", src: src, alt: p.alt || "", style: width ? ("max-width:" + width) : "" });
     },
     cards: function (p) {
       var grid = el("div", { class: "pb-cards" });

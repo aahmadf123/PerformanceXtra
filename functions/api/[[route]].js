@@ -1185,10 +1185,19 @@ async function handleSaveSite(request, env) {
   return json({ ok: true, site: await loadSiteSettings(env) });
 }
 
-// Drop control chars and anything HTML-significant; block content is rendered as text on
-// the client (textContent), but we sanitize on the way in too as defence-in-depth.
+// Drop ASCII control chars and cap length. Rendering still uses textContent on the
+// client, but we sanitize input on write as defence-in-depth.
 function cleanText(v, max) {
   return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 2000);
+}
+// Allow only tight CSS length tokens used for image max-width.
+function cleanMaxWidth(v) {
+  const s = String(v == null ? "" : v).trim();
+  const m = s.match(/^([0-9]{1,4})(px|%)$/);
+  if (!m) return "";
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n > 2000) return "";
+  return String(n) + m[2];
 }
 // One sanitized block. Unknown types/props are dropped; links must be absolute https.
 function sanitizeBlock(raw, i) {
@@ -1212,7 +1221,7 @@ function sanitizeBlock(raw, i) {
   } else if (type === "image") {
     props.src = cleanUrl(p.src) || "";
     props.alt = cleanText(p.alt, 200);
-    props.width = cleanText(p.width, 12);
+    props.width = cleanMaxWidth(p.width);
   } else if (type === "cards") {
     props.items = (Array.isArray(p.items) ? p.items : []).slice(0, 12).map(function (it) {
       it = it || {};
