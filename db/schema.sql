@@ -11,21 +11,28 @@
 PRAGMA foreign_keys = ON;
 
 -- Users: coaches and athletes; role is server-trusted (never from request body).
--- Hierarchy: super admin -> creates/manages coaches; coach -> manages athletes
--- (coach_id = the coach's id). The super admin is a row with is_superadmin=1; login
--- maps that to the effective role 'superadmin' in the session (we keep role itself as
--- 'coach'/'athlete' so the CHECK and all FK references are unchanged — important because
--- D1 can't drop/rebuild this referenced table cleanly). The production super-admin
--- account is seeded by db/migrations/0004_seed_superadmin.sql (change its password
--- after first login).
+-- Strict tier ladder: coach < admin < super admin (each a superset of the one below):
+--   super admin -> creates/manages admins, coaches AND other super admins + the global
+--                  content library + site appearance (theme + page builder).
+--   admin       -> everything a coach can do + the global content library + create/manage coaches.
+--   coach       -> manages their own athletes (coach_id = the coach's id) + private content.
+-- The two upper tiers are additive flag columns, NOT new role values: changing the
+-- role CHECK would require dropping/rebuilding this FK-referenced table, which D1 can't
+-- do cleanly. So role stays 'coach' for coach/admin/super admin rows, and login maps the
+-- flags to the effective session role (effectiveRole in functions/api): is_superadmin=1
+-- -> 'superadmin', else is_admin=1 -> 'admin', else role. is_admin added by 0006, the
+-- super admin seeded by 0004 (change its password after first login).
+-- The 'usr_global_library' row (seeded by 0006) owns the shared global content library;
+-- it never logs in and is excluded from every roster listing in code.
 CREATE TABLE IF NOT EXISTS users (
   id             TEXT PRIMARY KEY,            -- uuid
   email          TEXT UNIQUE NOT NULL,
   name           TEXT NOT NULL,
   role           TEXT NOT NULL CHECK (role IN ('coach','athlete')),
+  is_admin       INTEGER NOT NULL DEFAULT 0,  -- 1 = admin   (effective role 'admin' at login)      [migration 0006]
   is_superadmin  INTEGER NOT NULL DEFAULT 0,  -- 1 = super admin (effective role 'superadmin' at login)
   password_hash  TEXT,                        -- nullable until athlete sets password via invite
-  coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches/super admin
+  coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches/admins/super admin
   invite_token   TEXT,                        -- one-time token for athlete first login
   invite_expires INTEGER,                     -- epoch seconds
   created_at     INTEGER NOT NULL
@@ -134,4 +141,27 @@ CREATE INDEX IF NOT EXISTS idx_taxonomy_coach ON taxonomy(coach_id);
 CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+-- Super-admin "Appearance" CMS (migration 0007). Both tables are global, edited only
+-- by a super admin and applied site-wide; the GET endpoints are public so the
+-- signed-out login page themes too.
+
+-- Theme tokens + brand/site config. value is a JSON blob keyed by `key` ('theme','site').
+-- Theme keys map 1:1 to the CSS custom properties in styles.css :root, so applying a
+-- saved theme is a pure CSS-variable override at runtime (no rebuild).
+CREATE TABLE IF NOT EXISTS site_settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,                 -- JSON blob
+  updated_at INTEGER NOT NULL
+);
+
+-- Builder pages. Blocks are an ordered JSON array on the row: [{id,type,props}, ...].
+-- type is a server-enforced whitelist: hero|heading|text|image|cards|button|spacer.
+CREATE TABLE IF NOT EXISTS pages (
+  id         TEXT PRIMARY KEY,              -- slug, e.g. 'landing'
+  title      TEXT NOT NULL,
+  blocks     TEXT NOT NULL DEFAULT '[]',    -- JSON array of blocks
+  published  INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET
+  updated_at INTEGER NOT NULL
 );

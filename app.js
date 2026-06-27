@@ -287,6 +287,8 @@
       var d = res.data;
       state.session = d.me;
       state.coaches = d.coaches || [];
+      state.admins = d.admins || [];
+      state.superadmins = d.superadmins || [];
       state.tracking = normalizeStore({
         students: d.students || {},
         activeStudentId: d.activeStudentId || (state.tracking && state.tracking.activeStudentId) || null,
@@ -460,7 +462,7 @@
         body: {
           activity_id: activityId,
           assignment_id: assignmentId || null,
-          athlete_id: (state.session && state.session.role === "coach") ? student.id : null,
+          athlete_id: (state.session && state.session.role !== "athlete") ? student.id : null,
           done: done
         }
       })
@@ -708,7 +710,7 @@
     if (!a.name) return null;
     if (SERVER) {
       var payload = Object.assign({}, a); delete payload.id;
-      api("/custom-activities", { method: "POST", body: { payload: payload } }).then(function (res) {
+      api(cmsRoute("/custom-activities"), { method: "POST", body: { payload: payload } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save activity")); return; }
         refreshFromServer().then(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
@@ -725,9 +727,9 @@
       var body, path;
       if (isCustom(id)) {
         var payload = Object.assign({}, fields); delete payload.id;
-        path = "/custom-activities"; body = { payload: Object.assign({ id: id }, payload) };
+        path = cmsRoute("/custom-activities"); body = { payload: Object.assign({ id: id }, payload) };
       } else {
-        path = "/overrides"; body = { activity_id: id, payload: fields, hidden: isHidden(id) };
+        path = cmsRoute("/overrides"); body = { activity_id: id, payload: fields, hidden: isHidden(id) };
       }
       api(path, { method: "POST", body: body }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save changes")); return; }
@@ -747,7 +749,7 @@
   }
   function resetActivityOverride(id) {
     if (SERVER) {
-      api("/overrides", { method: "POST", body: { activity_id: id, payload: null, hidden: false } }).then(function (res) {
+      api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: null, hidden: false } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't revert")); return; }
         refreshFromServer().then(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
@@ -759,7 +761,7 @@
     if (SERVER) {
       // Preserve any existing edit payload while flipping the hidden flag.
       var payload = state.tracking.overrides[id] || null;
-      api("/overrides", { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
+      api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't update")); return; }
         refreshFromServer().then(function () { renderRepo(); });
       }).catch(function () { toast("Couldn't reach the server"); });
@@ -770,7 +772,7 @@
   }
   function deleteCustomActivity(id) {
     if (SERVER) {
-      api("/custom-activities/" + encodeURIComponent(id), { method: "DELETE" }).then(function (res) {
+      api(cmsRoute("/custom-activities/" + encodeURIComponent(id)), { method: "DELETE" }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
         refreshFromServer().then(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
@@ -804,7 +806,7 @@
   function taxonomyFlow(kind, action, args, onDone) {
     var values = nextTaxValues(kind, action, args);
     if (SERVER) {
-      api("/taxonomy", { method: "POST", body: {
+      api(cmsRoute("/taxonomy"), { method: "POST", body: {
         kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
       } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save")); refreshFromServer(); return; }
@@ -896,6 +898,26 @@
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
 
   function isAdminView() { return state.view === "admin"; }
+
+  /* ----------------------------- Role tier (client) -----------------------------
+   * Mirrors the server's strict ladder coach < admin < super admin. The server is
+   * the only authority (every staff route re-checks the session); these helpers just
+   * decide which tabs/controls to show. In LOCAL mode there's no session, so admin-view
+   * counts as "coach" and the staff features (which are SERVER-only) stay hidden. */
+  var ROLE_RANK_C = { athlete: 0, coach: 1, admin: 2, superadmin: 3 };
+  function sessionRole() { return (state.session && state.session.role) || (isAdminView() ? "coach" : "athlete"); }
+  function rankC(r) { return ROLE_RANK_C[r] != null ? ROLE_RANK_C[r] : -1; }
+  function isAtLeast(r) { return rankC(sessionRole()) >= rankC(r); }
+  function isAtLeastAdmin() { return SERVER && isAtLeast("admin"); }
+  function isSuperadmin() { return SERVER && sessionRole() === "superadmin"; }
+
+  // Which content library the CMS flows write to. "private" -> the caller's own content
+  // (/custom-activities, /overrides, /taxonomy); "global" -> the shared library an
+  // admin/super admin curates (/global/*). Set by the Content tab's scope switch and
+  // reset to "private" whenever we leave the Content tab, so Repository edits never
+  // accidentally hit the global library.
+  var currentCmsTarget = "private";
+  function cmsRoute(p) { return currentCmsTarget === "global" ? ("/global" + p) : p; }
 
   /* ----------------------------- Repository ----------------------------- */
   function applyFilters() {
@@ -2150,11 +2172,16 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
-    return isAdminView()
-      ? [{ id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
-         { id: "students", label: "Students" }, { id: "content", label: "Content" },
-         { id: "settings", label: "Settings" }]
-      : [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
+    if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
+    // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
+    var tabs = [
+      { id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
+      { id: "students", label: "Students" }, { id: "content", label: "Content" }
+    ];
+    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Coaches" });
+    if (isSuperadmin()) tabs.push({ id: "users", label: "Admins" }, { id: "appearance", label: "Appearance" });
+    tabs.push({ id: "settings", label: "Settings" });
+    return tabs;
   }
 
   function renderTabs() {
@@ -2169,6 +2196,13 @@
     var ids = currentTabs().map(function (t) { return t.id; });
     if (ids.indexOf(tab) === -1) tab = ids[0];
     state.tab = tab;
+    // Global-library editing is scoped to the Content tab; leaving it returns the
+    // CMS flows to private so Repository/other-tab edits never hit the global library.
+    if (tab !== "content") currentCmsTarget = "private";
+    // Render the tabs that aren't part of the always-present static markup on demand.
+    if (tab === "manage" && isAtLeastAdmin()) renderManage();
+    else if (tab === "users" && isSuperadmin()) renderUsers();
+    else if (tab === "appearance" && isSuperadmin()) renderAppearance();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
       b.classList.toggle("is-active", on);
@@ -2197,8 +2231,11 @@
       $("#student-view-btn").hidden = true;
       $("#logout-btn").hidden = false;
       $("#preview-banner").hidden = true;
-      if (role === "coach") { badge.textContent = name || "Coach"; badge.classList.remove("is-student"); }
-      else { badge.textContent = name || "Athlete"; badge.classList.add("is-student"); }
+      if (role !== "athlete") {
+        var tierLabel = role === "superadmin" ? "Super admin" : (role === "admin" ? "Admin" : "Coach");
+        badge.textContent = name || tierLabel;
+        badge.classList.remove("is-student");
+      } else { badge.textContent = name || "Athlete"; badge.classList.add("is-student"); }
       applyServerChrome();
       renderTabs();
       setTab(state.tab);
@@ -2228,7 +2265,8 @@
     var info = $("#account-info");
     if (info && state.session) {
       info.textContent = "";
-      info.appendChild(detailBlock("Signed in as", state.session.name + (state.session.role === "coach" ? " · coach" : " · athlete")));
+      var roleLabel = { superadmin: "super admin", admin: "admin", coach: "coach", athlete: "athlete" }[state.session.role] || state.session.role;
+      info.appendChild(detailBlock("Signed in as", state.session.name + " · " + roleLabel));
     }
   }
 
@@ -2529,12 +2567,26 @@
   // visitor has no session. Routes to an invite-accept form if ?invite= is present.
   function showAuthGate(offline) {
     if ($("#auth-gate")) return;
+    var landing = el("div", { class: "auth-landing", id: "auth-landing", hidden: true });
     var card = el("div", { class: "auth-card" });
-    var root = el("div", { class: "auth-gate", id: "auth-gate", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" }, card);
+    var stack = el("div", { class: "auth-stack" }, [landing, card]);
+    var root = el("div", { class: "auth-gate", id: "auth-gate", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" }, stack);
     document.body.appendChild(root);
     var invite = getQueryParam("invite");
-    if (invite) renderAcceptForm(card, invite);
-    else renderLoginForm(card, offline);
+    if (invite) { renderAcceptForm(card, invite); return; }
+    renderLoginForm(card, offline);
+    if (!offline) renderLandingInto(landing);   // show the super-admin's published landing page above the form
+  }
+  // Render the published 'landing' builder page (if any) for signed-out visitors. The
+  // endpoint is public and returns 404 when no published page exists, in which case the
+  // sign-in card simply shows on its own.
+  function renderLandingInto(mount) {
+    api("/pages/landing").then(function (res) {
+      if (res.ok && res.data && Array.isArray(res.data.blocks) && res.data.blocks.length) {
+        renderPageBlocks(res.data.blocks, mount);
+        mount.hidden = false;
+      }
+    }).catch(function () {});
   }
   function renderLoginForm(card, offline) {
     card.textContent = "";
@@ -2670,7 +2722,7 @@
   }
   // Show the one-time login credentials (email + passcode) the coach emails to a student.
   function showCredentialsModal(data) {
-    var athlete = (data && (data.athlete || data.coach)) || {};
+    var athlete = (data && (data.athlete || data.coach || data.user)) || {};
     var who = athlete.name || "this person";
     var email = athlete.email || "";
     var passcode = (data && data.passcode) || "";
@@ -2710,81 +2762,92 @@
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
-  /* ----------------------------- Super admin ----------------------------- */
-  // A dedicated, full-page screen (no coach tabs/student picker) for managing coach
-  // accounts. Rendered straight into <main> so modals (z-index 200) sit above it.
-  function renderSuperadminApp() {
-    document.body.setAttribute("data-role", "admin");
-    var picker = $(".student-picker"); if (picker) picker.hidden = true;
-    var helpBtn = $("#help-btn"); if (helpBtn) helpBtn.hidden = true;
-    $("#admin-login-btn").hidden = true;
-    $("#student-view-btn").hidden = true;
-    $("#logout-btn").hidden = false;
-    $("#preview-banner").hidden = true;
-    var badge = $("#role-badge");
-    badge.hidden = false;
-    badge.textContent = (state.session && state.session.name) || "Super admin";
-    badge.classList.remove("is-student");
-    var tabs = $("#tabs"); if (tabs) tabs.textContent = "";
-    var main = $("main");
-    main.textContent = "";
-    main.appendChild(renderCoachesView());
+  /* ============================================================================
+     Staff management (Coaches / Admins tabs) + Appearance (theme + page builder)
+     These replace the old standalone super-admin screen: admins & super admins now
+     use the same tabbed app, with extra tabs that grow with their rank.
+     ============================================================================ */
+
+  // Re-pull the staff rosters from the server, then re-render whichever staff tab is open.
+  function refreshStaff() {
+    return api("/bootstrap").then(function (res) {
+      if (res.ok && res.data) {
+        if (Array.isArray(res.data.coaches)) state.coaches = res.data.coaches;
+        if (Array.isArray(res.data.admins)) state.admins = res.data.admins;
+        if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
+      }
+      if (state.tab === "manage") renderManage();
+      if (state.tab === "users") renderUsers();
+    }).catch(function () { toast("Couldn't refresh"); });
   }
 
-  function renderCoachesView() {
-    var wrap = el("section", { class: "view is-active" }, [
-      el("div", { class: "view-intro" }, [
-        el("h2", {}, "Coaches"),
-        el("p", {}, "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
-      ])
-    ]);
+  function staffPanel(title, addLabel, tier, rows) {
     var panel = el("div", { class: "panel" });
     panel.appendChild(el("div", { class: "section-head" }, [
-      el("h3", {}, "All coaches"),
-      el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddCoachModal(); } }, "+ Add coach")
+      el("h3", {}, title),
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddStaffModal(tier); } }, addLabel)
     ]));
-    panel.appendChild(el("div", { class: "student-list", id: "coach-list" }));
-    wrap.appendChild(panel);
-    renderCoachList(wrap.querySelector("#coach-list"));
-    return wrap;
+    var list = el("div", { class: "student-list" });
+    panel.appendChild(list);
+    renderStaffList(list, rows, tier);
+    return panel;
   }
 
-  function renderCoachList(list) {
-    list = list || $("#coach-list");
-    if (!list) return;
+  function renderStaffList(list, rows, tier) {
     list.textContent = "";
-    var coaches = state.coaches || [];
-    if (!coaches.length) {
-      list.appendChild(el("p", { class: "no-link" }, "No coaches yet. Add your first coach to get started."));
+    rows = rows || [];
+    if (!rows.length) {
+      var none = tier === "coach" ? "No coaches yet. Add your first coach to get started."
+        : (tier === "admin" ? "No admins yet." : "Only the seeded super admin exists so far.");
+      list.appendChild(el("p", { class: "no-link" }, none));
       return;
     }
-    coaches.forEach(function (c) {
-      var meta = c.studentCount + " student" + (c.studentCount === 1 ? "" : "s") + (c.hasPassword ? "" : " · no password set yet");
+    rows.forEach(function (c) {
+      var bits = [];
+      if (tier === "coach") bits.push(c.studentCount + " student" + (c.studentCount === 1 ? "" : "s"));
+      if (!c.hasPassword) bits.push("no password set yet");
+      var meta = bits.join(" · ");
       var nameKids = [el("span", { class: "name" }, c.name), el("span", { class: "student-email", title: "Signs in with this email" }, c.email)];
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
-      var actions = el("div", { class: "student-row-actions" }, [
-        el("span", { class: "student-row-meta" }, meta),
-        el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send this coach", onclick: function () { resetCoachPasscode(c); } }, "↻ Reset passcode")
-      ]);
-      row.appendChild(actions);
+      row.appendChild(el("div", { class: "student-row-actions" }, [
+        meta ? el("span", { class: "student-row-meta" }, meta) : null,
+        el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send them", onclick: function () { resetStaffPasscode(c, tier); } }, "↻ Reset passcode")
+      ]));
       list.appendChild(row);
     });
   }
 
-  // Re-pull just the coaches list (no refreshSelects — the coach/student DOM isn't present here).
-  function refreshCoaches() {
-    return api("/bootstrap").then(function (res) {
-      if (res.ok && res.data && Array.isArray(res.data.coaches)) { state.coaches = res.data.coaches; renderCoachList(); }
-    }).catch(function () { toast("Couldn't refresh coaches"); });
+  function renderManage() {
+    var view = $("#view-manage");
+    if (!view) return;
+    view.textContent = "";
+    view.appendChild(el("div", { class: "view-intro" }, [
+      el("h2", {}, "Coaches"),
+      el("p", {}, "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
+    ]));
+    view.appendChild(staffPanel("All coaches", "+ Add coach", "coach", state.coaches || []));
   }
 
-  // Super admin: add a coach. The server generates a one-time passcode to relay to them.
-  function openAddCoachModal() {
-    var name = el("input", { type: "text", placeholder: "Coach's name" });
-    var email = el("input", { type: "email", placeholder: "coach@email.com", autocomplete: "off" });
+  function renderUsers() {
+    var view = $("#view-users");
+    if (!view) return;
+    view.textContent = "";
+    view.appendChild(el("div", { class: "view-intro" }, [
+      el("h2", {}, "Admins & super admins"),
+      el("p", {}, "Admins can do everything a coach can plus manage coaches and the global content library. Super admins can do everything — including managing admins, other super admins, and the site's appearance.")
+    ]));
+    view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
+    view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+  }
+
+  // Create a coach (POST /coaches) or an admin/super admin (POST /users {tier}).
+  function openAddStaffModal(tier) {
+    var who = { coach: "coach", admin: "admin", superadmin: "super admin" }[tier] || "user";
+    var name = el("input", { type: "text", placeholder: "Full name" });
+    var email = el("input", { type: "email", placeholder: "name@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the coach and generate a one-time passcode. Send them their email + that passcode — they sign in with those and can set their own password afterwards."),
+      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time passcode. Send them their email + that passcode — they sign in with those and can set their own password afterwards."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       errBox
@@ -2793,26 +2856,379 @@
       errBox.hidden = true;
       var nm = name.value.trim(), em = email.value.trim();
       if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
-      api("/coaches", { method: "POST", body: { name: nm, email: em } }).then(function (res) {
-        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add coach."); errBox.hidden = false; return; }
+      var path = tier === "coach" ? "/coaches" : "/users";
+      var payload = tier === "coach" ? { name: nm, email: em } : { tier: tier, name: nm, email: em };
+      api(path, { method: "POST", body: payload }).then(function (res) {
+        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add " + who + "."); errBox.hidden = false; return; }
         closeModal();
-        refreshCoaches().then(function () { showCredentialsModal(res.data); });
+        refreshStaff().then(function () { showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
-    openModal("Add coach", body, [
+    openModal("Add " + who, body, [
       { label: "Cancel", onClick: closeModal },
       { label: "Create & get passcode", accent: true, onClick: submit }
     ]);
     setTimeout(function () { name.focus(); }, 30);
   }
 
-  function resetCoachPasscode(c) {
+  function resetStaffPasscode(c, tier) {
     if (!confirm("Generate a new passcode for " + c.name + "? Their old passcode stops working.")) return;
-    api("/coaches/" + encodeURIComponent(c.id) + "/reset-passcode", { method: "POST" }).then(function (res) {
+    var path = (tier === "coach" ? "/coaches/" : "/users/") + encodeURIComponent(c.id) + "/reset-passcode";
+    api(path, { method: "POST" }).then(function (res) {
       if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
-      refreshCoaches().then(function () { showCredentialsModal(res.data); });
+      refreshStaff().then(function () { showCredentialsModal(res.data); });
     }).catch(function () { toast("Couldn't reach the server"); });
   }
+
+  /* ----------------------------- Appearance: theme ----------------------------- */
+  // Client mirror of the server's DEFAULT_THEME (used for "Reset to defaults").
+  var DEFAULT_THEME_C = {
+    accent: "#c9f24e", ember: "#ff6a3d", bg: "#0b0d12", surface: "#14171f",
+    ink: "#f1f4f8", line: "rgba(255,255,255,.08)", danger: "#ff5d6c", warn: "#f5c451",
+    radius: "14px", space: "16px",
+    fontBody: "\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif",
+    fontDisplay: "\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif",
+    fontScale: "1"
+  };
+  var THEME_VAR_MAP = {
+    accent: "--accent", ember: "--ember", bg: "--bg", surface: "--surface",
+    ink: "--ink", line: "--line", danger: "--danger", warn: "--warn",
+    radius: "--radius", space: "--space", fontBody: "--font", fontDisplay: "--display"
+  };
+  // Apply saved theme tokens as CSS variables on :root (the new baseline). The light/dark
+  // toggle, which sets vars on <body>, still layers on top for the light palette.
+  function applySiteTheme(theme) {
+    if (!theme) return;
+    var r = document.documentElement;
+    Object.keys(THEME_VAR_MAP).forEach(function (k) {
+      if (theme[k] != null && theme[k] !== "") r.style.setProperty(THEME_VAR_MAP[k], theme[k]);
+    });
+    if (theme.fontScale != null && theme.fontScale !== "") r.style.setProperty("--font-scale", theme.fontScale);
+    if (theme.accent) { r.style.setProperty("--brand", theme.accent); r.style.setProperty("--success", theme.accent); }
+  }
+  // Fetch the saved site theme/copy and apply it. Safe pre-login (the endpoint is public)
+  // and tolerant of a missing/empty table (returns defaults, so it never blocks boot).
+  function loadAndApplySiteTheme() {
+    return api("/site").then(function (res) {
+      if (res.ok && res.data && res.data.theme) { state.site = res.data; applySiteTheme(res.data.theme); }
+    }).catch(function () {});
+  }
+  function toHex(v) { v = String(v || "").trim(); return /^#[0-9a-fA-F]{6}$/.test(v) ? v : ""; }
+  function safeUrl(u) { u = String(u || "").trim(); return /^https:\/\//i.test(u) ? u : ""; }
+  function safeMaxWidth(v) {
+    v = String(v == null ? "" : v).trim();
+    var m = v.match(/^((?:[0-9]{1,3}|1[0-9]{3}|2000))(px|%)$/);
+    if (!m) return "";
+    return String(Number(m[1])) + m[2];
+  }
+
+  function renderAppearance() {
+    var view = $("#view-appearance");
+    if (!view) return;
+    // The theme may already be loaded at boot (loadAndApplySiteTheme), but the page list
+    // is fetched lazily here. Load whichever is still missing before rendering.
+    if (!state.site || !state.pages) {
+      view.textContent = "";
+      view.appendChild(el("p", { class: "field-hint" }, "Loading appearance…"));
+      Promise.all([
+        state.site ? Promise.resolve({ data: state.site }) : api("/site"),
+        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages")
+      ]).then(function (out) {
+        var s = out[0] && out[0].data, p = out[1] && out[1].data;
+        state.site = (s && s.theme) ? s : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
+        state.pages = (p && p.pages) ? p.pages : [];
+        renderAppearance();
+      }).catch(function () {
+        state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
+        state.pages = state.pages || [];
+        renderAppearance();
+      });
+      return;
+    }
+    view.textContent = "";
+    view.appendChild(el("div", { class: "view-intro" }, [
+      el("h2", {}, "Appearance"),
+      el("p", {}, "Change the site's colors, fonts and sizes, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
+    ]));
+    view.appendChild(renderThemeEditor());
+    view.appendChild(renderPageBuilder());
+  }
+
+  function renderThemeEditor() {
+    var theme = Object.assign({}, DEFAULT_THEME_C, state.site.theme || {});
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Theme")]));
+
+    var COLORS = [["accent", "Accent"], ["ember", "Secondary accent"], ["bg", "Background"], ["surface", "Surface / cards"], ["ink", "Text"], ["danger", "Danger"], ["warn", "Warning"]];
+    var colorGrid = el("div", { class: "appearance-grid" });
+    COLORS.forEach(function (pair) {
+      var input = el("input", { type: "color", value: toHex(theme[pair[0]]) || "#000000" });
+      input.addEventListener("input", function () { theme[pair[0]] = input.value; applySiteTheme(theme); });
+      colorGrid.appendChild(el("label", { class: "appearance-field" }, [el("span", {}, pair[1]), input]));
+    });
+    panel.appendChild(colorGrid);
+
+    var FONTS = [
+      ["\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif", "Hanken Grotesk"],
+      ["\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif", "Bricolage Grotesque"],
+      ["\"JetBrains Mono\", ui-monospace, Menlo, monospace", "JetBrains Mono"],
+      ["system-ui, -apple-system, sans-serif", "System default"],
+      ["Georgia, \"Times New Roman\", serif", "Georgia (serif)"]
+    ];
+    function fontSelect(key, label) {
+      var sel = el("select", {});
+      FONTS.forEach(function (o) { var op = el("option", { value: o[0] }, o[1]); if (lc(theme[key]) === lc(o[0])) op.selected = true; sel.appendChild(op); });
+      sel.addEventListener("change", function () { theme[key] = sel.value; applySiteTheme(theme); });
+      return el("label", { class: "appearance-field" }, [el("span", {}, label), sel]);
+    }
+    panel.appendChild(el("div", { class: "appearance-grid" }, [fontSelect("fontBody", "Body font"), fontSelect("fontDisplay", "Heading font")]));
+
+    function slider(key, label, min, max, step, unit) {
+      var cur = parseFloat(theme[key]); if (isNaN(cur)) cur = parseFloat(DEFAULT_THEME_C[key]) || 1;
+      var out = el("span", { class: "appearance-val" }, cur + unit);
+      var input = el("input", { type: "range", min: min, max: max, step: step, value: cur });
+      input.addEventListener("input", function () { theme[key] = input.value + unit; out.textContent = input.value + unit; applySiteTheme(theme); });
+      return el("label", { class: "appearance-field" }, [el("span", {}, label), el("div", { class: "appearance-slider" }, [input, out])]);
+    }
+    panel.appendChild(el("div", { class: "appearance-grid" }, [
+      slider("fontScale", "Text size", 0.8, 1.4, 0.05, ""),
+      slider("radius", "Corner radius", 0, 28, 1, "px"),
+      slider("space", "Spacing", 8, 28, 1, "px")
+    ]));
+
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+        applySiteTheme(DEFAULT_THEME_C); state.site.theme = Object.assign({}, DEFAULT_THEME_C); renderAppearance();
+      } }, "Reset to defaults"),
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { theme: theme } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          applySiteTheme(state.site.theme); toast("Appearance saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save appearance")
+    ]));
+    return panel;
+  }
+
+  /* ----------------------------- Appearance: page builder ----------------------------- */
+  function newBlock(type) {
+    var id = "b" + Math.random().toString(36).slice(2, 8);
+    var props = {};
+    if (type === "hero") props = { heading: "Headline", sub: "Supporting sentence goes here.", ctaLabel: "Get started", ctaHref: "", align: "center" };
+    else if (type === "heading") props = { text: "Section heading", level: 2 };
+    else if (type === "text") props = { text: "Write a paragraph of text here." };
+    else if (type === "image") props = { src: "", alt: "", width: "" };
+    else if (type === "cards") props = { items: [{ title: "Card title", body: "Card text", icon: "★" }] };
+    else if (type === "button") props = { label: "Button", href: "", style: "primary" };
+    else if (type === "spacer") props = { size: "md" };
+    return { id: id, type: type, props: props };
+  }
+  function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); renderAppearance(); }
+  function moveBlock(i, dir) {
+    var b = state.pageDraft.blocks, j = i + dir;
+    if (j < 0 || j >= b.length) return;
+    var tmp = b[i]; b[i] = b[j]; b[j] = tmp; renderAppearance();
+  }
+  function blockSummary(b) {
+    var p = b.props || {};
+    if (b.type === "hero") return p.heading || "(hero)";
+    if (b.type === "heading") return p.text || "(heading)";
+    if (b.type === "text") return (p.text || "").slice(0, 60) || "(text)";
+    if (b.type === "image") return p.src || "(no image)";
+    if (b.type === "cards") return (p.items || []).length + " card" + ((p.items || []).length === 1 ? "" : "s");
+    if (b.type === "button") return p.label || "(button)";
+    if (b.type === "spacer") return p.size || "md";
+    return "";
+  }
+  function renderPageBuilder() {
+    if (!state.pageDraft) {
+      var existing = (state.pages || []).filter(function (p) { return p.id === "landing"; })[0];
+      state.pageDraft = existing
+        ? { id: "landing", title: existing.title || "Landing", blocks: (existing.blocks || []).slice(), published: !!existing.published }
+        : { id: "landing", title: "Landing", blocks: [], published: false };
+    }
+    var draft = state.pageDraft;
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Page builder"), el("span", { class: "cms-count" }, "Landing page")]));
+
+    var titleInput = el("input", { type: "text", value: draft.title });
+    titleInput.addEventListener("input", function () { draft.title = titleInput.value; });
+    var pubCb = el("input", { type: "checkbox" }); pubCb.checked = !!draft.published;
+    pubCb.addEventListener("change", function () { draft.published = pubCb.checked; });
+    panel.appendChild(el("div", { class: "appearance-grid" }, [
+      el("label", { class: "appearance-field" }, [el("span", {}, "Page title"), titleInput]),
+      el("label", { class: "check" }, [pubCb, " Published (visible to visitors)"])
+    ]));
+
+    var palette = el("div", { class: "builder-palette" });
+    [["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
+      palette.appendChild(el("button", { class: "btn btn--sm btn--ghost", onclick: function () { addBlock(pair[0]); } }, "+ " + pair[1]));
+    });
+    panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Add a block"), palette]));
+
+    var canvas = el("div", { class: "builder-canvas" });
+    if (!draft.blocks.length) canvas.appendChild(el("p", { class: "no-link" }, "No blocks yet. Add one above to start building the page."));
+    draft.blocks.forEach(function (b, i) {
+      canvas.appendChild(el("div", { class: "builder-block" }, [
+        el("div", { class: "builder-block-head" }, [
+          el("span", { class: "chip chip--accent" }, b.type),
+          el("span", { class: "builder-block-summary" }, blockSummary(b))
+        ]),
+        el("div", { class: "cms-actions" }, [
+          el("button", { class: "btn btn--sm", onclick: function () { openBlockModal(i); } }, "Edit"),
+          el("button", { class: "btn btn--sm btn--ghost", disabled: i === 0, onclick: function () { moveBlock(i, -1); } }, "↑"),
+          el("button", { class: "btn btn--sm btn--ghost", disabled: i === draft.blocks.length - 1, onclick: function () { moveBlock(i, 1); } }, "↓"),
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { draft.blocks.splice(i, 1); renderAppearance(); } }, "Delete")
+        ])
+      ]));
+    });
+    panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Blocks"), canvas]));
+
+    var preview = el("div", { class: "builder-preview" });
+    renderPageBlocks(draft.blocks, preview);
+    panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Preview"), preview]));
+
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: savePage }, "Save page")
+    ]));
+    return panel;
+  }
+  function renderCardsEditor(fields, p) {
+    if (!Array.isArray(p.items)) p.items = [];
+    var list = el("div", { class: "form-stack" });
+    function draw() {
+      list.textContent = "";
+      p.items.forEach(function (it, idx) {
+        var icon = el("input", { type: "text", placeholder: "Icon", value: it.icon || "", maxlength: "4", style: "max-width:64px" });
+        icon.addEventListener("input", function () { it.icon = icon.value; });
+        var title = el("input", { type: "text", placeholder: "Title", value: it.title || "" });
+        title.addEventListener("input", function () { it.title = title.value; });
+        var bodyI = el("input", { type: "text", placeholder: "Text", value: it.body || "" });
+        bodyI.addEventListener("input", function () { it.body = bodyI.value; });
+        var del = el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { p.items.splice(idx, 1); draw(); } }, "×");
+        list.appendChild(el("div", { class: "builder-card-row" }, [icon, title, bodyI, del]));
+      });
+    }
+    draw();
+    fields.appendChild(el("div", { class: "field" }, [
+      el("label", {}, "Cards"), list,
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () { p.items.push({ title: "Card", body: "", icon: "★" }); draw(); } }, "+ Add card")
+    ]));
+  }
+  function openBlockModal(i) {
+    var b = state.pageDraft.blocks[i];
+    if (!b) return;
+    var p = Object.assign({}, b.props || {});
+    var fields = el("div", { class: "form-stack" });
+    function textField(key, label, ta) {
+      var input = ta ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
+      input.value = p[key] != null ? p[key] : "";
+      input.addEventListener("input", function () { p[key] = input.value; });
+      fields.appendChild(el("div", { class: "field" }, [el("label", {}, label), input]));
+    }
+    function selectField(key, label, opts) {
+      var sel = el("select", {});
+      opts.forEach(function (o) { var op = el("option", { value: o[0] }, o[1]); if (String(p[key]) === String(o[0])) op.selected = true; sel.appendChild(op); });
+      sel.addEventListener("change", function () { p[key] = sel.value; });
+      fields.appendChild(el("div", { class: "field" }, [el("label", {}, label), sel]));
+    }
+    if (b.type === "hero") {
+      textField("heading", "Heading"); textField("sub", "Subheading", true);
+      textField("ctaLabel", "Button label"); textField("ctaHref", "Button link (https://…)");
+      selectField("align", "Align", [["center", "Center"], ["left", "Left"], ["right", "Right"]]);
+    } else if (b.type === "heading") {
+      textField("text", "Text");
+      selectField("level", "Size", [[1, "Large (H1)"], [2, "Medium (H2)"], [3, "Small (H3)"]]);
+    } else if (b.type === "text") {
+      textField("text", "Text", true);
+    } else if (b.type === "image") {
+      textField("src", "Image URL (https://…)"); textField("alt", "Alt text"); textField("width", "Max width (e.g. 480px)");
+    } else if (b.type === "button") {
+      textField("label", "Label"); textField("href", "Link (https://…)");
+      selectField("style", "Style", [["primary", "Primary"], ["ember", "Secondary"], ["ghost", "Ghost"]]);
+    } else if (b.type === "spacer") {
+      selectField("size", "Size", [["sm", "Small"], ["md", "Medium"], ["lg", "Large"]]);
+    } else if (b.type === "cards") {
+      renderCardsEditor(fields, p);
+    }
+    openModal("Edit " + b.type, fields, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Done", accent: true, onClick: function () {
+        if (b.type === "heading") p.level = parseInt(p.level, 10) || 2;
+        b.props = p; closeModal(); renderAppearance();
+      } }
+    ]);
+  }
+  function savePage() {
+    var draft = state.pageDraft;
+    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: { title: draft.title, blocks: draft.blocks, published: draft.published } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't save page")); return; }
+      var d = res.data || {};
+      state.pageDraft = { id: d.id || draft.id, title: d.title || draft.title, blocks: d.blocks || [], published: !!d.published };
+      var found = false;
+      state.pages = (state.pages || []).map(function (pg) {
+        if (pg.id === state.pageDraft.id) { found = true; return Object.assign({}, pg, state.pageDraft); }
+        return pg;
+      });
+      if (!found) state.pages.push(Object.assign({}, state.pageDraft));
+      renderAppearance(); toast("Page saved");
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Render an ordered list of sanitized content blocks into a mount node. All text is
+  // set via textContent (never innerHTML) and links/images are forced to https, so
+  // rendering builder content can't inject script.
+  function renderPageBlocks(blocks, mount) {
+    mount.textContent = "";
+    (blocks || []).forEach(function (b) {
+      var fn = BLOCK_RENDERERS[b && b.type];
+      if (!fn) return;
+      var node = fn(b.props || {});
+      if (node) mount.appendChild(node);
+    });
+  }
+  var BLOCK_RENDERERS = {
+    hero: function (p) {
+      var kids = [el("h1", { class: "pb-hero-h" }, p.heading || "")];
+      if (p.sub) kids.push(el("p", { class: "pb-hero-sub" }, p.sub));
+      var href = safeUrl(p.ctaHref);
+      if (p.ctaLabel && href) kids.push(el("a", { class: "btn btn--primary", href: href }, p.ctaLabel));
+      return el("section", { class: "pb-hero", style: "text-align:" + (p.align === "left" || p.align === "right" ? p.align : "center") }, kids);
+    },
+    heading: function (p) {
+      var tag = p.level === 1 || p.level === "1" ? "h1" : (p.level === 3 || p.level === "3" ? "h3" : "h2");
+      return el(tag, { class: "pb-heading" }, p.text || "");
+    },
+    text: function (p) { return el("p", { class: "pb-text" }, p.text || ""); },
+    image: function (p) {
+      var src = safeUrl(p.src);
+      if (!src) return null;
+      var width = safeMaxWidth(p.width);
+      return el("img", { class: "pb-image", src: src, alt: p.alt || "", style: width ? ("max-width:" + width) : "" });
+    },
+    cards: function (p) {
+      var grid = el("div", { class: "pb-cards" });
+      (p.items || []).forEach(function (it) {
+        grid.appendChild(el("div", { class: "pb-card" }, [
+          it.icon ? el("div", { class: "pb-card-icon" }, it.icon) : null,
+          el("h3", {}, it.title || ""),
+          el("p", {}, it.body || "")
+        ]));
+      });
+      return grid;
+    },
+    button: function (p) {
+      if (!p.label) return null;
+      var cls = "btn " + (p.style === "ghost" ? "btn--ghost" : (p.style === "ember" ? "btn--ember" : "btn--primary"));
+      return el("div", { class: "pb-button" }, [el("a", { class: cls, href: safeUrl(p.href) || "#" }, p.label)]);
+    },
+    spacer: function (p) {
+      var h = p.size === "sm" ? 16 : (p.size === "lg" ? 64 : 32);
+      return el("div", { style: "height:" + h + "px" });
+    }
+  };
+
   // Coach: pull an old exported localStorage backup into the shared database (T6).
   function handleServerImportFile(file) {
     var reader = new FileReader();
@@ -2934,6 +3350,9 @@
   }
   function maybeAutoTour() {
     var r = isAdminView() ? "admin" : "student";
+    // The built-in tour is coach/athlete oriented ("Welcome, coach"); admins & super
+    // admins have a different (and larger) tab set, so skip the auto-tour for them.
+    if (r === "admin" && isAtLeastAdmin()) return;
     if (tourSeen(r)) return;
     markTourSeen(r);
     setTimeout(function () { startTour(r === "admin" ? TOUR_ADMIN : TOUR_STUDENT, true); }, 650);
@@ -2970,6 +3389,27 @@
     if (!isAdminView()) return;
     var nav = $("#cms-subnav");
     if (!nav) return;
+    // Scope switch (admin & super admin only): curate the shared Global library that
+    // every coach/athlete sees, or your own private content. Plain coaches only ever
+    // edit their private content, so the switch stays hidden for them.
+    var scopeWrap = $("#cms-scope");
+    if (scopeWrap) {
+      if (isAtLeastAdmin()) {
+        if (state.cmsScope !== "global") state.cmsScope = "private";
+        scopeWrap.hidden = false;
+        scopeWrap.textContent = "";
+        [["private", "My content"], ["global", "Global library"]].forEach(function (pair) {
+          var input = el("input", { type: "radio", name: "cms-scope", value: pair[0] });
+          if (state.cmsScope === pair[0]) input.checked = true;
+          input.addEventListener("change", function () { if (!input.checked) return; state.cmsScope = pair[0]; renderContent(); });
+          scopeWrap.appendChild(el("label", {}, [input, el("span", {}, pair[1])]));
+        });
+      } else {
+        scopeWrap.hidden = true;
+        state.cmsScope = "private";
+      }
+    }
+    currentCmsTarget = (isAtLeastAdmin() && state.cmsScope === "global") ? "global" : "private";
     var sub = state.cmsTab === "taxonomy" ? "taxonomy" : "activities";
     nav.textContent = "";
     [["activities", "Activities"], ["taxonomy", "Topics & types"]].forEach(function (pair) {
@@ -3134,6 +3574,9 @@
       renderWorkout();
       renderStudents();
       renderContent();
+      if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
+      if (state.tab === "users" && isSuperadmin()) renderUsers();
+      if (state.tab === "appearance" && isSuperadmin()) renderAppearance();
     } else {
       renderWorkoutsTab();
       renderProgressTab();
@@ -3323,11 +3766,15 @@
       if (res.ok && res.data && res.data.id) {
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
-        return loadBaseActivities().then(loadServerSnapshot).then(function () {
-          // Super admins get a dedicated coach-management screen, not the coach/student app.
-          if (state.session.role === "superadmin") { renderSuperadminApp(); return; }
-          state.view = state.session.role === "coach" ? "admin" : "student";
-          if (!location.hash) state.tab = state.session.role === "coach" ? "students" : "workouts";
+        return loadBaseActivities().then(loadServerSnapshot).then(loadAndApplySiteTheme).then(function () {
+          // Coach, admin and super admin all use the tabbed app; the tab set grows with
+          // rank. Only athletes get the student view.
+          var staff = state.session.role !== "athlete";
+          state.view = staff ? "admin" : "student";
+          if (!location.hash) {
+            state.tab = state.session.role === "superadmin" ? "appearance"
+              : (state.session.role === "admin" ? "manage" : (staff ? "students" : "workouts"));
+          }
           refreshSelects();
           applyRole();
           renderAll();
@@ -3337,6 +3784,7 @@
       if (res.status === 401) {
         // The API is live but we're signed out → show the login / invite gate.
         SERVER = true;
+        loadAndApplySiteTheme();
         showAuthGate();
         return;
       }

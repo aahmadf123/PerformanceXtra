@@ -33,24 +33,34 @@ build/
   PerformanceXtra_Master_Sheet.xlsx  # source spreadsheet (dev-only, not served)
 ```
 
-## Roles: super admin, coach, athlete
+## Roles: super admin, admin, coach, athlete
 
-- **Super admin** signs in to a dedicated screen that does one thing: **create and manage
-  coach accounts** (and reset a coach's passcode). The production super admin is seeded by a
-  migration (see Deploy).
+A strict ladder — **coach < admin < super admin** — where each higher tier can do everything
+the one below it can, plus more. All three sign in to the same tabbed app; the tab set grows
+with the role.
+
 - **Coach** can: browse the repository, build workouts, **assign** activities to specific
-  athletes, **add** custom activities, **edit or hide** any activity, manage athletes, and
-  export rosters/assignments.
-- **Athletes** see only their own assigned workouts (with instructions and reflection prompts
-  inline), the repository, and their progress. They can't assign, add, edit, or manage
-  anything.
+  athletes, **add** custom activities, **edit or hide** any activity, manage athletes, manage
+  their **own** private content (Content tab), and export rosters/assignments.
+- **Admin** can do everything a coach can, **plus**: **create and manage coach accounts**, and
+  curate the **global content library** — a shared set of activities and taxonomy that every
+  coach and athlete sees, edited from the Content tab's **Global library** scope.
+- **Super admin** can do everything an admin can, **plus**: **create and manage admins and
+  other super admins**, and control the site's **Appearance** — a built-in CMS to change colors,
+  fonts and sizes (saved to the database and applied site-wide) and build the landing page from
+  drag-ordered content blocks (hero, heading, text, image, cards, button, spacer). The
+  production super admin is seeded by a migration (see Deploy).
 
-### Adding coaches
+Internally, admin and super admin are flag columns (`is_admin` / `is_superadmin`) on a
+`role='coach'` row — the FK-referenced `role` column is never changed (see `db/schema.sql`).
 
-The **super admin** adds a coach by **name + email**. The server generates a one-time passcode,
-shown **once**; the super admin sends the coach their email + passcode. The coach signs in,
-manages their own athletes, and can change their password in Settings. **Reset passcode** on a
-coach's row issues a fresh one if it's lost.
+### Adding coaches, admins & super admins
+
+An **admin or super admin** adds a coach by **name + email** from the **Coaches** tab; a **super
+admin** adds admins and other super admins from the **Admins** tab. In every case the server
+generates a one-time passcode, shown **once**; you send the person their email + passcode, they
+sign in, and can change their password in Settings. A creator can never mint an account **above**
+their own role. **Reset passcode** on any row issues a fresh one if it's lost.
 
 ### Adding athletes
 
@@ -78,10 +88,20 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   `[label](https://…)` markdown — and any activity can be given a **student-level custom link**
   (e.g. a doc in that athlete's private folder): set it once per student and it overrides the
   activity's default link for that student across **every** assignment.
-- **Content** *(coach)* — a built-in CMS to manage the activity library **and** the Topic /
-  Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or delete activities,
-  and add / rename / merge / remove taxonomy values (renames cascade across every activity).
-  Everything is stored in D1, so it survives redeploys — no spreadsheet edit or developer needed.
+- **Content** *(coach / admin / super admin)* — a built-in CMS to manage the activity library
+  **and** the Topic / Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or
+  delete activities, and add / rename / merge / remove taxonomy values (renames cascade across
+  every activity). Coaches edit their **own private** content; admins & super admins get a
+  **Global library** scope switch to edit the shared library every coach/athlete sees. Each
+  coach still sees the global library **merged** with their own private items, and a coach's
+  private edit always wins over the global one. Everything is stored in D1, so it survives
+  redeploys — no spreadsheet edit or developer needed.
+- **Appearance** *(super admin)* — change the site's **colors, fonts, text size, spacing and
+  corner radius** (mapped to the CSS variables in `styles.css`, saved to D1 and applied
+  site-wide for everyone, including the signed-out login page), and a **page builder** to
+  assemble the landing page from ordered content blocks with a live preview and draft/publish.
+  Block text renders as plain text and links are forced to `https://`, so builder content can't
+  inject script.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
   and a **Mark done** button on each item.
 - **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
@@ -145,12 +165,16 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0003_superadmin_role.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0004_seed_superadmin.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0005_student_activity_links.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0006_admin_role.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0007_site_builder.sql --remote
    ```
 
    `0003` adds the super-admin role, `0004` seeds the super-admin login (email
    `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
-   sign-in**; edit the migration first if you want different credentials), and `0005` moves
-   custom links to the student level. Validate `0003` against a local copy (`--local`) first.
+   sign-in**; edit the migration first if you want different credentials), `0005` moves
+   custom links to the student level, `0006` adds the **admin** tier plus the global-library
+   owner row, and `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`).
+   Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
   If unset, the app auto-provisions a strong random secret once and stores it in D1, so
