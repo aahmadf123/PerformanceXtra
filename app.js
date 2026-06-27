@@ -800,7 +800,7 @@
       api("/taxonomy", { method: "POST", body: {
         kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
       } }).then(function (res) {
-        if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
+        if (!res.ok) { toast(apiError(res, "Couldn't save")); refreshFromServer(); return; }
         refreshFromServer().then(function () { if (onDone) onDone(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
