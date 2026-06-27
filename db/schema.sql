@@ -188,3 +188,23 @@ CREATE TABLE IF NOT EXISTS journal_entries (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_journal_athlete ON journal_entries(athlete_id);
+
+-- In-app two-way messaging (migration 0009): a coach<->athlete thread keyed by athlete,
+-- plus a single coach-private note per athlete (never shown to the athlete). All in-app;
+-- no email is sent. sender is server-trusted (the session role), never the request body.
+CREATE TABLE IF NOT EXISTS messages (
+  id         TEXT PRIMARY KEY,
+  athlete_id TEXT NOT NULL REFERENCES users(id),
+  coach_id   TEXT NOT NULL REFERENCES users(id),
+  sender     TEXT NOT NULL CHECK (sender IN ('coach','athlete')),
+  body       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  read_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_messages_athlete ON messages(athlete_id);
+
+CREATE TABLE IF NOT EXISTS athlete_notes (
+  athlete_id TEXT PRIMARY KEY REFERENCES users(id),
+  note       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);

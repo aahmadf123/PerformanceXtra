@@ -377,6 +377,8 @@
       if (!st.reflections || typeof st.reflections !== "object") st.reflections = {};
       if (!Array.isArray(st.checkins)) st.checkins = [];
       if (!Array.isArray(st.journal)) st.journal = [];
+      if (!Array.isArray(st.messages)) st.messages = [];
+      if (typeof st.coachNote !== "string") st.coachNote = "";
     });
     return s;
   }
@@ -1572,6 +1574,8 @@
     all.forEach(function (s) {
       var active = state.tracking.activeStudentId === s.id;
       var nameKids = [el("span", { class: "name" }, s.name)];
+      var unreadMsgs = threadUnread(s, "athlete");
+      if (unreadMsgs) nameKids.push(el("span", { class: "msg-badge", title: unreadMsgs + " unread message" + (unreadMsgs === 1 ? "" : "s") }, "✉ " + unreadMsgs));
       if (SERVER && s.email) {
         nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
       }
@@ -1883,6 +1887,7 @@
     detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
     appendProgress(detail, s);
     appendWellbeing(detail, s);
+    appendCoachComms(detail, s);
   }
 
   /* ----------------------------- Student views ----------------------------- */
@@ -2113,6 +2118,104 @@
     saveStore(); renderAll(); toast("Entry deleted");
   }
 
+  /* ----------------------------- Messaging & coach notes ----------------------------- */
+  function threadUnread(s, otherSender) {
+    return ((s && s.messages) || []).filter(function (m) { return m.sender === otherSender && !m.readAt; }).length;
+  }
+  function messageThreadPanel(s) {
+    var wrap = el("div", { class: "msg-thread" });
+    var msgs = (s && s.messages) || [];
+    if (!msgs.length) { wrap.appendChild(el("p", { class: "no-link" }, "No messages yet. Say hello 👋")); return wrap; }
+    msgs.forEach(function (m) {
+      wrap.appendChild(el("div", { class: "msg msg--" + (m.sender === "coach" ? "coach" : "athlete") + (m.readAt ? "" : " is-unread") }, [
+        el("div", { class: "msg-body" }, m.body),
+        el("div", { class: "msg-meta" }, (m.sender === "coach" ? "Coach" : "Athlete") + " · " + fmtDate(m.createdAt))
+      ]));
+    });
+    return wrap;
+  }
+  function composeRow(onSend) {
+    var ta = el("textarea", { class: "msg-input", placeholder: "Write a message…" });
+    var btn = el("button", { class: "btn btn--accent", onclick: function () {
+      var v = ta.value.trim(); if (!v) { ta.focus(); return; } onSend(v);
+    } }, "Send");
+    return el("div", { class: "msg-compose" }, [ta, btn]);
+  }
+
+  // Athlete's "Messages" tab — their thread with their coach.
+  function renderMessagesTab() {
+    var panel = $("#messages-panel");
+    if (!panel) return;
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No messages"),
+        el("p", {}, "Ask your coach to set you up.")
+      ]));
+      return;
+    }
+    markThreadRead(s);   // viewing the tab clears unread coach messages
+    var card = el("div", { class: "panel" });
+    card.appendChild(el("h3", {}, "Messages with your coach"));
+    card.appendChild(messageThreadPanel(s));
+    card.appendChild(composeRow(function (v) { sendMessage(v); }));
+    panel.appendChild(card);
+  }
+
+  // Coach's per-athlete private note + message thread (Students detail).
+  function appendCoachComms(container, s) {
+    container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Private note"));
+    container.appendChild(el("p", { class: "field-hint" }, "Only you can see this — the athlete never does."));
+    var note = el("textarea", { class: "msg-input", placeholder: "A private note about this athlete…" });
+    note.value = s.coachNote || "";
+    container.appendChild(note);
+    container.appendChild(el("button", { class: "btn btn--sm", style: "margin-top:8px", onclick: function () { saveAthleteNote(s.id, note.value.trim()); } }, "Save note"));
+
+    container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Messages"));
+    markThreadRead(s);   // viewing the athlete clears unread athlete messages
+    container.appendChild(messageThreadPanel(s));
+    container.appendChild(composeRow(function (v) { sendMessage(v); }));
+  }
+
+  function sendMessage(body) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      var payload = isAdminView() ? { athlete_id: s.id, body: body } : { body: body };
+      api("/messages", { method: "POST", body: payload }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't send")); return; }
+        refreshFromServer().then(function () { renderAll(); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.messages = s.messages || [];
+    s.messages.push({ id: "M-" + Date.now(), sender: isAdminView() ? "coach" : "athlete", body: body, createdAt: new Date().toISOString(), readAt: null });
+    saveStore(); renderAll();
+  }
+  function saveAthleteNote(athleteId, note) {
+    if (SERVER) {
+      api("/athlete-note", { method: "POST", body: { athlete_id: athleteId, note: note } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save note")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Note saved"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    var s = students()[athleteId]; if (s) { s.coachNote = note; saveStore(); }
+    toast("Note saved");
+  }
+  // Optimistically mark the OTHER party's messages read + tell the server. No re-render
+  // here (it's called mid-render); the cleared state shows on the next natural render.
+  function markThreadRead(s) {
+    s = s || activeStudent(); if (!s || !s.messages) return;
+    var other = isAdminView() ? "athlete" : "coach";
+    var changed = false;
+    s.messages.forEach(function (m) { if (m.sender === other && !m.readAt) { m.readAt = new Date().toISOString(); changed = true; } });
+    if (!changed) return;
+    if (SERVER) {
+      api("/messages/read", { method: "POST", body: isAdminView() ? { athlete_id: s.id } : {} }).catch(function () {});
+    } else { saveStore(); }
+  }
+
   /* ----------------------------- Export / Import ----------------------------- */
   function exportTracking() {
     var date = new Date().toISOString().slice(0, 10);
@@ -2286,7 +2389,16 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
-    if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "checkin", label: "Check-in" }, { id: "progress", label: "My Progress" }];
+    if (!isAdminView()) {
+      var meS = activeStudent();
+      var unread = meS ? threadUnread(meS, "coach") : 0;
+      return [
+        { id: "workouts", label: "My Workouts" },
+        { id: "checkin", label: "Check-in" },
+        { id: "messages", label: "Messages" + (unread ? " (" + unread + ")" : "") },
+        { id: "progress", label: "My Progress" }
+      ];
+    }
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
       { id: "repo", label: "Repository" },
@@ -3714,6 +3826,7 @@
     } else {
       renderWorkoutsTab();
       renderCheckinTab();
+      renderMessagesTab();
       renderProgressTab();
     }
   }

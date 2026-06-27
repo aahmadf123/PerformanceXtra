@@ -755,3 +755,15 @@
   .wellbeing-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
   .wb-chip { padding: 6px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: .82rem; color: var(--ink-soft); }
   .assign-generator { margin: 4px 0 8px; }
+
+  /* ===================== Messaging & coach notes ===================== */
+  .msg-thread { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 14px; }
+  .msg { max-width: 80%; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--line); }
+  .msg-body { white-space: pre-wrap; }
+  .msg-meta { font-size: .72rem; color: var(--muted); margin-top: 4px; }
+  .msg--athlete { align-self: flex-start; background: var(--surface-2); }
+  .msg--coach { align-self: flex-end; background: var(--accent-dim); border-color: rgba(201,242,78,.25); }
+  .msg.is-unread { box-shadow: 0 0 0 2px var(--ember-dim); }
+  .msg-compose { display: flex; gap: 8px; align-items: flex-end; }
+  .msg-input { flex: 1 1 auto; min-height: 64px; width: 100%; resize: vertical; }
+  .msg-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--ember-dim); color: var(--ember); font-size: .72rem; font-weight: 600; margin-left: 8px; }

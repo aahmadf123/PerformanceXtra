@@ -112,6 +112,11 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   and supportive — a mindset tool, not a clinical form. The coach sees it read-only in a per-athlete
   **Wellbeing** panel (recent check-ins, 14-day averages, streak, and journal entries), so patterns
   surface without anyone exchanging emails.
+- **Messages** *(coach ↔ athlete)* — a direct in-app thread per athlete: the athlete gets a
+  **Messages** tab (with an unread count), the coach gets a thread plus a **private note** (never
+  shown to the athlete) in the Students detail. Unread counts surface on the athlete's tab and on
+  each coach roster row. It's **in-app only — no email/SMS is sent** (see *Notifications* below);
+  this replaces the email/text back-and-forth that used to live outside the app.
 - **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
   automatically the first time a coach or athlete signs in.
 
@@ -176,14 +181,16 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0006_admin_role.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0007_site_builder.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0008_checkins_journal.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0009_messages.sql --remote
    ```
 
    `0003` adds the super-admin role, `0004` seeds the super-admin login (email
    `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
    sign-in**; edit the migration first if you want different credentials), `0005` moves
    custom links to the student level, `0006` adds the **admin** tier plus the global-library
-   owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), and `0008`
-   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`).
+   owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), `0008`
+   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`), and `0009` adds the
+   **messaging** tables (`messages`, `athlete_notes`).
    Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
@@ -197,10 +204,25 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.
 
+### Notifications (in-app only — no email yet)
+
+Everything that "notifies" — unread message counts, the wellbeing panel, and the
+scheduling/overdue cues — is **surfaced inside the app**; the project sends **no email or SMS**.
+That's deliberate: it keeps the app dependency-free (no domain, no Resend/SMTP key, no DKIM/SPF
+setup). When you're ready to add real notifications, the data is already shaped for it:
+
+- **Unread messages** are rows in `messages` with `read_at IS NULL` — query them per athlete/coach.
+- **Overdue work** is any `assignments.due_at` in the past without completions for the athlete.
+
+A future developer can add a scheduled Worker (Cron Trigger) that reads those and calls an email
+provider — no schema change required. Nothing in the current code path makes an outbound email call.
+
 ### Security model
 
 - Roles come **only** from the signed, HTTP-only session cookie — never from the request body.
 - A coach can only read/write their own rows (or athletes whose `coach_id` is theirs); an
-  athlete can only read their own assignments and write their own completions.
+  athlete can only read their own assignments and write their own completions. Messages and the
+  coach-private note are scoped to the coach↔athlete pair; the private note is never sent to the
+  athlete's own bootstrap.
 - Passwords are hashed with PBKDF2 (WebCrypto). Session cookies are JWT (HS256), `HttpOnly`,
   `Secure`, `SameSite=Lax`.

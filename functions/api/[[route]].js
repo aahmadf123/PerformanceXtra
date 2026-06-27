@@ -210,7 +210,10 @@ function isPlausibleRealEmail(email) {
 }
 
 /* ----------------------------- D1 assembly helpers ----------------------------- */
-async function assembleAthlete(env, row) {
+// opts.includeCoachNote: include the coach-private note (coach views only — it must
+// never reach the athlete's own bootstrap).
+async function assembleAthlete(env, row, opts) {
+  opts = opts || {};
   const completed = {};
   const comp = await env.DB.prepare(
     "SELECT activity_id, MIN(completed_at) AS completed_at FROM completions WHERE athlete_id = ? GROUP BY activity_id"
@@ -295,11 +298,32 @@ async function assembleAthlete(env, row) {
     });
   } catch (e) { journal = []; }
 
+  // In-app messages thread + (coach-only) private note (migration 0009). Degrade to
+  // empty when the tables aren't migrated yet.
+  let messages = [];
+  try {
+    const ms = await env.DB.prepare(
+      "SELECT id, sender, body, created_at, read_at FROM messages WHERE athlete_id = ? ORDER BY created_at DESC LIMIT 100"
+    ).bind(row.id).all();
+    // Return oldest-first so the client can render a natural top-to-bottom thread.
+    messages = (ms.results || []).map(function (r) {
+      return { id: r.id, sender: r.sender, body: r.body || "", createdAt: epochToIso(r.created_at || nowSec()), readAt: r.read_at ? epochToIso(r.read_at) : null };
+    }).reverse();
+  } catch (e) { messages = []; }
+  let coachNote = "";
+  if (opts.includeCoachNote) {
+    try {
+      const nr = await env.DB.prepare("SELECT note FROM athlete_notes WHERE athlete_id = ?").bind(row.id).first();
+      coachNote = (nr && nr.note) || "";
+    } catch (e) { coachNote = ""; }
+  }
+
   return {
     id: row.id, name: row.name, email: row.email || null,
     createdAt: epochToIso(row.created_at || nowSec()),
     completed: completed, assignments: assignments, reflections: reflections,
-    activityLinks: studentLinks, checkins: checkins, journal: journal
+    activityLinks: studentLinks, checkins: checkins, journal: journal,
+    messages: messages, coachNote: coachNote
   };
 }
 async function loadCustom(env, coachId) {
@@ -440,6 +464,11 @@ async function route(method, path, request, env, url, secure) {
     if (method === "POST" && seg.length === 1) return handleAddJournal(session, request, env);
     if (method === "DELETE" && seg.length === 2) return handleDeleteJournal(session, env, seg[1]);
   }
+  if (head === "messages") {
+    if (method === "POST" && seg.length === 1) return handleSendMessage(session, request, env);
+    if (method === "POST" && seg.length === 2 && seg[1] === "read") return handleMarkRead(session, request, env);
+  }
+  if (method === "POST" && path === "/athlete-note") return handleSaveAthleteNote(session, request, env);
 
   if (head === "assignments") {
     if (method === "GET" && seg.length === 1) return handleListAssignments(session, env, url);
@@ -629,7 +658,7 @@ async function handleBootstrap(session, env) {
     ).bind(session.uid).all();
     const students = {};
     for (const r of (rows.results || [])) {
-      const a = await assembleAthlete(env, r);
+      const a = await assembleAthlete(env, r, { includeCoachNote: true });
       a.hasPassword = !!r.has_password;
       students[r.id] = a;
     }
@@ -1011,6 +1040,72 @@ async function handleAddJournal(session, request, env) {
 async function handleDeleteJournal(session, env, id) {
   if (session.role !== "athlete") return err(403, "Only athletes can delete journal entries");
   await env.DB.prepare("DELETE FROM journal_entries WHERE id = ? AND athlete_id = ?").bind(String(id), session.uid).run();
+  return json({ ok: true });
+}
+
+// In-app messaging + coach-private notes (Phase 4). All in-app — no email is sent.
+// Resolve the (athlete, coach) pair for a thread action and authorize it: an athlete
+// acts on their own thread (with their coach); a coach/admin/super admin acts on a
+// thread for an athlete they own.
+async function resolveThread(session, env, athleteIdInput) {
+  if (session.role === "athlete") {
+    const me = await env.DB.prepare("SELECT coach_id FROM users WHERE id = ?").bind(session.uid).first();
+    if (!me || !me.coach_id) return null;
+    return { athleteId: session.uid, coachId: me.coach_id };
+  }
+  const athleteId = String(athleteIdInput || "").trim();
+  if (!athleteId) return null;
+  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  if (!owns) return null;
+  return { athleteId: athleteId, coachId: session.uid };
+}
+async function handleSendMessage(session, request, env) {
+  const b = await readBody(request);
+  const t = await resolveThread(session, env, b.athlete_id || b.athleteId);
+  if (!t) return err(403, "Not your thread");
+  const body = String(b.body || "").trim().slice(0, 4000);
+  if (!body) return err(400, "Write a message first");
+  const sender = session.role === "athlete" ? "athlete" : "coach";
+  const id = crypto.randomUUID();
+  try {
+    await env.DB.prepare("INSERT INTO messages (id,athlete_id,coach_id,sender,body,created_at) VALUES (?,?,?,?,?,?)")
+      .bind(id, t.athleteId, t.coachId, sender, body, nowSec()).run();
+  } catch (e) {
+    return err(500, "Couldn't send your message (is the messages table migrated?)");
+  }
+  return json({ ok: true, id: id });
+}
+async function handleMarkRead(session, request, env) {
+  const b = await readBody(request);
+  const t = await resolveThread(session, env, b.athlete_id || b.athleteId);
+  if (!t) return err(403, "Not your thread");
+  // Mark the OTHER party's messages in this thread as read.
+  const otherSender = session.role === "athlete" ? "coach" : "athlete";
+  try {
+    await env.DB.prepare("UPDATE messages SET read_at = ? WHERE athlete_id = ? AND sender = ? AND read_at IS NULL")
+      .bind(nowSec(), t.athleteId, otherSender).run();
+  } catch (e) { /* table not migrated yet — nothing to mark */ }
+  return json({ ok: true });
+}
+async function handleSaveAthleteNote(session, request, env) {
+  if (session.role === "athlete") return err(403, "Coaches only");
+  const b = await readBody(request);
+  const athleteId = String(b.athlete_id || b.athleteId || "").trim();
+  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  if (!owns) return err(403, "Not your athlete");
+  const note = String(b.note || "").trim().slice(0, 4000);
+  try {
+    if (!note) {
+      await env.DB.prepare("DELETE FROM athlete_notes WHERE athlete_id = ?").bind(athleteId).run();
+    } else {
+      await env.DB.prepare(
+        "INSERT INTO athlete_notes (athlete_id,note,updated_at) VALUES (?,?,?) " +
+        "ON CONFLICT(athlete_id) DO UPDATE SET note=excluded.note, updated_at=excluded.updated_at"
+      ).bind(athleteId, note, nowSec()).run();
+    }
+  } catch (e) {
+    return err(500, "Couldn't save the note (is the athlete_notes table migrated?)");
+  }
   return json({ ok: true });
 }
 
