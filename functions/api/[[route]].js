@@ -11,6 +11,15 @@
  */
 
 const COOKIE = "px_session";
+// Owner id for the shared global content library (custom activities, overrides,
+// taxonomy). Seeded as a non-login users row by migration 0006 so the coach_id FKs are
+// satisfied. Coaches/athletes read GLOBAL ∪ own; admins/super admins edit this owner.
+const GLOBAL_OWNER_ID = "usr_global_library";
+// Strict tier ladder. Guards widen WHO may enter an endpoint (atLeast), never WHOSE
+// rows they touch — ownership sub-queries (coach_id = session.uid) stay unchanged.
+const ROLE_RANK = { athlete: 0, coach: 1, admin: 2, superadmin: 3 };
+function rank(role) { return ROLE_RANK[role] != null ? ROLE_RANK[role] : -1; }
+function atLeast(session, role) { return !!session && rank(session.role) >= rank(role); }
 const SESSION_TTL = 60 * 60 * 24 * 30;        // 30 days
 const INVITE_TTL = 60 * 60 * 24 * 14;         // 14 days
 const PBKDF2_ITER = 100000;
@@ -306,6 +315,54 @@ async function loadTaxonomy(env, coachId) {
   return out;
 }
 
+/* ---- merged loaders: GLOBAL library ∪ a user's own private content ----
+ * A coach/athlete sees the admin-curated global library merged with their own
+ * private items; on any key conflict the PRIVATE overlay wins so a coach's local
+ * edit/hide is never visually clobbered by a global one. Each tolerates a DB where
+ * the global owner row hasn't been seeded yet (degrades to "own content only"). */
+async function loadCustomMerged(env, coachId) {
+  let globalItems = [];
+  try { globalItems = await loadCustom(env, GLOBAL_OWNER_ID); } catch (e) { globalItems = []; }
+  const own = (coachId && coachId !== GLOBAL_OWNER_ID) ? await loadCustom(env, coachId) : [];
+  // Distinct CUST- ids across owners, but de-dupe defensively (own wins on id clash).
+  const seen = {};
+  const out = [];
+  own.concat(globalItems).forEach(function (a) {
+    if (!a || a.id == null) return;
+    if (seen[a.id]) return;
+    seen[a.id] = true;
+    out.push(a);
+  });
+  return out;
+}
+async function loadOverridesMerged(env, coachId) {
+  let g = { overrides: {}, hidden: {} };
+  try { g = await loadOverrides(env, GLOBAL_OWNER_ID); } catch (e) {}
+  const own = (coachId && coachId !== GLOBAL_OWNER_ID) ? await loadOverrides(env, coachId) : { overrides: {}, hidden: {} };
+  return {
+    overrides: Object.assign({}, g.overrides, own.overrides),   // private wins
+    hidden: Object.assign({}, g.hidden, own.hidden)
+  };
+}
+async function loadTaxonomyMerged(env, coachId) {
+  const g = await loadTaxonomy(env, GLOBAL_OWNER_ID);
+  const own = (coachId && coachId !== GLOBAL_OWNER_ID) ? await loadTaxonomy(env, coachId) : { topic: [], subtopic: [], type: [] };
+  const out = {};
+  ["topic", "subtopic", "type"].forEach(function (kind) {
+    const seen = {};
+    out[kind] = [];
+    // Global order first, then any private-only extras; dedup case-insensitively.
+    (g[kind] || []).concat(own[kind] || []).forEach(function (v) {
+      if (v == null) return;
+      const k = String(v).trim().toLowerCase();
+      if (!k || seen[k]) return;
+      seen[k] = true;
+      out[kind].push(v);
+    });
+  });
+  return out;
+}
+
 /* ===================================================================== */
 /*                              entry point                              */
 /* ===================================================================== */
@@ -342,6 +399,10 @@ async function route(method, path, request, env, url, secure) {
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE is_superadmin=1").first();
     return json({ needsSetup: !row || row.n === 0 });
   }
+  // Site appearance (theme tokens + brand) and published builder pages are PUBLIC so the
+  // signed-out login page can theme/render itself. Writes are super-admin only (below).
+  if (method === "GET" && path === "/site") return handleGetSite(env);
+  if (method === "GET" && head === "pages" && seg.length === 2) return handleGetPage(env, seg[1]);
 
   /* -------- session required below -------- */
   const session = await getSession(request, env);
@@ -361,16 +422,51 @@ async function route(method, path, request, env, url, secure) {
     if (method === "DELETE" && seg.length === 2) return handleDeleteAssignment(session, env, seg[1]);
   }
 
-  /* -------- super-admin only: manage coach accounts -------- */
-  if (head === "coaches") {
-    if (session.role !== "superadmin") return err(403, "Super admins only");
-    if (method === "GET" && seg.length === 1) return handleListCoaches(env);
-    if (method === "POST" && seg.length === 1) return handleCreateCoach(request, env, url);
-    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetCoachPasscode(env, seg[1], url);
+  /* -------- super-admin only: manage admins & other super admins, appearance -------- */
+  if (head === "users") {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListUsers(env, url);
+    if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url);
+    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "any");
+  }
+  if (head === "site" && method === "POST" && seg.length === 1) {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    return handleSaveSite(request, env);
+  }
+  if (head === "pages") {
+    // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListPages(env);
+    if (method === "POST" && seg.length === 2) return handleSavePage(request, env, seg[1]);
   }
 
-  /* -------- coach-only below -------- */
-  if (session.role !== "coach") return err(403, "Coaches only");
+  /* -------- admin & super admin: manage coaches + the global content library -------- */
+  if (head === "coaches") {
+    if (!atLeast(session, "admin")) return err(403, "Admins only");
+    if (method === "GET" && seg.length === 1) return handleListCoaches(env);
+    if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url, "coach");
+    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "coach");
+  }
+  if (head === "global") {
+    if (!atLeast(session, "admin")) return err(403, "Admins only");
+    const sub = seg[1] || "";
+    if (sub === "custom-activities") {
+      if (method === "GET" && seg.length === 2) return json({ customActivities: await loadCustom(env, GLOBAL_OWNER_ID) });
+      if (method === "POST" && seg.length === 2) return handleSaveCustom(session, request, env, GLOBAL_OWNER_ID);
+      if (method === "DELETE" && seg.length === 3) return handleDeleteCustom(session, env, seg[2], GLOBAL_OWNER_ID);
+    }
+    if (sub === "overrides") {
+      if (method === "GET" && seg.length === 2) return json(await loadOverrides(env, GLOBAL_OWNER_ID));
+      if (method === "POST" && seg.length === 2) return handleSaveOverride(session, request, env, GLOBAL_OWNER_ID);
+    }
+    if (sub === "taxonomy") {
+      if (method === "GET" && seg.length === 2) return json({ taxonomy: await loadTaxonomy(env, GLOBAL_OWNER_ID) });
+      if (method === "POST" && seg.length === 2) return handleSaveTaxonomy(session, request, env, GLOBAL_OWNER_ID);
+    }
+  }
+
+  /* -------- coach-level below (coach OR admin OR super admin) -------- */
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
 
   if (head === "athletes") {
     if (method === "GET" && seg.length === 1) return handleListAthletes(session, env);
@@ -403,7 +499,10 @@ async function route(method, path, request, env, url, secure) {
 // The effective session role: a row flagged is_superadmin is the super admin (its
 // stored role stays 'coach' so the CHECK and FK references never had to change).
 function effectiveRole(user) {
-  return (user && user.is_superadmin) ? "superadmin" : (user && user.role);
+  if (!user) return null;
+  if (user.is_superadmin) return "superadmin";
+  if (user.is_admin) return "admin";
+  return user.role;   // 'coach' | 'athlete'
 }
 
 async function handleSetup(request, env, secure) {
@@ -492,10 +591,12 @@ async function handleListBaseActivities(env) {
 
 async function handleBootstrap(session, env) {
   const me = { id: session.uid, name: session.name, role: session.role };
-  if (session.role === "superadmin") {
-    return json({ me: me, coaches: await listCoaches(env) });
-  }
-  if (session.role === "coach") {
+
+  // Coach, admin and super admin all use the tabbed app: their own athletes plus the
+  // content they see — the global library merged with their own private items. Higher
+  // tiers also get management rosters (coaches for admin+, admins/super admins for super
+  // admin). Site appearance + pages are fetched on demand by the Appearance tab.
+  if (session.role !== "athlete") {
     const rows = await env.DB.prepare(
       "SELECT id,name,email,created_at,(password_hash IS NOT NULL) AS has_password FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
     ).bind(session.uid).all();
@@ -505,17 +606,23 @@ async function handleBootstrap(session, env) {
       a.hasPassword = !!r.has_password;
       students[r.id] = a;
     }
-    const custom = await loadCustom(env, session.uid);
-    const ov = await loadOverrides(env, session.uid);
-    const taxonomy = await loadTaxonomy(env, session.uid);
-    return json({ me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy });
+    const custom = await loadCustomMerged(env, session.uid);
+    const ov = await loadOverridesMerged(env, session.uid);
+    const taxonomy = await loadTaxonomyMerged(env, session.uid);
+    const out = { me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy };
+    if (atLeast(session, "admin")) out.coaches = await listCoaches(env);
+    if (atLeast(session, "superadmin")) { out.admins = await listAdmins(env); out.superadmins = await listSuperadmins(env); }
+    return json(out);
   }
-  // athlete: only self, plus their coach's custom/overrides so assigned content renders
+
+  // athlete: only self, plus GLOBAL ∪ their coach's content so assigned content renders
   const meRow = await env.DB.prepare("SELECT id,name,email,coach_id,created_at FROM users WHERE id = ?").bind(session.uid).first();
   const self = await assembleAthlete(env, meRow);
   const students = {}; students[session.uid] = self;
-  let custom = [], ov = { overrides: {}, hidden: {} }, taxonomy = { topic: [], subtopic: [], type: [] };
-  if (meRow && meRow.coach_id) { custom = await loadCustom(env, meRow.coach_id); ov = await loadOverrides(env, meRow.coach_id); taxonomy = await loadTaxonomy(env, meRow.coach_id); }
+  const coachOwner = (meRow && meRow.coach_id) ? meRow.coach_id : null;
+  const custom = await loadCustomMerged(env, coachOwner);
+  const ov = await loadOverridesMerged(env, coachOwner);
+  const taxonomy = await loadTaxonomyMerged(env, coachOwner);
   return json({ me: me, students: students, activeStudentId: session.uid, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy });
 }
 
@@ -564,50 +671,97 @@ async function handleResetPasscode(session, env, athleteId, url) {
   return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
-/* --------------------- super-admin: coach management --------------------- */
-// Every coach with their athlete count. Used by GET /coaches and the superadmin bootstrap.
+/* ------------------- staff management (coaches / admins / super admins) -------------------
+ * A "coach" is a pure operational account; an "admin"/"super admin" is the same kind of
+ * row with an elevated flag. All three are excluded from each other's rosters by the
+ * flag filters below, and the non-login global-library sentinel is always excluded. */
+
+// Pure coaches (no admin/super-admin flag), each with their athlete count.
 async function listCoaches(env) {
   const rows = await env.DB.prepare(
-    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users WHERE role='coach' AND is_superadmin=0 ORDER BY name"
-  ).all();
+    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
+    "WHERE role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ? ORDER BY name"
+  ).bind(GLOBAL_OWNER_ID).all();
   const coaches = [];
   for (const r of (rows.results || [])) {
     const c = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE coach_id = ? AND role='athlete'").bind(r.id).first();
-    coaches.push({ id: r.id, name: r.name, email: r.email, hasPassword: !!r.has_password, studentCount: c ? c.n : 0 });
+    coaches.push({ id: r.id, name: r.name, email: r.email, hasPassword: !!r.has_password, studentCount: c ? c.n : 0, tier: "coach" });
   }
   return coaches;
 }
+async function listStaffTier(env, column, tier) {
+  const rows = await env.DB.prepare(
+    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
+    "WHERE " + column + "=1 AND id != ? ORDER BY name"
+  ).bind(GLOBAL_OWNER_ID).all();
+  return (rows.results || []).map(function (r) {
+    return { id: r.id, name: r.name, email: r.email, hasPassword: !!r.has_password, tier: tier };
+  });
+}
+function listAdmins(env) { return listStaffTier(env, "is_admin", "admin"); }
+function listSuperadmins(env) { return listStaffTier(env, "is_superadmin", "superadmin"); }
 
 async function handleListCoaches(env) {
   return json({ coaches: await listCoaches(env) });
 }
+// Super-admin roster view. ?tier=coach|admin|superadmin narrows it; otherwise all three.
+async function handleListUsers(env, url) {
+  const tier = String(url.searchParams.get("tier") || "").toLowerCase();
+  if (tier === "coach") return json({ coaches: await listCoaches(env) });
+  if (tier === "admin") return json({ admins: await listAdmins(env) });
+  if (tier === "superadmin") return json({ superadmins: await listSuperadmins(env) });
+  return json({ coaches: await listCoaches(env), admins: await listAdmins(env), superadmins: await listSuperadmins(env) });
+}
 
-// Super admin creates a coach. Like creating an athlete, the server generates a
-// one-time passcode the super admin relays to the coach; only the hash is stored.
-async function handleCreateCoach(request, env, url) {
+const TIER_FLAGS = {                       // role stays 'coach'; the flags set the tier
+  coach:      { is_admin: 0, is_superadmin: 0 },
+  admin:      { is_admin: 1, is_superadmin: 0 },
+  superadmin: { is_admin: 0, is_superadmin: 1 }
+};
+
+// Create a coach / admin / super admin. forcedTier is set by /coaches (always "coach",
+// admin-level); /users reads the tier from the body (super-admin-only). The server
+// generates a one-time passcode the creator relays; only the PBKDF2 hash is stored.
+// A creator can never mint a tier ABOVE their own rank (defence-in-depth on the routes).
+async function handleCreateUser(session, request, env, url, forcedTier) {
   const b = await readBody(request);
   const name = String(b.name || "").trim();
   const email = String(b.email || "").trim().toLowerCase();
+  const tier = String(forcedTier || b.tier || "coach").trim().toLowerCase();
   if (!name || !email) return err(400, "Name and email are required");
   if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+  if (!TIER_FLAGS[tier]) return err(400, "Invalid role");
+  if (rank(tier) > rank(session.role)) return err(403, "You can't create an account above your own role");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
   const id = crypto.randomUUID();
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
+  const flags = TIER_FLAGS[tier];
   await env.DB.prepare(
-    "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
-  ).bind(id, email, name, "coach", null, hash, nowSec()).run();
-  return json({ coach: { id: id, name: name, email: email }, passcode: passcode, loginUrl: url.origin + "/" });
+    "INSERT INTO users (id,email,name,role,is_admin,is_superadmin,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).bind(id, email, name, "coach", flags.is_admin, flags.is_superadmin, null, hash, nowSec()).run();
+  const user = { id: id, name: name, email: email, tier: tier };
+  // `coach` alias kept so the existing credentials modal keeps working for coach creation.
+  return json({ user: user, coach: user, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
-async function handleResetCoachPasscode(env, coachId, url) {
-  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND role='coach' AND is_superadmin=0").bind(coachId).first();
-  if (!row) return err(404, "Coach not found");
+// Reset a staff account's passcode. scope "coach" (used by the admin-level /coaches route)
+// matches pure coaches only, so an admin can't reset an admin/super-admin; scope "any"
+// (super-admin-only /users route) matches any non-athlete staff row. The global-library
+// sentinel is never resettable.
+async function handleResetUserPasscode(env, userId, url, scope) {
+  if (userId === GLOBAL_OWNER_ID) return err(404, "Not found");
+  const where = scope === "coach"
+    ? "id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0"
+    : "id = ? AND role='coach'";   // coach/admin/super admin staff rows all have role='coach'
+  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE " + where).bind(userId).first();
+  if (!row) return err(404, "Account not found");
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
-  await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, coachId).run();
-  return json({ coach: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
+  await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, userId).run();
+  const out = { id: row.id, name: row.name, email: row.email };
+  return json({ user: out, coach: out, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
 // Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)
@@ -639,7 +793,7 @@ async function handleListAssignments(session, env, url) {
   let athleteId = url.searchParams.get("athlete_id");
   if (session.role === "athlete") athleteId = session.uid;     // athletes: self only
   if (!athleteId) return err(400, "athlete_id is required");
-  if (session.role === "coach") {
+  if (session.role !== "athlete") {                            // coach/admin/super admin: own athletes only
     const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ?").bind(athleteId, session.uid).first();
     if (!owns) return err(403, "Not your athlete");
   }
@@ -659,7 +813,7 @@ function cleanUrl(u) {
 
 // Set/clear a per-student custom link for one activity inside an assignment.
 async function handleUpdateAssignmentItem(session, request, env, asgId) {
-  if (session.role !== "coach") return err(403, "Coaches only");
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
   if (!activityId) return err(400, "activity_id is required");
@@ -680,7 +834,7 @@ async function handleUpdateAssignmentItem(session, request, env, asgId) {
 }
 
 async function handleCreateAssignment(session, request, env) {
-  if (session.role !== "coach") return err(403, "Coaches only");
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
   const b = await readBody(request);
   const athleteId = String(b.athlete_id || b.athleteId || "").trim();
   const title = String(b.title || "").trim() || "Workout";
@@ -705,7 +859,7 @@ async function handleCreateAssignment(session, request, env) {
 }
 
 async function handleDeleteAssignment(session, env, asgId) {
-  if (session.role !== "coach") return err(403, "Coaches only");
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
   const row = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND coach_id = ?").bind(asgId, session.uid).first();
   if (!row) return err(404, "Assignment not found");
   await env.DB.batch([
@@ -726,15 +880,13 @@ async function handleCompletions(session, request, env) {
   if (!activityId) return err(400, "activity_id is required");
 
   var athleteId = session.uid;
-  if (session.role === "coach") {
+  if (session.role !== "athlete") {     // coach/admin/super admin: mark for an athlete they own
     athleteId = athleteIdInput;
     if (!athleteId) return err(400, "athlete_id is required for coach updates");
     const ownsAthlete = await env.DB.prepare(
       "SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'"
     ).bind(athleteId, session.uid).first();
     if (!ownsAthlete) return err(403, "Not your athlete");
-  } else if (session.role !== "athlete") {
-    return err(403, "Only athletes or their coach can mark work done");
   }
 
   if (assignmentId) {
@@ -785,25 +937,29 @@ async function handleReflections(session, request, env) {
 async function handleListCustom(session, env) {
   return json({ customActivities: await loadCustom(env, session.uid) });
 }
-async function handleSaveCustom(session, request, env) {
+// targetCoachId defaults to the caller (private content); the /global/* routes pass
+// GLOBAL_OWNER_ID so an admin/super admin edits the shared library instead.
+async function handleSaveCustom(session, request, env, targetCoachId) {
+  const owner = targetCoachId || session.uid;
   const b = await readBody(request);
   const payload = (b.payload && typeof b.payload === "object") ? b.payload : b;
   let id = payload.id || b.id;
   if (!id || !/^CUST-/.test(id)) id = custId();
   const store = Object.assign({}, payload);
   delete store.id;
-  const existing = await env.DB.prepare("SELECT id FROM custom_activities WHERE id = ? AND coach_id = ?").bind(id, session.uid).first();
+  const existing = await env.DB.prepare("SELECT id FROM custom_activities WHERE id = ? AND coach_id = ?").bind(id, owner).first();
   if (existing) {
-    await env.DB.prepare("UPDATE custom_activities SET payload = ? WHERE id = ? AND coach_id = ?").bind(JSON.stringify(store), id, session.uid).run();
+    await env.DB.prepare("UPDATE custom_activities SET payload = ? WHERE id = ? AND coach_id = ?").bind(JSON.stringify(store), id, owner).run();
   } else {
-    await env.DB.prepare("INSERT INTO custom_activities (id,coach_id,payload,created_at) VALUES (?,?,?,?)").bind(id, session.uid, JSON.stringify(store), nowSec()).run();
+    await env.DB.prepare("INSERT INTO custom_activities (id,coach_id,payload,created_at) VALUES (?,?,?,?)").bind(id, owner, JSON.stringify(store), nowSec()).run();
   }
   return json({ id: id });
 }
-async function handleDeleteCustom(session, env, id) {
+async function handleDeleteCustom(session, env, id, targetCoachId) {
+  const owner = targetCoachId || session.uid;
   await env.DB.batch([
-    env.DB.prepare("DELETE FROM custom_activities WHERE id = ? AND coach_id = ?").bind(id, session.uid),
-    env.DB.prepare("DELETE FROM activity_overrides WHERE activity_id = ? AND coach_id = ?").bind(id, session.uid)
+    env.DB.prepare("DELETE FROM custom_activities WHERE id = ? AND coach_id = ?").bind(id, owner),
+    env.DB.prepare("DELETE FROM activity_overrides WHERE activity_id = ? AND coach_id = ?").bind(id, owner)
   ]);
   return json({ ok: true });
 }
@@ -812,20 +968,21 @@ async function handleListOverrides(session, env) {
   const ov = await loadOverrides(env, session.uid);
   return json(ov);
 }
-async function handleSaveOverride(session, request, env) {
+async function handleSaveOverride(session, request, env, targetCoachId) {
+  const owner = targetCoachId || session.uid;
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
   if (!activityId) return err(400, "activity_id is required");
   const hidden = b.hidden ? 1 : 0;
   const payload = (b.payload === null || b.payload === undefined) ? null : JSON.stringify(b.payload);
   if (payload === null && hidden === 0) {
-    await env.DB.prepare("DELETE FROM activity_overrides WHERE coach_id = ? AND activity_id = ?").bind(session.uid, activityId).run();
+    await env.DB.prepare("DELETE FROM activity_overrides WHERE coach_id = ? AND activity_id = ?").bind(owner, activityId).run();
     return json({ ok: true, cleared: true });
   }
   await env.DB.prepare(
     "INSERT INTO activity_overrides (coach_id,activity_id,payload,hidden) VALUES (?,?,?,?) " +
     "ON CONFLICT(coach_id,activity_id) DO UPDATE SET payload = excluded.payload, hidden = excluded.hidden"
-  ).bind(session.uid, activityId, payload, hidden).run();
+  ).bind(owner, activityId, payload, hidden).run();
   return json({ ok: true });
 }
 
@@ -836,8 +993,8 @@ async function handleSaveOverride(session, request, env) {
  * place. Vocabulary writes are atomic per kind; cascades are applied in chunks. */
 const TAX_FIELD = { topic: "topic", subtopic: "subtopics", type: "type" };
 
-async function handleSaveTaxonomy(session, request, env) {
-  if (session.role !== "coach") return err(403, "Coaches only");
+async function handleSaveTaxonomy(session, request, env, targetCoachId) {
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
   const b = await readBody(request);
   const kind = String(b.kind || "").trim();
   if (!TAX_FIELD[kind]) return err(400, "Invalid kind");
@@ -845,7 +1002,7 @@ async function handleSaveTaxonomy(session, request, env) {
   const values = Array.isArray(b.values)
     ? b.values.map(function (v) { return String(v == null ? "" : v).trim(); }).filter(Boolean)
     : [];
-  const coachId = session.uid;
+  const coachId = targetCoachId || session.uid;
 
   // Replace the stored vocabulary for this kind in one atomic batch.
   const listStmts = [env.DB.prepare("DELETE FROM taxonomy WHERE coach_id = ? AND kind = ?").bind(coachId, kind)];
@@ -949,6 +1106,154 @@ async function buildTaxCascade(env, coachId, kind, from, to) {
   });
 
   return stmts;
+}
+
+/* ----------------------- Appearance CMS: theme + page builder -----------------------
+ * Super-admin-only writes; reads are public (the signed-out login page themes itself).
+ * Theme tokens map 1:1 to the CSS custom properties in styles.css :root. Page blocks
+ * are an ordered, whitelisted, sanitized JSON array rendered to DOM on the client. */
+
+// Built-in defaults returned when site_settings is empty or unmigrated, so theming
+// never blocks the login gate. Keys mirror styles.css :root.
+const DEFAULT_THEME = {
+  accent: "#c9f24e", ember: "#ff6a3d", bg: "#0b0d12", surface: "#14171f",
+  ink: "#f1f4f8", line: "rgba(255,255,255,.08)", danger: "#ff5d6c", warn: "#f5c451",
+  radius: "14px", space: "16px",
+  fontBody: "\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif",
+  fontDisplay: "\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif",
+  fontScale: "1"
+};
+const THEME_KEYS = Object.keys(DEFAULT_THEME);
+const SITE_KEYS = ["brandName", "brandTag"];
+const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer"];
+
+async function loadSiteSettings(env) {
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {} };
+  try {
+    const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
+    (rows.results || []).forEach(function (r) {
+      let v = null; try { v = JSON.parse(r.value); } catch (e) {}
+      if (!v || typeof v !== "object") return;
+      if (r.key === "theme") out.theme = Object.assign({}, DEFAULT_THEME, v);
+      else if (r.key === "site") out.site = v;
+    });
+  } catch (e) { /* table not migrated yet — return defaults */ }
+  return out;
+}
+async function handleGetSite(env) {
+  return json(await loadSiteSettings(env));
+}
+// Keep only known keys with string values, so a malformed save can't inject arbitrary
+// CSS-variable names or oversized blobs.
+function pickStrings(src, keys) {
+  const out = {};
+  if (src && typeof src === "object") {
+    keys.forEach(function (k) {
+      if (src[k] != null) out[k] = String(src[k]).slice(0, 400);
+    });
+  }
+  return out;
+}
+async function handleSaveSite(request, env) {
+  const b = await readBody(request);
+  const stmts = [];
+  if (b.theme != null) {
+    const theme = pickStrings(b.theme, THEME_KEYS);
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('theme',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(theme), nowSec()));
+  }
+  if (b.site != null) {
+    const site = pickStrings(b.site, SITE_KEYS);
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('site',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(site), nowSec()));
+  }
+  if (!stmts.length) return err(400, "Nothing to save");
+  try { await env.DB.batch(stmts); }
+  catch (e) { return err(500, "Couldn't save appearance (is the site_settings table migrated?)"); }
+  return json({ ok: true, site: await loadSiteSettings(env) });
+}
+
+// Drop control chars and anything HTML-significant; block content is rendered as text on
+// the client (textContent), but we sanitize on the way in too as defence-in-depth.
+function cleanText(v, max) {
+  return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 2000);
+}
+// One sanitized block. Unknown types/props are dropped; links must be absolute https.
+function sanitizeBlock(raw, i) {
+  if (!raw || typeof raw !== "object") return null;
+  const type = String(raw.type || "").toLowerCase();
+  if (BLOCK_TYPES.indexOf(type) === -1) return null;
+  const p = (raw.props && typeof raw.props === "object") ? raw.props : {};
+  const id = /^[a-zA-Z0-9_-]{1,40}$/.test(String(raw.id || "")) ? String(raw.id) : ("b" + i + "_" + (nowSec() % 100000));
+  const props = {};
+  if (type === "hero") {
+    props.heading = cleanText(p.heading, 160);
+    props.sub = cleanText(p.sub, 400);
+    props.ctaLabel = cleanText(p.ctaLabel, 60);
+    props.ctaHref = cleanUrl(p.ctaHref) || "";
+    props.align = (p.align === "left" || p.align === "right") ? p.align : "center";
+  } else if (type === "heading") {
+    props.text = cleanText(p.text, 160);
+    props.level = (p.level === 1 || p.level === 2 || p.level === 3) ? p.level : 2;
+  } else if (type === "text") {
+    props.text = cleanText(p.text, 4000);
+  } else if (type === "image") {
+    props.src = cleanUrl(p.src) || "";
+    props.alt = cleanText(p.alt, 200);
+    props.width = cleanText(p.width, 12);
+  } else if (type === "cards") {
+    props.items = (Array.isArray(p.items) ? p.items : []).slice(0, 12).map(function (it) {
+      it = it || {};
+      return { title: cleanText(it.title, 120), body: cleanText(it.body, 600), icon: cleanText(it.icon, 8) };
+    });
+  } else if (type === "button") {
+    props.label = cleanText(p.label, 60);
+    props.href = cleanUrl(p.href) || "";
+    props.style = (p.style === "ghost" || p.style === "ember") ? p.style : "primary";
+  } else if (type === "spacer") {
+    props.size = (p.size === "sm" || p.size === "lg") ? p.size : "md";
+  }
+  return { id: id, type: type, props: props };
+}
+function sanitizeBlocks(raw) {
+  return (Array.isArray(raw) ? raw : []).slice(0, 100).map(sanitizeBlock).filter(Boolean);
+}
+async function handleGetPage(env, slug) {
+  try {
+    const row = await env.DB.prepare("SELECT id,title,blocks,published FROM pages WHERE id = ?").bind(String(slug)).first();
+    if (!row || !row.published) return err(404, "Page not found");
+    let blocks = []; try { blocks = JSON.parse(row.blocks) || []; } catch (e) {}
+    return json({ id: row.id, title: row.title, blocks: blocks, published: !!row.published });
+  } catch (e) { return err(404, "Page not found"); }
+}
+async function handleListPages(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT id,title,blocks,published,updated_at FROM pages ORDER BY id").all();
+    const pages = (rows.results || []).map(function (r) {
+      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
+      return { id: r.id, title: r.title, blocks: blocks, published: !!r.published, updated_at: r.updated_at };
+    });
+    return json({ pages: pages });
+  } catch (e) { return json({ pages: [] }); }
+}
+async function handleSavePage(request, env, slug) {
+  const id = String(slug || "").trim().toLowerCase();
+  if (!/^[a-z0-9-]{1,40}$/.test(id)) return err(400, "Invalid page slug");
+  const b = await readBody(request);
+  const title = cleanText(b.title, 120) || id;
+  const blocks = sanitizeBlocks(b.blocks);
+  const published = b.published ? 1 : 0;
+  try {
+    await env.DB.prepare(
+      "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
+    ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
+  } catch (e) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
+  return json({ ok: true, id: id, title: title, blocks: blocks, published: !!published });
 }
 
 /* One-time migration of a coach's exported localStorage store into D1. */
