@@ -84,7 +84,9 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 - **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
   activities with an optional note) — picking activities by hand or with the built-in
   **Generate by criteria** helper that auto-assembles a balanced set from the library —
-  track per-athlete progress, and **export the roster to
+  set an optional **due date** per assignment, see a **Needs attention** overview (overdue work,
+  a stale check-in, a low recent mood, or unread messages), track per-athlete progress, and
+  **export the roster to
   CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
   to each athlete. Assignment notes support **clickable links** — both bare URLs and
   `[label](https://…)` markdown — and any activity can be given a **student-level custom link**
@@ -106,7 +108,8 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   Block text renders as plain text and links are forced to `https://`, so builder content can't
   inject script.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
-  and a **Mark done** button on each item.
+  and a **Mark done** button on each item. Assignments with a **due date** show an **Overdue** or
+  **Due soon** badge so nothing is missed.
 - **Check-in** *(athlete)* — a calm daily **mood / energy / stress** check-in (each 1–5, plus an
   optional note), a running **streak**, and a free-form **journal**. It's deliberately low-pressure
   and supportive — a mindset tool, not a clinical form. The coach sees it read-only in a per-athlete

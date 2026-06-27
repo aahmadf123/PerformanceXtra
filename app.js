@@ -555,7 +555,7 @@
   /* ----------------------------- Assignments ----------------------------- */
   function studentAssignments(s) { return (s && Array.isArray(s.assignments)) ? s.assignments : []; }
 
-  function addAssignment(studentId, title, note, activityIds) {
+  function addAssignment(studentId, title, note, activityIds, dueAt) {
     var s = students()[studentId];
     if (!s) return null;
     if (!Array.isArray(s.assignments)) s.assignments = [];
@@ -566,6 +566,7 @@
       title: (title || "").trim() || "Workout",
       note: (note || "").trim(),
       createdAt: new Date().toISOString(),
+      dueAt: dueAt || null,
       items: items
     };
     s.assignments.unshift(asg);
@@ -657,17 +658,31 @@
   }
 
   // Create an assignment, routing to the server in SERVER mode. onDone runs on success.
-  function createAssignmentFlow(studentId, title, note, ids, onDone) {
+  function createAssignmentFlow(studentId, title, note, ids, onDone, dueAt) {
     if (SERVER) {
-      api("/assignments", { method: "POST", body: { athlete_id: studentId, title: title, note: note, activity_ids: ids } })
+      api("/assignments", { method: "POST", body: { athlete_id: studentId, title: title, note: note, activity_ids: ids, due_at: dueAt || null } })
         .then(function (res) {
           if (!res.ok) { toast(apiError(res, "Couldn't create assignment")); return; }
           refreshFromServer().then(function () { if (onDone) onDone(); });
         }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
-    if (addAssignment(studentId, title, note, ids)) { if (onDone) onDone(); }
+    if (addAssignment(studentId, title, note, ids, dueAt)) { if (onDone) onDone(); }
     else { toast("Couldn't create assignment"); }
+  }
+  // A <input type="date"> value ("YYYY-MM-DD") -> end-of-day ISO, so an assignment due
+  // "today" only turns overdue once the day is over. Empty -> null.
+  function dueInputToIso(v) { v = (v || "").trim(); return /^\d{4}-\d{2}-\d{2}$/.test(v) ? (v + "T23:59:59") : null; }
+  // An assignment is overdue when its due date has passed and it isn't fully complete;
+  // "due soon" is the same but within the next 7 days. Both are in-app cues only.
+  function assignmentDueState(s, asg) {
+    if (!asg.dueAt) return "";
+    var prog = assignmentProgress(s, asg);
+    if (prog.total > 0 && prog.done === prog.total) return "";
+    var t = new Date(asg.dueAt).getTime(), now = Date.now();
+    if (t < now) return "overdue";
+    if (t <= now + 7 * 864e5) return "soon";
+    return "";
   }
   function deleteAssignmentFlow(studentId, asgId) {
     if (SERVER) {
@@ -1604,6 +1619,43 @@
     });
 
     renderStudentDetail();
+    renderNeedsAttention();
+  }
+
+  // Coach overview: athletes with overdue work, a stale check-in, a low recent mood, or
+  // unread messages — a single glance so nothing slips. In-app only (no email reminders).
+  function renderNeedsAttention() {
+    var host = $("#needs-attention");
+    if (!host) return;
+    host.textContent = "";
+    var items = [];
+    studentList().forEach(function (s) {
+      var reasons = [];
+      var overdue = (s.assignments || []).filter(function (a) { return assignmentDueState(s, a) === "overdue"; }).length;
+      if (overdue) reasons.push(overdue + " overdue");
+      var latest = s.checkins && s.checkins[0];
+      if (latest && latest.day) {
+        var days = Math.floor((Date.now() - new Date(latest.day + "T12:00:00").getTime()) / 864e5);
+        if (days >= 7) reasons.push("no check-in " + days + "d");
+      }
+      if (latest && latest.mood != null && latest.mood <= 2) reasons.push("low mood");
+      var unread = threadUnread(s, "athlete");
+      if (unread) reasons.push(unread + " unread");
+      if (reasons.length) items.push({ s: s, reasons: reasons });
+    });
+    if (!items.length) return;
+    var panel = el("div", { class: "panel attention-panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Needs attention"),
+      el("span", { class: "cms-count" }, items.length + " athlete" + (items.length === 1 ? "" : "s"))
+    ]));
+    items.forEach(function (it) {
+      panel.appendChild(el("div", { class: "attention-row", title: "Open " + it.s.name, onclick: function () { setActiveStudent(it.s.id); renderAll(); } }, [
+        el("span", { class: "attention-name" }, it.s.name),
+        el("span", { class: "attention-reasons" }, it.reasons.join(" · "))
+      ]));
+    });
+    host.appendChild(panel);
   }
 
   function bars(map, total) {
@@ -1717,9 +1769,12 @@
         var times = asg.items.map(function (id) { return s.completed[id]; }).filter(Boolean).sort();
         if (times.length) metaParts.push("Completed " + fmtDate(times[times.length - 1]));
       }
+      var dueState = assignmentDueState(s, asg);
+      var dueChip = dueState === "overdue" ? el("span", { class: "due-chip due-chip--overdue" }, "Overdue")
+        : (dueState === "soon" ? el("span", { class: "due-chip due-chip--soon" }, "Due soon") : null);
       card.appendChild(el("div", { class: "assignment-head" }, [
         el("div", {}, [
-          el("div", { class: "assignment-title" }, asg.title),
+          el("div", { class: "assignment-title" }, [asg.title, dueChip]),
           asg.note ? noteNode(asg.note) : null,
           el("div", { class: "assignment-meta" }, metaParts.join(" · "))
         ]),
@@ -2575,10 +2630,12 @@
     var sel = studentSelectNode();
     var title = el("input", { type: "text", value: defaultTitle || "Workout" });
     var note = el("textarea", { placeholder: "Optional note — why this matters, how often to do it…" });
+    var due = el("input", { type: "date" });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Assign to"), sel]),
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
       el("p", { class: "field-hint" }, activityIds.length + " activit" + (activityIds.length === 1 ? "y" : "ies") + " will be assigned.")
     ]);
     openModal("Assign to student", body, [
@@ -2589,7 +2646,7 @@
         var sname = students()[sid] ? students()[sid].name : "student";
         createAssignmentFlow(sid, title.value, note.value, activityIds, function () {
           closeModal(); renderAll(); toast("Assigned to " + sname);
-        });
+        }, dueInputToIso(due.value));
       } }
     ]);
   }
@@ -2719,9 +2776,11 @@
       el("button", { class: "btn btn--sm btn--accent", type: "button", onclick: generateInto }, "Generate")
     ]);
 
+    var due = el("input", { type: "date" });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
       generator,
       el("div", { class: "field" }, [el("label", {}, "Add activities"), search]),
       listWrap, countEl
@@ -2732,7 +2791,7 @@
       { label: "Create assignment", accent: true, onClick: function () {
         var ids = Object.keys(selected);
         if (!ids.length) { toast("Pick at least one activity"); return; }
-        createAssignmentFlow(studentId, title.value, note.value, ids, function () { closeModal(); renderAll(); toast("Assignment created"); });
+        createAssignmentFlow(studentId, title.value, note.value, ids, function () { closeModal(); renderAll(); toast("Assignment created"); }, dueInputToIso(due.value));
       } }
     ]);
     refresh();

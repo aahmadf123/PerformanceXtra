@@ -767,3 +767,13 @@
   .msg-compose { display: flex; gap: 8px; align-items: flex-end; }
   .msg-input { flex: 1 1 auto; min-height: 64px; width: 100%; resize: vertical; }
   .msg-badge { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--ember-dim); color: var(--ember); font-size: .72rem; font-weight: 600; margin-left: 8px; }
+
+  /* ===================== Scheduling: due dates & needs-attention ===================== */
+  .due-chip { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
+  .due-chip--overdue { background: rgba(255,93,108,.16); color: var(--danger); }
+  .due-chip--soon { background: var(--ember-dim); color: var(--ember); }
+  .attention-panel { margin-bottom: 16px; border-color: var(--line-strong); }
+  .attention-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); cursor: pointer; }
+  .attention-row:hover .attention-name { color: var(--accent); }
+  .attention-name { font-weight: 600; }
+  .attention-reasons { color: var(--ember); font-size: .82rem; }
