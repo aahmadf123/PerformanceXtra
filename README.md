@@ -85,7 +85,9 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   activities with an optional note) — picking activities by hand or with the built-in
   **Generate by criteria** helper that auto-assembles a balanced set from the library —
   set an optional **due date** per assignment, see a **Needs attention** overview (overdue work,
-  a stale check-in, a low recent mood, or unread messages), track per-athlete progress, and
+  a stale check-in, a low recent mood, or unread messages), save any assignment as a reusable
+  **template** and **bulk-assign** one template to several athletes at once, see at-a-glance
+  per-athlete **completion % + streak** on the roster, track per-athlete progress, and
   **export the roster to
   CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
   to each athlete. Assignment notes support **clickable links** — both bare URLs and
@@ -185,6 +187,7 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0007_site_builder.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0008_checkins_journal.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0009_messages.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0010_assignment_templates.sql --remote
    ```
 
    `0003` adds the super-admin role, `0004` seeds the super-admin login (email
@@ -192,8 +195,9 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    sign-in**; edit the migration first if you want different credentials), `0005` moves
    custom links to the student level, `0006` adds the **admin** tier plus the global-library
    owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), `0008`
-   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`), and `0009` adds the
-   **messaging** tables (`messages`, `athlete_notes`).
+   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`), `0009` adds the
+   **messaging** tables (`messages`, `athlete_notes`), and `0010` adds the **assignment_templates**
+   table.
    Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**

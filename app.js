@@ -289,6 +289,7 @@
       state.coaches = d.coaches || [];
       state.admins = d.admins || [];
       state.superadmins = d.superadmins || [];
+      state.templates = d.templates || [];
       state.tracking = normalizeStore({
         students: d.students || {},
         activeStudentId: d.activeStudentId || (state.tracking && state.tracking.activeStudentId) || null,
@@ -670,9 +671,16 @@
     if (addAssignment(studentId, title, note, ids, dueAt)) { if (onDone) onDone(); }
     else { toast("Couldn't create assignment"); }
   }
-  // A <input type="date"> value ("YYYY-MM-DD") -> end-of-day ISO, so an assignment due
-  // "today" only turns overdue once the day is over. Empty -> null.
-  function dueInputToIso(v) { v = (v || "").trim(); return /^\d{4}-\d{2}-\d{2}$/.test(v) ? (v + "T23:59:59") : null; }
+  // A <input type="date"> value ("YYYY-MM-DD") -> the coach's LOCAL end-of-day as an
+  // unambiguous UTC instant (…Z). Building the Date from local parts and calling
+  // toISOString() bakes in the timezone offset, so an assignment due "today" only turns
+  // overdue once the coach's local day is over (not at UTC midnight). Empty -> null.
+  function dueInputToIso(v) {
+    v = (v || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+    var p = v.split("-");
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), 23, 59, 59).toISOString();
+  }
   // An assignment is overdue when its due date has passed and it isn't fully complete;
   // "due soon" is the same but within the next 7 days. Both are in-app cues only.
   function assignmentDueState(s, asg) {
@@ -913,6 +921,7 @@
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
     tracking: loadStore(),
     coaches: [], admins: [], superadmins: [],   // staff rosters, populated on bootstrap
+    templates: [],          // reusable assignment templates (coach), from bootstrap
     globalTracking: null    // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
   };
   rebuildData();
@@ -987,6 +996,14 @@
       else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
     });
     return counts;
+  }
+  // Scope-aware single-activity lookup for the CMS edit form. In Global scope the form
+  // must initialize from the GLOBAL snapshot's view (global override on a base activity,
+  // or a global custom), NOT BY_ID (the merged private+global catalog) — otherwise saving
+  // would write a super admin's private values into the shared library.
+  function cmsActivityById(id) {
+    if (!cmsGlobal()) return BY_ID[id];
+    return cmsActivityRows(true).filter(function (a) { return a.id === id; })[0] || BY_ID[id];
   }
   // After a CMS write, refresh the merged catalog; in Global scope also invalidate the
   // global-only snapshot so the next render re-fetches it (keeping the table truthful).
@@ -1594,6 +1611,14 @@
       if (SERVER && s.email) {
         nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
       }
+      // At-a-glance dashboard stat: completion across all assigned work + check-in streak.
+      var totalI = 0, doneI = 0;
+      (s.assignments || []).forEach(function (a) { (a.items || []).forEach(function (id) { totalI++; if (s.completed[id]) doneI++; }); });
+      var statBits = [];
+      if (totalI) statBits.push(Math.round(doneI / totalI * 100) + "% done");
+      var stk = checkinStreak(s.checkins);
+      if (stk > 1) statBits.push(stk + "d streak");
+      if (statBits.length) nameKids.push(el("span", { class: "student-stat" }, statBits.join(" · ")));
       var row = el("div", { class: "student-row" + (active ? " is-active" : "") }, [
         el("span", { class: "name-wrap" }, nameKids)
       ]);
@@ -1650,7 +1675,8 @@
       el("span", { class: "cms-count" }, items.length + " athlete" + (items.length === 1 ? "" : "s"))
     ]));
     items.forEach(function (it) {
-      panel.appendChild(el("div", { class: "attention-row", title: "Open " + it.s.name, onclick: function () { setActiveStudent(it.s.id); renderAll(); } }, [
+      var openIt = function () { setActiveStudent(it.s.id); renderAll(); };
+      panel.appendChild(el("div", { class: "attention-row", role: "button", tabindex: "0", title: "Open " + it.s.name, onclick: openIt, onkeydown: function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openIt(); } } }, [
         el("span", { class: "attention-name" }, it.s.name),
         el("span", { class: "attention-reasons" }, it.reasons.join(" · "))
       ]));
@@ -1758,6 +1784,9 @@
 
       var actions = el("div", { class: "assignment-actions" });
       if (opts.admin) {
+        if (SERVER) actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Save this set as a reusable template", onclick: function () {
+          saveTemplate(asg.title, asg.note || "", asg.items);
+        } }, "★ Template"));
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", "aria-label": "Delete assignment", onclick: function () {
           if (confirm("Delete assignment “" + asg.title + "”?")) { deleteAssignmentFlow(s.id, asg.id); }
         } }, "✕"));
@@ -2045,9 +2074,9 @@
     CHECKIN_DIMS.forEach(function (dim) {
       var scale = el("div", { class: "checkin-scale" });
       [1, 2, 3, 4, 5].forEach(function (n) {
-        var btn = el("button", { type: "button", class: "checkin-dot" + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", onclick: function () {
+        var btn = el("button", { type: "button", class: "checkin-dot" + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
           picked[dim.key] = (picked[dim.key] === n ? null : n);
-          $all(".checkin-dot", scale).forEach(function (b, i) { b.classList.toggle("is-on", picked[dim.key] === (i + 1)); });
+          $all(".checkin-dot", scale).forEach(function (b, i) { var on = picked[dim.key] === (i + 1); b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
         } }, String(n));
         scale.appendChild(btn);
       });
@@ -2210,7 +2239,7 @@
       ]));
       return;
     }
-    markThreadRead(s);   // viewing the tab clears unread coach messages
+    if (state.tab === "messages") markThreadRead(s);   // only when the tab is actually open
     var card = el("div", { class: "panel" });
     card.appendChild(el("h3", {}, "Messages with your coach"));
     card.appendChild(messageThreadPanel(s));
@@ -2228,7 +2257,7 @@
     container.appendChild(el("button", { class: "btn btn--sm", style: "margin-top:8px", onclick: function () { saveAthleteNote(s.id, note.value.trim()); } }, "Save note"));
 
     container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Messages"));
-    markThreadRead(s);   // viewing the athlete clears unread athlete messages
+    if (state.tab === "students") markThreadRead(s);   // only when the Students tab is open
     container.appendChild(messageThreadPanel(s));
     container.appendChild(composeRow(function (v) { sendMessage(v); }));
   }
@@ -2269,6 +2298,84 @@
     if (SERVER) {
       api("/messages/read", { method: "POST", body: isAdminView() ? { athlete_id: s.id } : {} }).catch(function () {});
     } else { saveStore(); }
+  }
+
+  /* ----------------------------- Templates & bulk assign ----------------------------- */
+  function saveTemplate(title, note, items) {
+    if (!SERVER) { toast("Templates need the shared server"); return; }
+    api("/templates", { method: "POST", body: { title: title, note: note, activity_ids: items } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't save template")); return; }
+      refreshFromServer().then(function () { toast("Saved as template"); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function deleteTemplate(id) {
+    if (!SERVER) return;
+    api("/templates/" + encodeURIComponent(id), { method: "DELETE" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
+      refreshFromServer().then(function () { renderAll(); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function bulkAssign(athleteIds, title, note, items, dueAt) {
+    if (!SERVER) { toast("Bulk assign needs the shared server"); return; }
+    api("/assignments/bulk", { method: "POST", body: { athlete_ids: athleteIds, title: title, note: note, activity_ids: items, due_at: dueAt || null } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't bulk assign")); return; }
+      closeModal();
+      var n = (res.data && res.data.created) || athleteIds.length;
+      refreshFromServer().then(function () { renderAll(); toast("Assigned to " + n + " athlete" + (n === 1 ? "" : "s")); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Save the same workout to several athletes at once, from a reusable template.
+  function openBulkAssignModal() {
+    var sl = studentList();
+    if (!sl.length) { toast("Add students first"); return; }
+    var templates = state.templates || [];
+    var title = el("input", { type: "text", placeholder: "e.g. Week 2 — Focus" });
+    var note = el("textarea", { placeholder: "Optional note" });
+    var due = el("input", { type: "date" });
+    var chosenActs = {};
+    var actSummary = el("p", { class: "field-hint" }, "Pick a template to choose the activities.");
+    var tsel = el("select", {});
+    tsel.appendChild(option("", templates.length ? "Choose a template…" : "No templates yet — save one from an assignment first"));
+    templates.forEach(function (t) { tsel.appendChild(option(t.id, t.title + " (" + t.items.length + ")")); });
+    tsel.addEventListener("change", function () {
+      var t = templates.filter(function (x) { return x.id === tsel.value; })[0];
+      chosenActs = {};
+      if (t) {
+        t.items.forEach(function (id) { chosenActs[id] = true; });
+        if (!title.value) title.value = t.title;
+        if (!note.value && t.note) note.value = t.note;
+      }
+      actSummary.textContent = Object.keys(chosenActs).length + " activities from this template";
+    });
+    var pickedAthletes = {};
+    var athletesWrap = el("div", { class: "picker-list" });
+    sl.forEach(function (s) {
+      var cb = el("input", { type: "checkbox" });
+      cb.addEventListener("change", function () { if (cb.checked) pickedAthletes[s.id] = true; else delete pickedAthletes[s.id]; });
+      athletesWrap.appendChild(el("label", { class: "picker-row" }, [cb, el("span", { class: "p-name" }, s.name)]));
+    });
+    var selectAll = el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () {
+      var boxes = $all("input[type=checkbox]", athletesWrap);
+      var allOn = boxes.every(function (b) { return b.checked; });
+      boxes.forEach(function (b, i) { b.checked = !allOn; if (!allOn) pickedAthletes[sl[i].id] = true; else delete pickedAthletes[sl[i].id]; });
+    } }, "Toggle all");
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Template"), tsel]), actSummary,
+      el("div", { class: "field" }, [el("label", {}, "Title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
+      el("div", { class: "field" }, [el("div", { class: "section-head" }, [el("label", {}, "Assign to"), selectAll]), athletesWrap])
+    ]);
+    openModal("Bulk assign from a template", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Assign to selected", accent: true, onClick: function () {
+        var aids = Object.keys(pickedAthletes), ids = Object.keys(chosenActs);
+        if (!ids.length) { toast("Pick a template first"); return; }
+        if (!aids.length) { toast("Pick at least one athlete"); return; }
+        bulkAssign(aids, title.value, note.value, ids, dueInputToIso(due.value));
+      } }
+    ]);
   }
 
   /* ----------------------------- Export / Import ----------------------------- */
@@ -2777,10 +2884,23 @@
     ]);
 
     var due = el("input", { type: "date" });
+    var tmpls = state.templates || [];
+    var tmplSel = el("select", {});
+    tmplSel.appendChild(option("", "Start from a template…"));
+    tmpls.forEach(function (t) { tmplSel.appendChild(option(t.id, t.title + " (" + t.items.length + ")")); });
+    tmplSel.addEventListener("change", function () {
+      var t = tmpls.filter(function (x) { return x.id === tmplSel.value; })[0];
+      if (!t) return;
+      t.items.forEach(function (id) { if (BY_ID[id]) selected[id] = true; });
+      if (!title.value) title.value = t.title;
+      if (!note.value && t.note) note.value = t.note;
+      refresh(); updateCount(); toast("Loaded template");
+    });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
       el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
+      tmpls.length ? el("div", { class: "field" }, [el("label", {}, "Start from template"), tmplSel]) : null,
       generator,
       el("div", { class: "field" }, [el("label", {}, "Add activities"), search]),
       listWrap, countEl
@@ -2799,7 +2919,7 @@
 
   // Add a new custom activity, or edit an existing one (built-in edits go to an override layer).
   function openActivityModal(id) {
-    var editing = id ? BY_ID[id] : null;
+    var editing = id ? cmsActivityById(id) : null;
     var f = {};
     function makeInput(key, attrs, isArea) {
       var node = isArea ? el("textarea", attrs || {}) : el("input", attrs || {});
@@ -3943,6 +4063,8 @@
     $("#export-btn").addEventListener("click", exportTracking);
     var rosterBtn = $("#export-roster-btn");
     if (rosterBtn) rosterBtn.addEventListener("click", exportRosterCSV);
+    var bulkBtn = $("#bulk-assign-btn");
+    if (bulkBtn) bulkBtn.addEventListener("click", openBulkAssignModal);
     $("#import-merge-btn").addEventListener("click", function () { triggerImport("merge"); });
     $("#import-replace-btn").addEventListener("click", function () { triggerImport("replace"); });
     $("#import-file").addEventListener("change", function (e) {

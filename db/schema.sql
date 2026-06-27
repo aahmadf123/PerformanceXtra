@@ -208,3 +208,15 @@ CREATE TABLE IF NOT EXISTS athlete_notes (
   note       TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- Reusable assignment templates (migration 0010): a coach saves a titled set of
+-- activities once and reuses it to start an assignment or bulk-assign to many athletes.
+CREATE TABLE IF NOT EXISTS assignment_templates (
+  id         TEXT PRIMARY KEY,
+  coach_id   TEXT NOT NULL REFERENCES users(id),
+  title      TEXT NOT NULL,
+  note       TEXT,
+  items      TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_templates_coach ON assignment_templates(coach_id);

@@ -777,3 +777,4 @@
   .attention-row:hover .attention-name { color: var(--accent); }
   .attention-name { font-weight: 600; }
   .attention-reasons { color: var(--ember); font-size: .82rem; }
+  .student-stat { display: block; font-size: .72rem; color: var(--muted); margin-top: 2px; }

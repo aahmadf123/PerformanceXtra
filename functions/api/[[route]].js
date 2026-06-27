@@ -299,12 +299,17 @@ async function assembleAthlete(env, row, opts) {
   } catch (e) { journal = []; }
 
   // In-app messages thread + (coach-only) private note (migration 0009). Degrade to
-  // empty when the tables aren't migrated yet.
+  // empty when the tables aren't migrated yet. Scope to the athlete's CURRENT coach
+  // (opts.coachId) so a coach change never merges/leaks the previous coach's thread.
   let messages = [];
   try {
-    const ms = await env.DB.prepare(
-      "SELECT id, sender, body, created_at, read_at FROM messages WHERE athlete_id = ? ORDER BY created_at DESC LIMIT 100"
-    ).bind(row.id).all();
+    const ms = opts.coachId
+      ? await env.DB.prepare(
+          "SELECT id, sender, body, created_at, read_at FROM messages WHERE athlete_id = ? AND coach_id = ? ORDER BY created_at DESC LIMIT 100"
+        ).bind(row.id, opts.coachId).all()
+      : await env.DB.prepare(
+          "SELECT id, sender, body, created_at, read_at FROM messages WHERE athlete_id = ? ORDER BY created_at DESC LIMIT 100"
+        ).bind(row.id).all();
     // Return oldest-first so the client can render a natural top-to-bottom thread.
     messages = (ms.results || []).map(function (r) {
       return { id: r.id, sender: r.sender, body: r.body || "", createdAt: epochToIso(r.created_at || nowSec()), readAt: r.read_at ? epochToIso(r.read_at) : null };
@@ -473,8 +478,15 @@ async function route(method, path, request, env, url, secure) {
   if (head === "assignments") {
     if (method === "GET" && seg.length === 1) return handleListAssignments(session, env, url);
     if (method === "POST" && seg.length === 1) return handleCreateAssignment(session, request, env);
+    if (method === "POST" && seg.length === 2 && seg[1] === "bulk") return handleBulkAssign(session, request, env);
     if (method === "POST" && seg.length === 3 && seg[2] === "items") return handleUpdateAssignmentItem(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeleteAssignment(session, env, seg[1]);
+  }
+  if (head === "templates") {
+    if (!atLeast(session, "coach")) return err(403, "Coaches only");
+    if (method === "GET" && seg.length === 1) return json({ templates: await loadTemplates(env, session.uid) });
+    if (method === "POST" && seg.length === 1) return handleSaveTemplate(session, request, env);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteTemplate(session, env, seg[1]);
   }
 
   /* -------- super-admin only: manage admins & other super admins, appearance -------- */
@@ -658,14 +670,14 @@ async function handleBootstrap(session, env) {
     ).bind(session.uid).all();
     const students = {};
     for (const r of (rows.results || [])) {
-      const a = await assembleAthlete(env, r, { includeCoachNote: true });
+      const a = await assembleAthlete(env, r, { includeCoachNote: true, coachId: session.uid });
       a.hasPassword = !!r.has_password;
       students[r.id] = a;
     }
     const custom = await loadCustomMerged(env, session.uid);
     const ov = await loadOverridesMerged(env, session.uid);
     const taxonomy = await loadTaxonomyMerged(env, session.uid);
-    const out = { me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy };
+    const out = { me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy, templates: await loadTemplates(env, session.uid) };
     if (atLeast(session, "admin")) out.coaches = await listCoaches(env);
     if (atLeast(session, "superadmin")) { out.admins = await listAdmins(env); out.superadmins = await listSuperadmins(env); }
     return json(out);
@@ -673,7 +685,7 @@ async function handleBootstrap(session, env) {
 
   // athlete: only self, plus GLOBAL ∪ their coach's content so assigned content renders
   const meRow = await env.DB.prepare("SELECT id,name,email,coach_id,created_at FROM users WHERE id = ?").bind(session.uid).first();
-  const self = await assembleAthlete(env, meRow);
+  const self = await assembleAthlete(env, meRow, { coachId: (meRow && meRow.coach_id) || null });
   const students = {}; students[session.uid] = self;
   const coachOwner = (meRow && meRow.coach_id) ? meRow.coach_id : null;
   const custom = await loadCustomMerged(env, coachOwner);
@@ -935,6 +947,77 @@ async function handleDeleteAssignment(session, env, asgId) {
   return json({ ok: true });
 }
 
+/* ------------------- assignment templates + bulk assign (Phase 6) ------------------- */
+async function loadTemplates(env, coachId) {
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT id,title,note,items,created_at FROM assignment_templates WHERE coach_id = ? ORDER BY created_at DESC"
+    ).bind(coachId).all();
+    return (rows.results || []).map(function (r) {
+      let items = [];
+      try { items = JSON.parse(r.items) || []; } catch (e) {}
+      return { id: r.id, title: r.title, note: r.note || "", items: items, createdAt: epochToIso(r.created_at || nowSec()) };
+    });
+  } catch (e) { return []; }   // table not migrated yet
+}
+function cleanIdList(arr) {
+  const seen = {}, out = [];
+  (Array.isArray(arr) ? arr : []).forEach(function (x) { if (typeof x === "string" && x && !seen[x]) { seen[x] = true; out.push(x); } });
+  return out;
+}
+async function handleSaveTemplate(session, request, env) {
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
+  const b = await readBody(request);
+  const title = String(b.title || "").trim() || "Workout";
+  const note = String(b.note || "").trim();
+  const items = cleanIdList(b.activity_ids || b.items);
+  if (!items.length) return err(400, "At least one activity is required");
+  const id = crypto.randomUUID();
+  try {
+    await env.DB.prepare("INSERT INTO assignment_templates (id,coach_id,title,note,items,created_at) VALUES (?,?,?,?,?,?)")
+      .bind(id, session.uid, title, note || null, JSON.stringify(items), nowSec()).run();
+  } catch (e) {
+    return err(500, "Couldn't save the template (is the assignment_templates table migrated?)");
+  }
+  return json({ ok: true, id: id });
+}
+async function handleDeleteTemplate(session, env, id) {
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
+  await env.DB.prepare("DELETE FROM assignment_templates WHERE id = ? AND coach_id = ?").bind(String(id), session.uid).run();
+  return json({ ok: true });
+}
+// Create the same assignment for several owned athletes in one action.
+async function handleBulkAssign(session, request, env) {
+  if (!atLeast(session, "coach")) return err(403, "Coaches only");
+  const b = await readBody(request);
+  const athleteIds = cleanIdList(b.athlete_ids || b.athleteIds);
+  const title = String(b.title || "").trim() || "Workout";
+  const note = String(b.note || "").trim();
+  const items = cleanIdList(b.activity_ids || b.items);
+  const dueEpoch = (b.due_at != null || b.dueAt != null) ? isoOrEpochToEpoch(b.due_at != null ? b.due_at : b.dueAt) : null;
+  if (!athleteIds.length) return err(400, "Pick at least one athlete");
+  if (!items.length) return err(400, "At least one activity is required");
+  // Authorize every athlete up front; skip any that aren't this coach's.
+  const owned = [];
+  for (const aid of athleteIds) {
+    const ok = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(aid, session.uid).first();
+    if (ok) owned.push(aid);
+  }
+  if (!owned.length) return err(403, "None of those are your athletes");
+  let created = 0;
+  for (const aid of owned) {
+    const asgId = crypto.randomUUID();
+    await env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
+      .bind(asgId, session.uid, aid, title, note || null, dueEpoch, nowSec()).run();
+    const stmts = items.map(function (actId, i) {
+      return env.DB.prepare("INSERT INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(asgId, actId, i);
+    });
+    if (stmts.length) await env.DB.batch(stmts);
+    created++;
+  }
+  return json({ ok: true, created: created });
+}
+
 async function handleCompletions(session, request, env) {
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
@@ -1079,11 +1162,11 @@ async function handleMarkRead(session, request, env) {
   const b = await readBody(request);
   const t = await resolveThread(session, env, b.athlete_id || b.athleteId);
   if (!t) return err(403, "Not your thread");
-  // Mark the OTHER party's messages in this thread as read.
+  // Mark the OTHER party's messages in THIS coach<->athlete thread as read.
   const otherSender = session.role === "athlete" ? "coach" : "athlete";
   try {
-    await env.DB.prepare("UPDATE messages SET read_at = ? WHERE athlete_id = ? AND sender = ? AND read_at IS NULL")
-      .bind(nowSec(), t.athleteId, otherSender).run();
+    await env.DB.prepare("UPDATE messages SET read_at = ? WHERE athlete_id = ? AND coach_id = ? AND sender = ? AND read_at IS NULL")
+      .bind(nowSec(), t.athleteId, t.coachId, otherSender).run();
   } catch (e) { /* table not migrated yet — nothing to mark */ }
   return json({ ok: true });
 }
