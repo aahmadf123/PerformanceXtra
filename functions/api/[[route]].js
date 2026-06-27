@@ -1185,19 +1185,17 @@ async function handleSaveSite(request, env) {
   return json({ ok: true, site: await loadSiteSettings(env) });
 }
 
-// Drop ASCII control chars and cap length. Rendering still uses textContent on the
-// client, but we sanitize input on write as defence-in-depth.
+// Drop ASCII control chars and cap length before persistence. Rendering uses textContent
+// on the client, and this server-side scrub adds an extra defence-in-depth layer.
 function cleanText(v, max) {
   return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 2000);
 }
 // Allow only tight CSS length tokens used for image max-width.
 function cleanMaxWidth(v) {
   const s = String(v == null ? "" : v).trim();
-  const m = s.match(/^([0-9]{1,4})(px|%)$/);
+  const m = s.match(/^((?:[0-9]{1,3}|1[0-9]{3}|2000))(px|%)$/);
   if (!m) return "";
-  const n = Number(m[1]);
-  if (!Number.isFinite(n) || n > 2000) return "";
-  return String(n) + m[2];
+  return String(Number(m[1])) + m[2];
 }
 // One sanitized block. Unknown types/props are dropped; links must be absolute https.
 function sanitizeBlock(raw, i) {

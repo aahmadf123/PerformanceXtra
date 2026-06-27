@@ -2917,10 +2917,9 @@
   function safeUrl(u) { u = String(u || "").trim(); return /^https:\/\//i.test(u) ? u : ""; }
   function safeMaxWidth(v) {
     v = String(v == null ? "" : v).trim();
-    var m = v.match(/^([0-9]{1,4})(px|%)$/);
+    var m = v.match(/^((?:[0-9]{1,3}|1[0-9]{3}|2000))(px|%)$/);
     if (!m) return "";
-    var n = Number(m[1]);
-    return (isFinite(n) && n <= 2000) ? (String(n) + m[2]) : "";
+    return String(Number(m[1])) + m[2];
   }
 
   function renderAppearance() {
