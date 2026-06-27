@@ -440,15 +440,16 @@ async function route(method, path, request, env, url, secure) {
     if (method === "POST" && seg.length === 2) return handleSavePage(request, env, seg[1]);
   }
 
-  /* -------- admin & super admin: manage coaches + the global content library -------- */
+  /* -------- admin & super admin: manage coach accounts -------- */
   if (head === "coaches") {
     if (!atLeast(session, "admin")) return err(403, "Admins only");
     if (method === "GET" && seg.length === 1) return handleListCoaches(env);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url, "coach");
     if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "coach");
   }
+  /* -------- super admin only: curate the shared global content library -------- */
   if (head === "global") {
-    if (!atLeast(session, "admin")) return err(403, "Admins only");
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     const sub = seg[1] || "";
     if (sub === "custom-activities") {
       if (method === "GET" && seg.length === 2) return json({ customActivities: await loadCustom(env, GLOBAL_OWNER_ID) });

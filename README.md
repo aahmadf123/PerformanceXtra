@@ -39,25 +39,27 @@ A strict ladder — **coach < admin < super admin** — where each higher tier c
 the one below it can, plus more. All three sign in to the same tabbed app; the tab set grows
 with the role.
 
-- **Coach** can: browse the repository, build workouts, **assign** activities to specific
-  athletes, **add** custom activities, **edit or hide** any activity, manage athletes, manage
-  their **own** private content (Content tab), and export rosters/assignments.
-- **Admin** can do everything a coach can, **plus**: **create and manage coach accounts**, and
-  curate the **global content library** — a shared set of activities and taxonomy that every
-  coach and athlete sees, edited from the Content tab's **Global library** scope.
+- **Coach** can: browse the repository, build & **assign** workouts to specific athletes,
+  **add** custom activities, **edit or hide** any activity, manage athletes, manage their
+  **own** private content (Content tab), and export rosters/assignments.
+- **Admin** can do everything a coach can, **plus create and manage coach accounts** (from the
+  **Team** tab). Admins work in their **own** private content only — the shared **global
+  library** and the site's **Appearance** are super-admin-only.
 - **Super admin** can do everything an admin can, **plus**: **create and manage admins and
-  other super admins**, and control the site's **Appearance** — a built-in CMS to change colors,
-  fonts and sizes (saved to the database and applied site-wide) and build the landing page from
-  drag-ordered content blocks (hero, heading, text, image, cards, button, spacer). The
-  production super admin is seeded by a migration (see Deploy).
+  other super admins** (alongside coaches, all from the **Team** tab); curate the **global
+  content library** — a shared set of activities and taxonomy that every coach and athlete sees,
+  edited from the Content tab's **Global library** scope; and control the site's **Appearance** —
+  a built-in CMS to change colors, fonts and sizes (saved to the database and applied site-wide)
+  and build the landing page from drag-ordered content blocks (hero, heading, text, image,
+  cards, button, spacer). The production super admin is seeded by a migration (see Deploy).
 
 Internally, admin and super admin are flag columns (`is_admin` / `is_superadmin`) on a
 `role='coach'` row — the FK-referenced `role` column is never changed (see `db/schema.sql`).
 
 ### Adding coaches, admins & super admins
 
-An **admin or super admin** adds a coach by **name + email** from the **Coaches** tab; a **super
-admin** adds admins and other super admins from the **Admins** tab. In every case the server
+An **admin or super admin** adds a coach by **name + email** from the **Team** tab; a **super
+admin** adds admins and other super admins from that same **Team** tab. In every case the server
 generates a one-time passcode, shown **once**; you send the person their email + passcode, they
 sign in, and can change their password in Settings. A creator can never mint an account **above**
 their own role. **Reset passcode** on any row issues a fresh one if it's lost.
@@ -91,11 +93,12 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 - **Content** *(coach / admin / super admin)* — a built-in CMS to manage the activity library
   **and** the Topic / Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or
   delete activities, and add / rename / merge / remove taxonomy values (renames cascade across
-  every activity). Coaches edit their **own private** content; admins & super admins get a
-  **Global library** scope switch to edit the shared library every coach/athlete sees. Each
-  coach still sees the global library **merged** with their own private items, and a coach's
-  private edit always wins over the global one. Everything is stored in D1, so it survives
-  redeploys — no spreadsheet edit or developer needed.
+  every activity). Coaches and admins edit their **own private** content; **super admins** get a
+  **Global library** scope switch to edit the shared library every coach/athlete sees (the
+  switch loads a global-only view, so a super admin's private items never leak into the shared
+  library). Each coach still sees the global library **merged** with their own private items, and
+  a coach's private edit always wins over the global one. Everything is stored in D1, so it
+  survives redeploys — no spreadsheet edit or developer needed.
 - **Appearance** *(super admin)* — change the site's **colors, fonts, text size, spacing and
   corner radius** (mapped to the CSS variables in `styles.css`, saved to D1 and applied
   site-wide for everyone, including the signed-out login page), and a **page builder** to

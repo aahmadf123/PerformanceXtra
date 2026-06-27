@@ -712,7 +712,7 @@
       var payload = Object.assign({}, a); delete payload.id;
       api(cmsRoute("/custom-activities"), { method: "POST", body: { payload: payload } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save activity")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return a.id;
     }
@@ -729,11 +729,11 @@
         var payload = Object.assign({}, fields); delete payload.id;
         path = cmsRoute("/custom-activities"); body = { payload: Object.assign({ id: id }, payload) };
       } else {
-        path = cmsRoute("/overrides"); body = { activity_id: id, payload: fields, hidden: isHidden(id) };
+        path = cmsRoute("/overrides"); body = { activity_id: id, payload: fields, hidden: cmsHidden(id) };
       }
       api(path, { method: "POST", body: body }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save changes")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -751,7 +751,7 @@
     if (SERVER) {
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: null, hidden: false } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't revert")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -759,11 +759,12 @@
   }
   function setHidden(id, on) {
     if (SERVER) {
-      // Preserve any existing edit payload while flipping the hidden flag.
-      var payload = state.tracking.overrides[id] || null;
+      // Preserve any existing edit payload while flipping the hidden flag (scope-aware:
+      // in Global scope read the global override, not the merged/private one).
+      var payload = (cmsGlobal() ? (cmsTrack().overrides || {}) : state.tracking.overrides)[id] || null;
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't update")); return; }
-        refreshFromServer().then(function () { renderRepo(); });
+        afterCmsWrite(function () { renderRepo(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -774,7 +775,7 @@
     if (SERVER) {
       api(cmsRoute("/custom-activities/" + encodeURIComponent(id)), { method: "DELETE" }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -787,7 +788,7 @@
   function lc(s) { return String(s == null ? "" : s).trim().toLowerCase(); }
   // The list of values for a kind after an add / rename / remove edit.
   function nextTaxValues(kind, action, args) {
-    var out = taxList(kind).slice();
+    var out = cmsTaxList(kind).slice();
     if (action === "add") {
       var v = (args.value || "").trim();
       if (v && out.map(lc).indexOf(lc(v)) === -1) out.push(v);
@@ -809,8 +810,8 @@
       api(cmsRoute("/taxonomy"), { method: "POST", body: {
         kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
       } }).then(function (res) {
-        if (!res.ok) { toast(apiError(res, "Couldn't save")); refreshFromServer(); return; }
-        refreshFromServer().then(function () { if (onDone) onDone(); });
+        if (!res.ok) { toast(apiError(res, "Couldn't save")); afterCmsWrite(); return; }
+        afterCmsWrite(function () { if (onDone) onDone(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -892,7 +893,9 @@
     reflectionTimers: {},
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
     workout: { criteria: null, results: [] },
-    tracking: loadStore()
+    tracking: loadStore(),
+    coaches: [], admins: [], superadmins: [],   // staff rosters, populated on bootstrap
+    globalTracking: null    // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -918,6 +921,63 @@
   // accidentally hit the global library.
   var currentCmsTarget = "private";
   function cmsRoute(p) { return currentCmsTarget === "global" ? ("/global" + p) : p; }
+  function cmsGlobal() { return currentCmsTarget === "global"; }
+
+  // Lazily fetch the global-library-ONLY content for the super-admin Content "Global"
+  // scope, kept separate from state.tracking (which is the merged catalog every coach
+  // sees). Editing in Global scope reads AND writes only this snapshot, so a super
+  // admin's own private items can never leak into the shared library.
+  function loadGlobalTracking() {
+    return Promise.all([
+      api("/global/custom-activities"),
+      api("/global/overrides"),
+      api("/global/taxonomy")
+    ]).then(function (rs) {
+      var ca = (rs[0] && rs[0].ok && rs[0].data && rs[0].data.customActivities) || [];
+      var ov = (rs[1] && rs[1].ok && rs[1].data) || {};
+      var tx = (rs[2] && rs[2].ok && rs[2].data && rs[2].data.taxonomy) || {};
+      state.globalTracking = {
+        customActivities: ca,
+        overrides: ov.overrides || {},
+        hidden: ov.hidden || {},
+        taxonomy: { topic: tx.topic || [], subtopic: tx.subtopic || [], type: tx.type || [] }
+      };
+    }).catch(function () {
+      state.globalTracking = { customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+    });
+  }
+  function cmsTrack() { return cmsGlobal() ? (state.globalTracking || { customActivities: [], overrides: {}, hidden: {}, taxonomy: {} }) : state.tracking; }
+  // Scope-aware reads for the CMS table. In Global scope they come from the global-only
+  // snapshot; otherwise from the merged catalog (ALL/DATA/isHidden/taxList) as before.
+  function cmsActivityRows(showHidden) {
+    if (!cmsGlobal()) return (showHidden ? ALL : DATA).slice();
+    var gt = cmsTrack(), ov = gt.overrides || {}, hid = gt.hidden || {}, cust = gt.customActivities || [];
+    var merged = BASE.map(function (a) { return applyOverride(a, ov[a.id]); });
+    cust.forEach(function (a) { merged.push(applyOverride(a, ov[a.id])); });
+    return showHidden ? merged : merged.filter(function (a) { return !hid[a.id]; });
+  }
+  function cmsHidden(id) { if (!cmsGlobal()) return isHidden(id); return !!(cmsTrack().hidden || {})[id]; }
+  function cmsTaxList(kind) {
+    if (!cmsGlobal()) return taxList(kind);
+    var m = (cmsTrack().taxonomy || {})[kind];
+    return alpha((m && m.length) ? m : (TAX_FALLBACK[kind] || []));
+  }
+  function cmsTaxUsage(kind) {
+    var counts = {}, field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
+    cmsActivityRows(true).forEach(function (a) {
+      if (field === "subtopics") (a.subtopics || []).forEach(function (s) { counts[lc(s)] = (counts[lc(s)] || 0) + 1; });
+      else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
+    });
+    return counts;
+  }
+  // After a CMS write, refresh the merged catalog; in Global scope also invalidate the
+  // global-only snapshot so the next render re-fetches it (keeping the table truthful).
+  function afterCmsWrite(cb) {
+    return refreshFromServer().then(function () {
+      if (cmsGlobal()) state.globalTracking = null;
+      if (cb) cb();
+    });
+  }
 
   /* ----------------------------- Repository ----------------------------- */
   function applyFilters() {
@@ -2178,8 +2238,8 @@
       { id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
       { id: "students", label: "Students" }, { id: "content", label: "Content" }
     ];
-    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Coaches" });
-    if (isSuperadmin()) tabs.push({ id: "users", label: "Admins" }, { id: "appearance", label: "Appearance" });
+    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
+    if (isSuperadmin()) tabs.push({ id: "appearance", label: "Appearance" });
     tabs.push({ id: "settings", label: "Settings" });
     return tabs;
   }
@@ -2201,7 +2261,6 @@
     if (tab !== "content") currentCmsTarget = "private";
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
-    else if (tab === "users" && isSuperadmin()) renderUsers();
     else if (tab === "appearance" && isSuperadmin()) renderAppearance();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
@@ -2777,7 +2836,6 @@
         if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
       }
       if (state.tab === "manage") renderManage();
-      if (state.tab === "users") renderUsers();
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
@@ -2817,27 +2875,24 @@
     });
   }
 
+  // One "Team" surface for all staff management. An admin sees the Coaches section
+  // (they can create coaches); a super admin additionally sees the Admins and Super
+  // admins sections, so adding any kind of account happens in one obvious place.
   function renderManage() {
     var view = $("#view-manage");
     if (!view) return;
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "Coaches"),
-      el("p", {}, "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
+      el("h2", {}, "Team"),
+      el("p", {}, isSuperadmin()
+        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the global library and site appearance. Each person signs in with their email and a one-time passcode you send them, then sets their own password."
+        : "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
     ]));
-    view.appendChild(staffPanel("All coaches", "+ Add coach", "coach", state.coaches || []));
-  }
-
-  function renderUsers() {
-    var view = $("#view-users");
-    if (!view) return;
-    view.textContent = "";
-    view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "Admins & super admins"),
-      el("p", {}, "Admins can do everything a coach can plus manage coaches and the global content library. Super admins can do everything — including managing admins, other super admins, and the site's appearance.")
-    ]));
-    view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
-    view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+    view.appendChild(staffPanel("Coaches", "+ Add coach", "coach", state.coaches || []));
+    if (isSuperadmin()) {
+      view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
+      view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+    }
   }
 
   // Create a coach (POST /coaches) or an admin/super admin (POST /users {tier}).
@@ -3389,12 +3444,12 @@
     if (!isAdminView()) return;
     var nav = $("#cms-subnav");
     if (!nav) return;
-    // Scope switch (admin & super admin only): curate the shared Global library that
-    // every coach/athlete sees, or your own private content. Plain coaches only ever
+    // Scope switch (super admin only): curate the shared Global library that every
+    // coach/athlete sees, or your own private content. Coaches and admins only ever
     // edit their private content, so the switch stays hidden for them.
     var scopeWrap = $("#cms-scope");
     if (scopeWrap) {
-      if (isAtLeastAdmin()) {
+      if (isSuperadmin()) {
         if (state.cmsScope !== "global") state.cmsScope = "private";
         scopeWrap.hidden = false;
         scopeWrap.textContent = "";
@@ -3409,7 +3464,14 @@
         state.cmsScope = "private";
       }
     }
-    currentCmsTarget = (isAtLeastAdmin() && state.cmsScope === "global") ? "global" : "private";
+    currentCmsTarget = (isSuperadmin() && state.cmsScope === "global") ? "global" : "private";
+    // Global scope edits the shared library only — fetch a global-only snapshot so the
+    // lists below never include the editor's own private items (which would otherwise be
+    // written back into the shared library when saving/renaming).
+    if (cmsGlobal() && state.globalTracking == null) {
+      state.globalTracking = { loading: true, customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+      loadGlobalTracking().then(function () { if (state.tab === "content") renderContent(); });
+    }
     var sub = state.cmsTab === "taxonomy" ? "taxonomy" : "activities";
     nav.textContent = "";
     [["activities", "Activities"], ["taxonomy", "Topics & types"]].forEach(function (pair) {
@@ -3425,6 +3487,11 @@
     });
     $("#cms-activities").hidden = sub !== "activities";
     $("#cms-taxonomy").hidden = sub !== "taxonomy";
+    if (cmsGlobal() && state.globalTracking && state.globalTracking.loading) {
+      var pane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
+      pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the global library…"));
+      return;
+    }
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
   }
 
@@ -3450,14 +3517,14 @@
     function draw() {
       var q = norm(search.value || "").trim();
       tableWrap.textContent = "";
-      var rows = (state.cmsShowHidden ? ALL : DATA).slice();
+      var rows = cmsActivityRows(state.cmsShowHidden);
       if (q) rows = rows.filter(function (a) { return smartSearchScore(a, q) > 0; });
       rows.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
       tableWrap.appendChild(el("div", { class: "cms-count" }, rows.length + " activit" + (rows.length === 1 ? "y" : "ies")));
       if (!rows.length) { tableWrap.appendChild(el("p", { class: "no-link" }, "No activities match.")); return; }
       var table = el("div", { class: "cms-table" });
       rows.forEach(function (a) {
-        var hid = isHidden(a.id);
+        var hid = cmsHidden(a.id);
         var tags = [];
         if (isCustom(a.id)) tags.push(el("span", { class: "chip chip--accent" }, "Custom"));
         if (hid) tags.push(el("span", { class: "chip" }, "Hidden"));
@@ -3483,17 +3550,6 @@
     draw();
   }
 
-  // Count how many activities reference each value of a taxonomy kind.
-  function taxUsageCounts(kind) {
-    var counts = {};
-    var field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
-    ALL.forEach(function (a) {
-      if (field === "subtopics") (a.subtopics || []).forEach(function (s) { counts[lc(s)] = (counts[lc(s)] || 0) + 1; });
-      else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
-    });
-    return counts;
-  }
-
   function renderCmsTaxonomy() {
     var wrap = $("#cms-taxonomy");
     wrap.textContent = "";
@@ -3507,8 +3563,8 @@
   }
   function singular(label) { return label.toLowerCase().replace(/s$/, ""); }
   function renderTaxGroup(kind, label) {
-    var values = taxList(kind);
-    var usage = taxUsageCounts(kind);
+    var values = cmsTaxList(kind);
+    var usage = cmsTaxUsage(kind);
     var group = el("div", { class: "cms-tax-group" });
     group.appendChild(el("div", { class: "detail-label" }, label + " (" + values.length + ")"));
     var list = el("div", { class: "cms-tax-list" });
@@ -3575,7 +3631,6 @@
       renderStudents();
       renderContent();
       if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
-      if (state.tab === "users" && isSuperadmin()) renderUsers();
       if (state.tab === "appearance" && isSuperadmin()) renderAppearance();
     } else {
       renderWorkoutsTab();
