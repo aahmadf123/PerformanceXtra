@@ -274,11 +274,32 @@ async function assembleAthlete(env, row) {
     reflections[key] = { text: r.text || "", updatedAt: epochToIso(r.updated_at || nowSec()) };
   });
 
+  // Mental-performance check-ins + journal (migration 0008). Tolerate a DB where the
+  // tables don't exist yet by degrading to empty lists.
+  let checkins = [];
+  try {
+    const ci = await env.DB.prepare(
+      "SELECT day, mood, energy, stress, note, updated_at FROM checkins WHERE athlete_id = ? ORDER BY day DESC LIMIT 60"
+    ).bind(row.id).all();
+    checkins = (ci.results || []).map(function (r) {
+      return { day: r.day, mood: r.mood, energy: r.energy, stress: r.stress, note: r.note || "", updatedAt: epochToIso(r.updated_at || nowSec()) };
+    });
+  } catch (e) { checkins = []; }
+  let journal = [];
+  try {
+    const jr = await env.DB.prepare(
+      "SELECT id, body, created_at FROM journal_entries WHERE athlete_id = ? ORDER BY created_at DESC LIMIT 100"
+    ).bind(row.id).all();
+    journal = (jr.results || []).map(function (r) {
+      return { id: r.id, body: r.body || "", createdAt: epochToIso(r.created_at || nowSec()) };
+    });
+  } catch (e) { journal = []; }
+
   return {
     id: row.id, name: row.name, email: row.email || null,
     createdAt: epochToIso(row.created_at || nowSec()),
     completed: completed, assignments: assignments, reflections: reflections,
-    activityLinks: studentLinks
+    activityLinks: studentLinks, checkins: checkins, journal: journal
   };
 }
 async function loadCustom(env, coachId) {
@@ -414,6 +435,11 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/change-password") return handleChangePassword(session, request, env);
   if (method === "POST" && path === "/completions") return handleCompletions(session, request, env);
   if (method === "POST" && path === "/reflections") return handleReflections(session, request, env);
+  if (method === "POST" && path === "/checkins") return handleSaveCheckin(session, request, env);
+  if (head === "journal") {
+    if (method === "POST" && seg.length === 1) return handleAddJournal(session, request, env);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteJournal(session, env, seg[1]);
+  }
 
   if (head === "assignments") {
     if (method === "GET" && seg.length === 1) return handleListAssignments(session, env, url);
@@ -941,6 +967,51 @@ async function handleReflections(session, request, env) {
     "ON CONFLICT(athlete_id,assignment_id,activity_id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at"
   ).bind(session.uid, assignmentId, activityId, text, nowSec()).run();
   return json({ ok: true, updatedAt: epochToIso(nowSec()) });
+}
+
+// Mental-performance check-ins + journal (Phase 3). Athletes write their own; their
+// coach reads them via assembleAthlete in the bootstrap.
+function clampScore(v) {
+  if (v == null || v === "") return null;
+  const n = Math.round(Number(v));
+  if (!isFinite(n)) return null;
+  return n < 1 ? 1 : (n > 5 ? 5 : n);
+}
+async function handleSaveCheckin(session, request, env) {
+  if (session.role !== "athlete") return err(403, "Only athletes can check in");
+  const b = await readBody(request);
+  let day = String(b.day || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) day = new Date(nowSec() * 1000).toISOString().slice(0, 10);
+  const mood = clampScore(b.mood), energy = clampScore(b.energy), stress = clampScore(b.stress);
+  const note = String(b.note || "").trim().slice(0, 2000);
+  try {
+    await env.DB.prepare(
+      "INSERT INTO checkins (athlete_id,day,mood,energy,stress,note,updated_at) VALUES (?,?,?,?,?,?,?) " +
+      "ON CONFLICT(athlete_id,day) DO UPDATE SET mood=excluded.mood, energy=excluded.energy, stress=excluded.stress, note=excluded.note, updated_at=excluded.updated_at"
+    ).bind(session.uid, day, mood, energy, stress, note, nowSec()).run();
+  } catch (e) {
+    return err(500, "Couldn't save your check-in (is the checkins table migrated?)");
+  }
+  return json({ ok: true, day: day });
+}
+async function handleAddJournal(session, request, env) {
+  if (session.role !== "athlete") return err(403, "Only athletes can journal");
+  const b = await readBody(request);
+  const body = String(b.body || "").trim().slice(0, 8000);
+  if (!body) return err(400, "Write something first");
+  const id = crypto.randomUUID();
+  try {
+    await env.DB.prepare("INSERT INTO journal_entries (id,athlete_id,body,created_at) VALUES (?,?,?,?)")
+      .bind(id, session.uid, body, nowSec()).run();
+  } catch (e) {
+    return err(500, "Couldn't save your journal entry (is the journal_entries table migrated?)");
+  }
+  return json({ ok: true, id: id });
+}
+async function handleDeleteJournal(session, env, id) {
+  if (session.role !== "athlete") return err(403, "Only athletes can delete journal entries");
+  await env.DB.prepare("DELETE FROM journal_entries WHERE id = ? AND athlete_id = ?").bind(String(id), session.uid).run();
+  return json({ ok: true });
 }
 
 async function handleListCustom(session, env) {

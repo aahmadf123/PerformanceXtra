@@ -375,6 +375,8 @@
       if (!st.completed || typeof st.completed !== "object") st.completed = {};
       if (!Array.isArray(st.assignments)) st.assignments = [];
       if (!st.reflections || typeof st.reflections !== "object") st.reflections = {};
+      if (!Array.isArray(st.checkins)) st.checkins = [];
+      if (!Array.isArray(st.journal)) st.journal = [];
     });
     return s;
   }
@@ -1880,6 +1882,7 @@
 
     detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
     appendProgress(detail, s);
+    appendWellbeing(detail, s);
   }
 
   /* ----------------------------- Student views ----------------------------- */
@@ -1910,6 +1913,204 @@
     }
     panel.appendChild(el("h3", { style: "margin-bottom:14px" }, s.name + " — Progress"));
     appendProgress(panel, s);
+  }
+
+  /* ----------------------------- Check-ins & journal ----------------------------- */
+  var CHECKIN_DIMS = [
+    { key: "mood", label: "Mood", low: "Tough", high: "Great" },
+    { key: "energy", label: "Energy", low: "Drained", high: "Energized" },
+    { key: "stress", label: "Stress", low: "Calm", high: "Stressed" }
+  ];
+  function todayKey() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+  function fmtDay(day) {
+    try { return new Date(day + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+    catch (e) { return day; }
+  }
+  function scoreText(v) { return v == null ? "—" : String(v); }
+  function todaysCheckin(s) {
+    var t = todayKey();
+    return (s.checkins || []).filter(function (c) { return c.day === t; })[0] || null;
+  }
+  // Consecutive days with a check-in, counting back from today (or yesterday, so a
+  // streak isn't "broken" simply because today's check-in hasn't happened yet).
+  function checkinStreak(checkins) {
+    if (!checkins || !checkins.length) return 0;
+    var days = {};
+    checkins.forEach(function (c) { if (c.day) days[c.day] = true; });
+    function key(dt) { function p(n) { return (n < 10 ? "0" : "") + n; } return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate()); }
+    var d = new Date(); d.setHours(12, 0, 0, 0);
+    if (!days[key(d)]) d.setDate(d.getDate() - 1);
+    var n = 0;
+    while (days[key(d)]) { n++; d.setDate(d.getDate() - 1); }
+    return n;
+  }
+  function checkinAverages(list) {
+    function avg(key) {
+      var vals = list.map(function (c) { return c[key]; }).filter(function (v) { return v != null; });
+      if (!vals.length) return "—";
+      return (vals.reduce(function (a, b) { return a + b; }, 0) / vals.length).toFixed(1);
+    }
+    return { mood: avg("mood"), energy: avg("energy"), stress: avg("stress") };
+  }
+  function checkinRow(c) {
+    return el("div", { class: "checkin-history-row" }, [
+      el("span", { class: "ch-date" }, fmtDay(c.day)),
+      el("span", { class: "ch-scores" }, "Mood " + scoreText(c.mood) + " · Energy " + scoreText(c.energy) + " · Stress " + scoreText(c.stress)),
+      c.note ? el("span", { class: "ch-note" }, c.note) : null
+    ]);
+  }
+
+  // Athlete's own daily check-in + journal (the "Check-in" tab).
+  function renderCheckinTab() {
+    var panel = $("#checkin-panel");
+    if (!panel) return;
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No check-in yet"),
+        el("p", {}, "Ask your coach to set you up to start checking in.")
+      ]));
+      return;
+    }
+    var today = todaysCheckin(s);
+    var picked = { mood: today ? today.mood : null, energy: today ? today.energy : null, stress: today ? today.stress : null };
+
+    var card = el("div", { class: "panel checkin-card" });
+    card.appendChild(el("h3", {}, today ? "Update today’s check-in" : "How are you today?"));
+    CHECKIN_DIMS.forEach(function (dim) {
+      var scale = el("div", { class: "checkin-scale" });
+      [1, 2, 3, 4, 5].forEach(function (n) {
+        var btn = el("button", { type: "button", class: "checkin-dot" + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", onclick: function () {
+          picked[dim.key] = (picked[dim.key] === n ? null : n);
+          $all(".checkin-dot", scale).forEach(function (b, i) { b.classList.toggle("is-on", picked[dim.key] === (i + 1)); });
+        } }, String(n));
+        scale.appendChild(btn);
+      });
+      card.appendChild(el("div", { class: "checkin-dim" }, [
+        el("div", { class: "checkin-dim-head" }, [
+          el("span", { class: "checkin-dim-label" }, dim.label),
+          el("span", { class: "checkin-dim-ends" }, dim.low + " → " + dim.high)
+        ]),
+        scale
+      ]));
+    });
+    var note = el("textarea", { class: "checkin-note", placeholder: "Anything on your mind? (optional)" });
+    if (today && today.note) note.value = today.note;
+    card.appendChild(el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]));
+    card.appendChild(el("button", { class: "btn btn--accent", onclick: function () {
+      saveCheckin({ mood: picked.mood, energy: picked.energy, stress: picked.stress, note: note.value.trim() });
+    } }, today ? "Update check-in" : "Save check-in"));
+    panel.appendChild(card);
+
+    var streak = checkinStreak(s.checkins);
+    var recent = (s.checkins || []).slice(0, 14);
+    var hist = el("div", { class: "panel" });
+    hist.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Recent check-ins"),
+      streak > 1 ? el("span", { class: "checkin-streak" }, "🔥 " + streak + "-day streak") : null
+    ]));
+    if (!recent.length) hist.appendChild(el("p", { class: "no-link" }, "No check-ins yet — your first one is above."));
+    else recent.forEach(function (c) { hist.appendChild(checkinRow(c)); });
+    panel.appendChild(hist);
+
+    var jpanel = el("div", { class: "panel" });
+    jpanel.appendChild(el("h3", {}, "Journal"));
+    jpanel.appendChild(el("p", { class: "field-hint" }, "Write a longer reflection whenever you want. Your coach can read these to support you."));
+    var jbody = el("textarea", { class: "checkin-note", placeholder: "Write a journal entry…" });
+    jpanel.appendChild(jbody);
+    jpanel.appendChild(el("button", { class: "btn btn--accent", onclick: function () {
+      var v = jbody.value.trim();
+      if (!v) { jbody.focus(); return; }
+      addJournalEntry(v);
+    } }, "Add entry"));
+    var jlist = el("div", { class: "journal-list" });
+    if (!(s.journal || []).length) jlist.appendChild(el("p", { class: "no-link" }, "No journal entries yet."));
+    (s.journal || []).forEach(function (j) {
+      jlist.appendChild(el("div", { class: "journal-entry" }, [
+        el("div", { class: "journal-meta" }, fmtDate(j.createdAt)),
+        el("div", { class: "journal-body" }, j.body),
+        el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete entry", onclick: function () {
+          if (confirm("Delete this journal entry?")) deleteJournalEntry(j.id);
+        } }, "Delete")
+      ]));
+    });
+    jpanel.appendChild(jlist);
+    panel.appendChild(jpanel);
+  }
+
+  // Coach's read-only Wellbeing view of an athlete (Students detail).
+  function appendWellbeing(container, s) {
+    var checkins = s.checkins || [], journal = s.journal || [];
+    if (!checkins.length && !journal.length) return;
+    container.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Wellbeing"));
+    if (checkins.length) {
+      var latest = checkins[0], avg = checkinAverages(checkins.slice(0, 14)), streak = checkinStreak(checkins);
+      var head = el("div", { class: "wellbeing-summary" }, [
+        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + " — Mood " + scoreText(latest.mood) + " · Energy " + scoreText(latest.energy) + " · Stress " + scoreText(latest.stress)),
+        el("span", { class: "wb-chip" }, "14-day avg — Mood " + avg.mood + " · Energy " + avg.energy + " · Stress " + avg.stress),
+        streak > 1 ? el("span", { class: "wb-chip" }, "🔥 " + streak + "-day streak") : null
+      ]);
+      container.appendChild(head);
+      var list = el("div", { class: "wellbeing-list" });
+      checkins.slice(0, 10).forEach(function (c) { list.appendChild(checkinRow(c)); });
+      container.appendChild(list);
+    }
+    if (journal.length) {
+      container.appendChild(el("div", { class: "detail-label", style: "margin:14px 0 8px" }, "Journal"));
+      var jl = el("div", { class: "journal-list" });
+      journal.slice(0, 10).forEach(function (j) {
+        jl.appendChild(el("div", { class: "journal-entry" }, [
+          el("div", { class: "journal-meta" }, fmtDate(j.createdAt)),
+          el("div", { class: "journal-body" }, j.body)
+        ]));
+      });
+      container.appendChild(jl);
+    }
+  }
+
+  function saveCheckin(scores) {
+    var s = activeStudent(); if (!s) return;
+    var day = todayKey();
+    if (SERVER) {
+      api("/checkins", { method: "POST", body: { day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save check-in")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Check-in saved — thanks for showing up"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.checkins = (s.checkins || []).filter(function (c) { return c.day !== day; });
+    s.checkins.unshift({ day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note, updatedAt: new Date().toISOString() });
+    saveStore(); renderAll(); toast("Check-in saved");
+  }
+  function addJournalEntry(body) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      api("/journal", { method: "POST", body: { body: body } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save entry")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Journal entry added"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.journal = s.journal || [];
+    s.journal.unshift({ id: "J-" + Date.now(), body: body, createdAt: new Date().toISOString() });
+    saveStore(); renderAll(); toast("Journal entry added");
+  }
+  function deleteJournalEntry(id) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      api("/journal/" + encodeURIComponent(id), { method: "DELETE" }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Entry deleted"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.journal = (s.journal || []).filter(function (j) { return j.id !== id; });
+    saveStore(); renderAll(); toast("Entry deleted");
   }
 
   /* ----------------------------- Export / Import ----------------------------- */
@@ -2085,7 +2286,7 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
-    if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
+    if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "checkin", label: "Check-in" }, { id: "progress", label: "My Progress" }];
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
       { id: "repo", label: "Repository" },
@@ -3512,6 +3713,7 @@
       if (state.tab === "appearance" && isSuperadmin()) renderAppearance();
     } else {
       renderWorkoutsTab();
+      renderCheckinTab();
       renderProgressTab();
     }
   }

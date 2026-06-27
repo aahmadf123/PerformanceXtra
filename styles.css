@@ -728,3 +728,30 @@
   .pb-card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
   .pb-card-icon { font-size: 1.6rem; margin-bottom: 6px; }
   .pb-button { margin: 12px 0; }
+
+  /* ===================== Check-ins, journal & wellbeing ===================== */
+  .checkin-card .checkin-dim { margin: 14px 0; }
+  .checkin-dim-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .checkin-dim-label { font-weight: 600; }
+  .checkin-dim-ends { color: var(--muted); font-size: .8rem; }
+  .checkin-scale { display: flex; gap: 8px; }
+  .checkin-dot {
+    flex: 1 1 0; min-width: 0; padding: 12px 0; border-radius: var(--radius-sm);
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--ink-soft);
+    font-weight: 600; cursor: pointer; transition: background .12s, border-color .12s, color .12s;
+  }
+  .checkin-dot:hover { border-color: var(--line-strong); }
+  .checkin-dot.is-on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .checkin-note { width: 100%; min-height: 72px; resize: vertical; }
+  .checkin-streak { color: var(--ember); font-weight: 600; font-size: .85rem; }
+  .checkin-history-row { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .ch-date { font-weight: 600; min-width: 60px; }
+  .ch-scores { color: var(--ink-soft); }
+  .ch-note { flex-basis: 100%; color: var(--muted); font-size: .85rem; }
+  .journal-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .journal-entry { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+  .journal-meta { color: var(--muted); font-size: .78rem; margin-bottom: 6px; }
+  .journal-body { white-space: pre-wrap; }
+  .wellbeing-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .wb-chip { padding: 6px 10px; border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line); font-size: .82rem; color: var(--ink-soft); }
+  .assign-generator { margin: 4px 0 8px; }

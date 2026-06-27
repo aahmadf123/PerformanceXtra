@@ -107,6 +107,11 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   inject script.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
   and a **Mark done** button on each item.
+- **Check-in** *(athlete)* — a calm daily **mood / energy / stress** check-in (each 1–5, plus an
+  optional note), a running **streak**, and a free-form **journal**. It's deliberately low-pressure
+  and supportive — a mindset tool, not a clinical form. The coach sees it read-only in a per-athlete
+  **Wellbeing** panel (recent check-ins, 14-day averages, streak, and journal entries), so patterns
+  surface without anyone exchanging emails.
 - **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
   automatically the first time a coach or athlete signs in.
 
@@ -170,13 +175,15 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0005_student_activity_links.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0006_admin_role.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0007_site_builder.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0008_checkins_journal.sql --remote
    ```
 
    `0003` adds the super-admin role, `0004` seeds the super-admin login (email
    `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
    sign-in**; edit the migration first if you want different credentials), `0005` moves
    custom links to the student level, `0006` adds the **admin** tier plus the global-library
-   owner row, and `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`).
+   owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), and `0008`
+   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`).
    Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
