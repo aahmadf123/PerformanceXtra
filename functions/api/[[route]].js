@@ -701,7 +701,7 @@ async function handleSaveTaxonomy(session, request, env) {
   // data. If this fails (e.g. the table hasn't been migrated yet) we return
   // an error and leave everything unchanged.
   try {
-    await env.DB.prepare("SELECT 1 FROM taxonomy WHERE coach_id = ? LIMIT 1").bind(coachId).first();
+    await env.DB.prepare("SELECT 1 FROM taxonomy LIMIT 1").first();
   } catch (e) {
     return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
   }
@@ -715,7 +715,7 @@ async function handleSaveTaxonomy(session, request, env) {
     try {
       await env.DB.batch(cascade.slice(i, i + 50));
     } catch (e) {
-      return err(500, "Couldn't update the activities for this change — please try again. (" + (e && e.message ? e.message : "db error") + ")");
+      return err(500, "Couldn't update the activities for this change — your vocabulary was left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
     }
   }
 
