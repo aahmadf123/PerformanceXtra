@@ -106,3 +106,11 @@ CREATE TABLE IF NOT EXISTS taxonomy (
   PRIMARY KEY (coach_id, kind, value)
 );
 CREATE INDEX IF NOT EXISTS idx_taxonomy_coach ON taxonomy(coach_id);
+
+-- Internal key/value settings. Currently holds the auto-provisioned session
+-- secret used to sign session cookies when SESSION_SECRET isn't set in the env.
+-- Created automatically at runtime too; kept here for reproducibility.
+CREATE TABLE IF NOT EXISTS app_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

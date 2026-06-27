@@ -131,8 +131,9 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    ```
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
-  If unset, the app falls back to a built-in placeholder secret so shared links still work,
-  but you should set your own `SESSION_SECRET` for production.
+  If unset, the app auto-provisions a strong random secret once and stores it in D1, so
+  sign-in still works securely — but setting your own `SESSION_SECRET` is recommended for
+  production so the secret is under your control and survives a database reset.
 4. Push to `main` → Cloudflare builds and deploys the Worker. The first visitor creates the
   head-coach account; the coach then adds athletes, who sign in with the email + passcode
   the coach emails them.

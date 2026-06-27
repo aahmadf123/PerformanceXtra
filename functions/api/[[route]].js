@@ -114,21 +114,45 @@ async function getSession(request, env) {
   const token = getCookie(request, COOKIE);
   if (!token) return null;
   const secure = new URL(request.url).protocol === "https:";
-  return verifyJWT(token, sessionSecret(env, secure));
+  return verifyJWT(token, await sessionSecret(env, secure));
 }
 async function issueSessionHeader(user, env, secure) {
   const now = Math.floor(Date.now() / 1000);
-  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env, secure));
+  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, await sessionSecret(env, secure));
   return { "Set-Cookie": sessionCookie(token, SESSION_TTL, secure) };
 }
 
-function sessionSecret(env, secure) {
+// Resolve the secret used to sign/verify session JWTs.
+//   1. Prefer an explicit SESSION_SECRET from the environment (set this in production).
+//   2. Otherwise provision a strong random secret once and persist it in D1, reusing it
+//      on every later request. This keeps a deployment that forgot to set SESSION_SECRET
+//      fully working AND secure — never signing sessions with the public, hard-coded
+//      FALLBACK below, which anyone reading this repo could use to forge a coach cookie.
+//   3. The hard-coded FALLBACK is used only as a last resort on insecure (http://) origins
+//      — e.g. `wrangler dev` locally — where the D1 lookup is unavailable.
+async function sessionSecret(env, secure) {
   const v = String(env.SESSION_SECRET || "").trim();
-  if (!v) {
-    if (secure) throw new Error("SESSION_SECRET environment variable is not set — refusing to use fallback on HTTPS");
-    return FALLBACK_SESSION_SECRET;
+  if (v) return v;
+  try {
+    const auto = await getOrCreateAutoSecret(env);
+    if (auto) return auto;
+  } catch (e) {
+    if (secure) throw new Error("SESSION_SECRET is not set and an auto-secret could not be provisioned: " + ((e && e.message) || e));
   }
-  return v;
+  if (secure) throw new Error("SESSION_SECRET environment variable is not set — refusing to use the public fallback on HTTPS");
+  return FALLBACK_SESSION_SECRET;
+}
+
+// Per-deployment session secret stored in D1. Generated once on first use; the
+// INSERT OR IGNORE + re-read makes concurrent first requests converge on one value.
+async function getOrCreateAutoSecret(env) {
+  await env.DB.prepare("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)").run();
+  const existing = await env.DB.prepare("SELECT value FROM app_meta WHERE key = 'session_secret'").first();
+  if (existing && existing.value) return existing.value;
+  const secret = randToken(48);
+  await env.DB.prepare("INSERT OR IGNORE INTO app_meta (key, value) VALUES ('session_secret', ?)").bind(secret).run();
+  const row = await env.DB.prepare("SELECT value FROM app_meta WHERE key = 'session_secret'").first();
+  return (row && row.value) || secret;
 }
 
 /* ----------------------------- small utils ----------------------------- */
