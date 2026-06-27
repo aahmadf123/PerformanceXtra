@@ -113,17 +113,22 @@ function clearCookie(secure) {
 async function getSession(request, env) {
   const token = getCookie(request, COOKIE);
   if (!token) return null;
-  return verifyJWT(token, sessionSecret(env));
+  const secure = new URL(request.url).protocol === "https:";
+  return verifyJWT(token, sessionSecret(env, secure));
 }
 async function issueSessionHeader(user, env, secure) {
   const now = Math.floor(Date.now() / 1000);
-  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env));
+  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, sessionSecret(env, secure));
   return { "Set-Cookie": sessionCookie(token, SESSION_TTL, secure) };
 }
 
-function sessionSecret(env) {
+function sessionSecret(env, secure) {
   const v = String(env.SESSION_SECRET || "").trim();
-  return v || FALLBACK_SESSION_SECRET;
+  if (!v) {
+    if (secure) throw new Error("SESSION_SECRET environment variable is not set — refusing to use fallback on HTTPS");
+    return FALLBACK_SESSION_SECRET;
+  }
+  return v;
 }
 
 /* ----------------------------- small utils ----------------------------- */
@@ -692,26 +697,27 @@ async function handleSaveTaxonomy(session, request, env) {
     cascade = await buildTaxCascade(env, coachId, kind, String(b.value), null);
   }
 
-  // Apply the value cascade FIRST, in chunks (it can touch many activities, so
-  // chunking stays well under D1's per-batch limit). Crucially, the old value
-  // stays in the stored vocabulary until the cascade fully succeeds: if a chunk
-  // fails the coach can still see and re-select the value to retry, and because
-  // each rewrite is idempotent the retry simply finishes the remaining rows.
-  for (let i = 0; i < cascade.length; i += 50) {
-    try {
-      await env.DB.batch(cascade.slice(i, i + 50));
-    } catch (e) {
-      return err(500, "Couldn't update the activities for this change — your lists were left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
-    }
-  }
-
-  // Cascade complete (or none needed) — now replace the stored vocabulary for
-  // this kind in one atomic batch.
+  // Replace the stored vocabulary FIRST in one atomic batch. If this fails
+  // (e.g. the taxonomy table hasn't been migrated yet), we return an error
+  // before touching any activities, leaving everything unchanged.
   try {
     await env.DB.batch(listStmts);
   } catch (e) {
     return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
   }
+
+  // Vocabulary saved — now apply the cascade in chunks (it can touch many
+  // activities, so chunking stays well under D1's per-batch limit). The old
+  // value is no longer in the stored vocabulary, so if a chunk fails the
+  // coach can retry and each rewrite is idempotent.
+  for (let i = 0; i < cascade.length; i += 50) {
+    try {
+      await env.DB.batch(cascade.slice(i, i + 50));
+    } catch (e) {
+      return err(500, "Couldn't update the activities for this change — your lists were saved, please try again to finish updating activities. (" + (e && e.message ? e.message : "db error") + ")");
+    }
+  }
+
   return json({ ok: true, taxonomy: await loadTaxonomy(env, coachId) });
 }
 
