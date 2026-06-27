@@ -87,19 +87,13 @@ npm run dev               # serves the Worker + assets + /api/*
 Opening `index.html` directly (no Worker) still shows the sign-in screen, but it can't
 authenticate — it just displays a “server unavailable” notice.
 
-### Default demo admin login
+### First-run setup
 
-To make first-run access immediate, the API auto-creates one coach account if no coaches
-exist yet:
-
-- Email: `admin@performancextra.demo`
-- Password: `Admin12345!`
-
-You can override these per environment with Worker vars:
-
-- `DEMO_COACH_NAME`
-- `DEMO_COACH_EMAIL`
-- `DEMO_COACH_PASSWORD`
+On a brand-new database there are no accounts yet. The sign-in screen detects this and
+shows a **“Create the coach account”** link: the first visitor sets their own name, email,
+and password, which becomes the head coach. From there the coach adds athletes, who sign in
+with the email + passcode the coach sends them. No credentials are hard-coded or shown on
+the page.
 
 ## Update the activities
 
@@ -137,8 +131,8 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    ```
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
-  If unset, the app now falls back to a built-in demo secret so shared links still work,
-  but you should set your own `SESSION_SECRET` for real use.
+  If unset, the app falls back to a built-in placeholder secret so shared links still work,
+  but you should set your own `SESSION_SECRET` for production.
 4. Push to `main` → Cloudflare builds and deploys the Worker. The first visitor creates the
   head-coach account; the coach then adds athletes, who sign in with the email + passcode
   the coach emails them.

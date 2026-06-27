@@ -665,6 +665,8 @@
 
   /* clickable links inside coach-authored notes */
   .note-link { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; word-break: break-word; }
+  .howto-list { margin: 6px 0 2px; padding-left: 20px; font-size: .82rem; color: var(--ink-soft); line-height: 1.55; }
+  .howto-list li { margin-bottom: 4px; }
   .btn.has-custom-link { border-color: var(--line-glow); }
 
   @media (max-width: 560px) {

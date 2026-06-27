@@ -2320,12 +2320,37 @@
   function openItemLinkModal(studentId, asg, activityId) {
     var a = BY_ID[activityId];
     var current = (asg.itemLinks && asg.itemLinks[activityId]) || "";
-    var input = el("input", { type: "url", placeholder: "https://… (blank = use the default link)" });
+    var input = el("input", { type: "url", placeholder: "https://… (blank = use the default link)", style: "flex:1 1 auto; min-width:0;" });
     input.value = current;
+    function validUrl(v) { return /^https?:\/\//i.test(v); }
+    // "Test" opens whatever's typed in a new tab, so the coach can confirm the
+    // link loads (and that the student would be able to open it) before saving.
+    var testBtn = el("button", { class: "btn btn--sm", type: "button", onclick: function () {
+      var v = input.value.trim();
+      if (!v) { toast("Enter a link first"); input.focus(); return; }
+      if (!validUrl(v)) { toast("Enter a full https:// link"); input.focus(); return; }
+      window.open(v, "_blank", "noopener");
+    } }, "Test ↗");
+    // Plain-language help so a coach who doesn't already know how to get a
+    // shareable link can still succeed without asking anyone.
+    var howto = el("details", { class: "detail", style: "margin-top:2px;" }, [
+      el("summary", {}, "How do I get a link?"),
+      el("ol", { class: "howto-list" }, [
+        el("li", {}, "Open the document or sheet you want this student to use (for example in their Google Drive folder)."),
+        el("li", {}, "Click Share → Copy link — or simply copy the address from your browser's address bar."),
+        el("li", {}, "Make sure the file is shared with this student's own account, or it won't open for them."),
+        el("li", {}, "Paste it below and press Test to confirm it opens.")
+      ])
+    ]);
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "This link is used for " + (asg.title || "this assignment") + " only, just for this student — handy for a document in their private folder."),
-      (a && a.link) ? el("p", { class: "field-hint" }, "Default link: " + a.link) : null,
-      el("div", { class: "field" }, [el("label", {}, "Custom link for this student"), input])
+      el("p", { class: "field-hint" }, "This link is used for " + (asg.title || "this assignment") + " only, just for this student — handy for a document in their private folder. It replaces the activity's normal link for them."),
+      (a && a.link) ? el("p", { class: "field-hint" }, "Default link (everyone else): " + a.link) : null,
+      howto,
+      el("div", { class: "field" }, [
+        el("label", {}, "Custom link for this student"),
+        el("div", { style: "display:flex; gap:8px; align-items:center;" }, [input, testBtn])
+      ]),
+      el("p", { class: "field-hint" }, "Tip: the student must be able to open this link with their own account. If they see “Request access,” share the file with them first.")
     ]);
     function commit(v) {
       setItemLinkFlow(studentId, asg.id, activityId, v, function () {
@@ -2337,7 +2362,7 @@
       current ? { label: "Remove", danger: true, onClick: function () { commit(""); } } : null,
       { label: "Save link", accent: true, onClick: function () {
         var v = input.value.trim();
-        if (v && !/^https?:\/\//i.test(v)) { toast("Enter a full http(s):// URL"); input.focus(); return; }
+        if (v && !validUrl(v)) { toast("Enter a full https:// link"); input.focus(); return; }
         commit(v);
       } }
     ]);
@@ -2527,9 +2552,7 @@
     if (offline) return;
     api("/setup-status").then(function (res) {
       setupRow.textContent = "";
-      if (res.ok && res.data && res.data.demoLogin) {
-        setupRow.textContent = "Admin demo login: " + res.data.demoLogin.email + " / " + res.data.demoLogin.password;
-      } else if (res.ok && res.data && res.data.needsSetup) {
+      if (res.ok && res.data && res.data.needsSetup) {
         setupRow.appendChild(document.createTextNode("First time here? "));
         setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the coach account"));
       } else {
