@@ -14,10 +14,10 @@ const COOKIE = "px_session";
 const SESSION_TTL = 60 * 60 * 24 * 30;        // 30 days
 const INVITE_TTL = 60 * 60 * 24 * 14;         // 14 days
 const PBKDF2_ITER = 100000;
-const DEMO_SESSION_SECRET = "performancextra-demo-session-secret-change-me";
-const DEMO_COACH_NAME = "Demo Admin";
-const DEMO_COACH_EMAIL = "admin@performancextra.demo";
-const DEMO_COACH_PASSWORD = "Admin12345!";
+// Fallback used only when SESSION_SECRET isn't configured. Set SESSION_SECRET in
+// the Worker's environment variables for production so sessions are signed with
+// your own secret.
+const FALLBACK_SESSION_SECRET = "performancextra-fallback-session-secret-change-me";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -123,7 +123,7 @@ async function issueSessionHeader(user, env, secure) {
 
 function sessionSecret(env) {
   const v = String(env.SESSION_SECRET || "").trim();
-  return v || DEMO_SESSION_SECRET;
+  return v || FALLBACK_SESSION_SECRET;
 }
 
 /* ----------------------------- small utils ----------------------------- */
@@ -277,11 +277,6 @@ async function route(method, path, request, env, url, secure) {
   const seg = path.split("/").filter(Boolean);
   const head = seg[0] || "";
 
-  // Ensure one deterministic coach login exists for first-run demos.
-  if ((method === "GET" && path === "/setup-status") || (method === "POST" && path === "/login")) {
-    await ensureDemoCoach(env);
-  }
-
   /* -------- public (no session) -------- */
   if (method === "POST" && path === "/setup") return handleSetup(request, env, secure);
   if (method === "POST" && path === "/login") return handleLogin(request, env, secure);
@@ -289,10 +284,7 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/athletes/accept") return handleAccept(request, env, secure);
   if (method === "GET" && path === "/setup-status") {
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
-    return json({
-      needsSetup: !row || row.n === 0,
-      demoLogin: await getDemoLogin(env)
-    });
+    return json({ needsSetup: !row || row.n === 0 });
   }
 
   /* -------- session required below -------- */
@@ -336,36 +328,6 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/import") return handleImport(session, request, env);
 
   return err(404, "Not found: " + method + " " + path);
-}
-
-function demoCoachName(env) { return String(env.DEMO_COACH_NAME || DEMO_COACH_NAME).trim() || DEMO_COACH_NAME; }
-function demoCoachEmail(env) { return String(env.DEMO_COACH_EMAIL || DEMO_COACH_EMAIL).trim().toLowerCase() || DEMO_COACH_EMAIL; }
-function demoCoachPassword(env) {
-  const p = String(env.DEMO_COACH_PASSWORD || DEMO_COACH_PASSWORD);
-  return p.length >= 8 ? p : DEMO_COACH_PASSWORD;
-}
-
-async function ensureDemoCoach(env) {
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role='coach'").first();
-  if (count && count.n > 0) return;
-  const id = crypto.randomUUID();
-  const name = demoCoachName(env);
-  const email = demoCoachEmail(env);
-  const hash = await hashPassword(demoCoachPassword(env));
-  await env.DB.prepare(
-    "INSERT OR IGNORE INTO users (id,email,name,role,password_hash,created_at) VALUES (?,?,?,?,?,?)"
-  ).bind(id, email, name, "coach", hash, nowSec()).run();
-}
-
-async function getDemoLogin(env) {
-  const email = demoCoachEmail(env);
-  const row = await env.DB.prepare("SELECT id FROM users WHERE role='coach' AND email = ? LIMIT 1").bind(email).first();
-  if (!row) return null;
-  return {
-    name: demoCoachName(env),
-    email: email,
-    password: demoCoachPassword(env)
-  };
 }
 
 /* ----------------------------- auth handlers ----------------------------- */
@@ -730,26 +692,27 @@ async function handleSaveTaxonomy(session, request, env) {
     cascade = await buildTaxCascade(env, coachId, kind, String(b.value), null);
   }
 
+  // Apply the value cascade FIRST, in chunks (it can touch many activities, so
+  // chunking stays well under D1's per-batch limit). Crucially, the old value
+  // stays in the stored vocabulary until the cascade fully succeeds: if a chunk
+  // fails the coach can still see and re-select the value to retry, and because
+  // each rewrite is idempotent the retry simply finishes the remaining rows.
+  for (let i = 0; i < cascade.length; i += 50) {
+    try {
+      await env.DB.batch(cascade.slice(i, i + 50));
+    } catch (e) {
+      return err(500, "Couldn't update the activities for this change — your lists were left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
+    }
+  }
+
+  // Cascade complete (or none needed) — now replace the stored vocabulary for
+  // this kind in one atomic batch.
   try {
     await env.DB.batch(listStmts);
   } catch (e) {
     return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
   }
-  let cascadeError = null;
-  // The cascade can touch many activities; chunk it to stay well under D1's
-  // per-batch statement limit. Each statement is an idempotent value rewrite,
-  // so chunked (non-atomic) application is safe — re-running completes it.
-  for (let i = 0; i < cascade.length; i += 50) {
-    try {
-      await env.DB.batch(cascade.slice(i, i + 50));
-    } catch (e) {
-      cascadeError = e && e.message ? e.message : "db error";
-      break;
-    }
-  }
-  const out = { ok: true, taxonomy: await loadTaxonomy(env, coachId) };
-  if (cascadeError) out.cascade = { ok: false, error: cascadeError };
-  return json(out);
+  return json({ ok: true, taxonomy: await loadTaxonomy(env, coachId) });
 }
 
 // Build (but don't run) the statements that rewrite `from`→`to` (or remove,
