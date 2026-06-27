@@ -299,6 +299,7 @@ async function route(method, path, request, env, url, secure) {
   if (method === "GET" && path === "/me") return json({ id: session.uid, name: session.name, role: session.role });
   if (method === "GET" && path === "/activities") return handleListBaseActivities(env);
   if (method === "GET" && path === "/bootstrap") return handleBootstrap(session, env);
+  if (method === "POST" && path === "/change-password") return handleChangePassword(session, request, env);
   if (method === "POST" && path === "/completions") return handleCompletions(session, request, env);
   if (method === "POST" && path === "/reflections") return handleReflections(session, request, env);
 
@@ -378,6 +379,28 @@ async function handleAccept(request, env, secure) {
     .bind(hash, user.id).run();
   const out = { id: user.id, name: user.name, role: user.role };
   return json(out, 200, await issueSessionHeader(user, env, secure));
+}
+
+async function handleChangePassword(session, request, env) {
+  const b = await readBody(request);
+  const currentPassword = String(b.current_password || "");
+  const newPassword = String(b.new_password || "");
+  if (!currentPassword || newPassword.length < 8) return err(400, "Current password and a new 8+ character password are required");
+  
+  // Fetch the user's current password hash
+  const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.uid).first();
+  if (!user || !user.password_hash) return err(400, "User not found or has no password");
+  
+  // Verify the current password
+  const isValid = await verifyPassword(currentPassword, user.password_hash);
+  if (!isValid) return err(401, "Current password is incorrect");
+  
+  // Hash and update the new password
+  const newHash = await hashPassword(newPassword);
+  await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+    .bind(newHash, session.uid).run();
+  
+  return json({ ok: true });
 }
 
 /* ----------------------------- data handlers ----------------------------- */

@@ -219,8 +219,13 @@
       <div class="panel server-only" hidden>
         <h3>Your account</h3>
         <p class="field-hint" style="margin:8px 0 14px">You’re signed in to your team database. Roles and access are enforced on the server, so athletes only ever see their own work.</p>
-        <div id="account-info"></div>
-        <div style="margin-top:12px"><button class="btn" id="account-logout-btn">Log out</button></div>
+        <div id="account-info"></div>        <form class="form-stack" id="change-password-form" style="margin-top:16px">
+          <div class="field"><label for="current-password">Current password</label><input type="password" id="current-password" autocomplete="current-password" placeholder="Enter your current password"></div>
+          <div class="field"><label for="new-password">New password</label><input type="password" id="new-password" autocomplete="new-password" placeholder="8+ characters"></div>
+          <div class="field"><label for="confirm-password">Confirm new password</label><input type="password" id="confirm-password" autocomplete="new-password" placeholder="Repeat it"></div>
+          <div><button class="btn btn--primary" type="submit">Update password</button></div>
+          <div id="change-password-error" class="warn" hidden></div>
+        </form>        <div style="margin-top:12px"><button class="btn" id="account-logout-btn">Log out</button></div>
       </div>
 
       <div class="panel">

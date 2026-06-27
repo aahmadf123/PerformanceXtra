@@ -3136,6 +3136,53 @@
       toast("Passcode updated");
     });
 
+    // Settings — change password (server mode)
+    var changePwdForm = $("#change-password-form");
+    if (changePwdForm) {
+      changePwdForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+        var current = $("#current-password").value;
+        var newPwd = $("#new-password").value;
+        var confirm = $("#confirm-password").value;
+        var errBox = $("#change-password-error");
+        errBox.hidden = true;
+        
+        if (!current || !newPwd || !confirm) {
+          errBox.textContent = "All fields are required.";
+          errBox.hidden = false;
+          return;
+        }
+        if (newPwd.length < 8) {
+          errBox.textContent = "New password must be at least 8 characters.";
+          errBox.hidden = false;
+          return;
+        }
+        if (newPwd !== confirm) {
+          errBox.textContent = "New passwords don't match.";
+          errBox.hidden = false;
+          return;
+        }
+        
+        api("/change-password", {
+          method: "POST",
+          body: { current_password: current, new_password: newPwd }
+        }).then(function (res) {
+          if (!res.ok) {
+            errBox.textContent = apiError(res, "Couldn't update password.");
+            errBox.hidden = false;
+            return;
+          }
+          $("#current-password").value = "";
+          $("#new-password").value = "";
+          $("#confirm-password").value = "";
+          toast("Password updated successfully");
+        }).catch(function () {
+          errBox.textContent = "Couldn't reach the server.";
+          errBox.hidden = false;
+        });
+      });
+    }
+
     // Help button replays the onboarding tour for the current role on demand (T2).
     var helpBtn = $("#help-btn");
     if (helpBtn) helpBtn.addEventListener("click", function () { startTour(isAdminView() ? TOUR_ADMIN : TOUR_STUDENT, true); });
