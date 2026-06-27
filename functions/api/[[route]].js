@@ -677,11 +677,16 @@ async function handleResetPasscode(session, env, athleteId, url) {
  * flag filters below, and the non-login global-library sentinel is always excluded. */
 
 // Pure coaches (no admin/super-admin flag), each with their athlete count.
+// Tolerates a DB where migration 0006 (the is_admin column) hasn't been applied yet:
+// rather than 500 the whole bootstrap, it degrades to an empty roster until migrated.
 async function listCoaches(env) {
-  const rows = await env.DB.prepare(
-    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
-    "WHERE role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ? ORDER BY name"
-  ).bind(GLOBAL_OWNER_ID).all();
+  let rows;
+  try {
+    rows = await env.DB.prepare(
+      "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
+      "WHERE role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ? ORDER BY name"
+    ).bind(GLOBAL_OWNER_ID).all();
+  } catch (e) { return []; }   // is_admin column not migrated yet
   const coaches = [];
   for (const r of (rows.results || [])) {
     const c = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE coach_id = ? AND role='athlete'").bind(r.id).first();
@@ -690,10 +695,13 @@ async function listCoaches(env) {
   return coaches;
 }
 async function listStaffTier(env, column, tier) {
-  const rows = await env.DB.prepare(
-    "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
-    "WHERE " + column + "=1 AND id != ? ORDER BY name"
-  ).bind(GLOBAL_OWNER_ID).all();
+  let rows;
+  try {
+    rows = await env.DB.prepare(
+      "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password,created_at FROM users " +
+      "WHERE " + column + "=1 AND id != ? ORDER BY name"
+    ).bind(GLOBAL_OWNER_ID).all();
+  } catch (e) { return []; }   // is_admin column not migrated yet
   return (rows.results || []).map(function (r) {
     return { id: r.id, name: r.name, email: r.email, hasPassword: !!r.has_password, tier: tier };
   });
