@@ -1,8 +1,8 @@
 # PerformanceXtra — Mental Workout Repository
 
 A web app that consolidates PerformanceXtra's mental-performance training resources
-into one tagged, searchable repository — with a workout builder, per-athlete completion
-tracking, and **super-admin / coach / athlete** roles.
+into one tagged, searchable repository — with assignment building, per-athlete completion
+tracking, and **super-admin / admin / coach / athlete** roles.
 
 It runs against a **Cloudflare Worker + D1 database**: a super admin creates coach accounts,
 coaches manage their own athletes, everyone has **real accounts**, data is **shared across
@@ -81,10 +81,10 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   only those that exist under it (no dead-end searches). Each card shows its tags and time,
   links to the resource, and expands to show instructions and reflection prompts. Coaches also
   get per-card **Edit / Hide / Assign** controls and **+ Add activity**.
-- **Workout Builder** *(coach)* — assemble a session from criteria like *“Month 1,
-  Confidence.”* Print, copy, download, or **Assign to an athlete**.
 - **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
-  activities with an optional note), track per-athlete progress, and **export the roster to
+  activities with an optional note) — picking activities by hand or with the built-in
+  **Generate by criteria** helper that auto-assembles a balanced set from the library —
+  track per-athlete progress, and **export the roster to
   CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
   to each athlete. Assignment notes support **clickable links** — both bare URLs and
   `[label](https://…)` markdown — and any activity can be given a **student-level custom link**

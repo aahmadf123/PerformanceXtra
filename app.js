@@ -892,7 +892,6 @@
     showHidden: false,      // admin toggle to surface hidden activities in the repo
     reflectionTimers: {},
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
-    workout: { criteria: null, results: [] },
     tracking: loadStore(),
     coaches: [], admins: [], superadmins: [],   // staff rosters, populated on bootstrap
     globalTracking: null    // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
@@ -1115,22 +1114,6 @@
 
   var TYPE_ORDER = { Exercise: 0, Breathing: 0, Meditation: 1, Video: 2, Blog: 3, Article: 3, Book: 4, Module: 4 };
 
-  function readCriteria() {
-    var scope = $("input[name=scope]:checked").value;
-    return {
-      scope: scope,
-      month: scope === "month" ? Number($("#b-month").value) : null,
-      week: scope === "week" ? Number($("#b-week").value) : null,
-      topic: $("#b-topic").value,
-      subtopic: $("#b-subtopic").value,
-      type: $("#b-type").value,
-      mix: $("#b-mix").checked,
-      count: Math.max(1, Number($("#b-count").value) || 5),
-      timeBudget: Number($("#b-time").value) || 0,
-      excludeCompleted: $("#b-exclude").checked
-    };
-  }
-
   function candidatePool(c) {
     var pool = DATA.slice();
     if (c.scope === "month" && c.month) {
@@ -1183,136 +1166,6 @@
       return oa - ob || (a.week || 99) - (b.week || 99);
     });
     return chosen;
-  }
-
-  function criteriaSummary(c) {
-    var parts = [];
-    if (c.scope === "month" && c.month) {
-      var m = TAX.months.filter(function (x) { return x.value === c.month; })[0];
-      parts.push(m ? m.label : "Month " + c.month);
-    } else if (c.scope === "week" && c.week) parts.push("Week " + c.week);
-    else parts.push("Any progression");
-    if (c.topic) parts.push(c.topic);
-    if (c.subtopic) parts.push(c.subtopic);
-    if (c.type) parts.push(c.type);
-    return parts.join(" · ");
-  }
-
-  function totalMinutes(list) {
-    return list.reduce(function (sum, a) { return sum + (a.timeMinutes || 0); }, 0);
-  }
-
-  function generateWorkout() {
-    var c = readCriteria();
-    var pool = candidatePool(c);
-    var results = selectWorkout(pool, c);
-    state.workout = { criteria: c, results: results, poolSize: pool.length };
-    $("#regenerate-btn").disabled = results.length === 0;
-    renderWorkout();
-  }
-
-  function renderWorkout() {
-    var out = $("#workout-output");
-    out.textContent = "";
-    var w = state.workout;
-    if (!w.criteria) {
-      out.appendChild(el("div", { class: "empty-state", id: "workout-empty" }, [
-        el("h3", {}, "No workout yet"),
-        el("p", {}, "Set your criteria and press Generate workout.")
-      ]));
-      return;
-    }
-    if (!w.results.length) {
-      out.appendChild(el("div", { class: "empty-state" }, [
-        el("h3", {}, "No activities match"),
-        el("p", {}, "No activities fit those criteria. Try a broader scope or a different topic.")
-      ]));
-      return;
-    }
-
-    out.appendChild(el("h3", {}, "Your Workout"));
-    out.appendChild(el("div", { class: "workout-meta" }, [
-      el("span", {}, [el("b", {}, w.results.length + " "), "activities"]),
-      el("span", {}, [el("b", {}, "~" + totalMinutes(w.results) + " min "), "estimated"]),
-      el("span", {}, criteriaSummary(w.criteria))
-    ]));
-
-    if (w.results.length < w.criteria.count) {
-      out.appendChild(el("div", { class: "warn" },
-        "Only " + w.results.length + " of " + w.criteria.count + " requested activities matched these criteria."));
-    }
-
-    var exportBar = el("div", { class: "export-bar" }, [
-      el("button", { class: "btn btn--sm", onclick: function () { window.print(); } }, "🖨 Print"),
-      el("button", { class: "btn btn--sm", onclick: copyWorkout }, "📋 Copy"),
-      el("button", { class: "btn btn--sm", onclick: downloadWorkout }, "⬇ Download .txt")
-    ]);
-    if (isAdminView()) {
-      exportBar.appendChild(el("button", {
-        class: "btn btn--sm btn--accent",
-        onclick: function () { openAssignModal(w.results.map(function (a) { return a.id; }), criteriaSummary(w.criteria)); }
-      }, "👤 Assign to student"));
-    }
-    out.appendChild(exportBar);
-
-    var listWrap = el("div", {});
-    w.results.forEach(function (a, idx) {
-      var sub = el("div", { class: "workout-sub" }, [
-        el("span", {}, a.type || "—"),
-        a.time ? el("span", {}, a.time) : null,
-        el("span", {}, a.topic || ""),
-        a.link ? el("a", { href: a.link, target: "_blank", rel: "noopener" }, "Open ↗") : el("span", { class: "no-link" }, "No link (on-court)")
-      ]);
-      var body = el("div", { class: "workout-body" }, [
-        el("div", { class: "workout-title" }, a.name),
-        sub
-      ]);
-      if (a.instructions) {
-        var d = el("details", { class: "detail" }, el("summary", {}, "Instructions"));
-        d.appendChild(detailBlock("Instructions", a.instructions));
-        body.appendChild(d);
-      }
-      listWrap.appendChild(el("div", { class: "workout-item" }, [
-        el("div", { class: "workout-num" }, String(idx + 1)),
-        body
-      ]));
-    });
-    out.appendChild(listWrap);
-  }
-
-  function workoutToText() {
-    var w = state.workout;
-    var lines = [];
-    lines.push("PERFORMANCEXTRA — MENTAL WORKOUT");
-    lines.push(criteriaSummary(w.criteria));
-    lines.push(w.results.length + " activities · ~" + totalMinutes(w.results) + " min");
-    lines.push("");
-    w.results.forEach(function (a, i) {
-      lines.push((i + 1) + ". " + a.name + "  [" + (a.type || "—") + (a.time ? ", " + a.time : "") + "]");
-      lines.push("   Link: " + (a.link || "No link (on-court)"));
-      if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
-      lines.push("");
-    });
-    return lines.join("\n");
-  }
-
-  function copyWorkout() {
-    var text = workoutToText();
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { toast("Workout copied to clipboard"); },
-        function () { fallbackCopy(text); });
-    } else { fallbackCopy(text); }
-  }
-  function fallbackCopy(text) {
-    var ta = el("textarea", {}, text);
-    ta.style.position = "fixed"; ta.style.opacity = "0";
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand("copy"); toast("Workout copied"); }
-    catch (e) { toast("Copy not supported — use Download instead"); }
-    document.body.removeChild(ta);
-  }
-  function downloadWorkout() {
-    downloadFile("performancextra-workout.txt", workoutToText(), "text/plain");
   }
 
   function downloadFile(filename, content, mime) {
@@ -2235,7 +2088,7 @@
     if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
-      { id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
+      { id: "repo", label: "Repository" },
       { id: "students", label: "Students" }, { id: "content", label: "Content" }
     ];
     if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
@@ -2515,19 +2368,48 @@
       });
     }
 
-    var quick = null;
-    if (state.workout && state.workout.results && state.workout.results.length) {
-      quick = el("button", { class: "btn btn--sm", type: "button", onclick: function () {
-        state.workout.results.forEach(function (a) { selected[a.id] = true; });
-        if (!title.value) title.value = criteriaSummary(state.workout.criteria);
-        refresh(); updateCount(); toast("Added last generated workout");
-      } }, "↪ Use last generated workout");
+    // Generate-by-criteria: auto-pick a balanced set from the library (the old
+    // standalone Workout Builder, folded into the assign flow), then let the coach
+    // tweak the selection below before assigning.
+    var genTopic = el("select", {}); fillSelect(genTopic, PRESENT.topic, "Any topic");
+    var genType = el("select", {}); fillSelect(genType, PRESENT.type, "Any type");
+    var genCount = el("input", { type: "number", min: "1", max: "30", value: "5" });
+    var genExclude = el("input", { type: "checkbox" }); genExclude.checked = true;
+    function generateInto() {
+      var c = { scope: "any", month: null, week: null, topic: genTopic.value || "", subtopic: "",
+                type: genType.value || "", mix: true, count: Math.max(1, Number(genCount.value) || 5),
+                timeBudget: 0, excludeCompleted: false };
+      var pool = candidatePool(c);
+      if (genExclude.checked) {
+        var done = (students()[studentId] && students()[studentId].completed) || {};
+        pool = pool.filter(function (a) { return !done[a.id]; });
+      }
+      pool = pool.filter(function (a) { return !selected[a.id]; });   // keep current picks, add new ones
+      var picks = selectWorkout(pool, c);
+      if (!picks.length) { toast("No new activities match — try a broader topic/type"); return; }
+      picks.forEach(function (a) { selected[a.id] = true; });
+      if (!title.value) title.value = [c.topic, c.type].filter(Boolean).join(" · ") || "Workout";
+      refresh(); updateCount();
+      toast("Added " + picks.length + " activit" + (picks.length === 1 ? "y" : "ies"));
     }
+    var generator = el("details", { class: "detail assign-generator" }, [
+      el("summary", {}, "✦ Generate by criteria"),
+      el("p", { class: "field-hint" }, "Auto-pick a balanced set from the library, then tweak the list below before assigning."),
+      el("div", { class: "form-grid2" }, [
+        el("div", { class: "field" }, [el("label", {}, "Topic"), genTopic]),
+        el("div", { class: "field" }, [el("label", {}, "Content type"), genType])
+      ]),
+      el("div", { class: "form-grid2" }, [
+        el("div", { class: "field" }, [el("label", {}, "How many"), genCount]),
+        el("label", { class: "check" }, [genExclude, " Skip ones they've completed"])
+      ]),
+      el("button", { class: "btn btn--sm btn--accent", type: "button", onclick: generateInto }, "Generate")
+    ]);
 
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
-      quick,
+      generator,
       el("div", { class: "field" }, [el("label", {}, "Add activities"), search]),
       listWrap, countEl
     ]);
@@ -3428,9 +3310,6 @@
     fillSelect($("#f-type"), PRESENT.type, "All types"); $("#f-type").value = f.type;
     fillSelect($("#f-progression"), PRESENT.progression, "All progressions"); $("#f-progression").value = f.progression;
     fillSelect($("#f-frequency"), PRESENT.frequency, "All frequencies"); $("#f-frequency").value = f.frequency;
-    fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
-    syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
-    fillSelect($("#b-type"), PRESENT.type, "Any type");
   }
 
   function renderCatalogCount() {
@@ -3627,7 +3506,6 @@
     renderStudentPicker();
     renderRepo();
     if (isAdminView()) {
-      renderWorkout();
       renderStudents();
       renderContent();
       if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
@@ -3678,31 +3556,6 @@
       var collapsed = bar.classList.toggle("is-collapsed");
       this.setAttribute("aria-expanded", collapsed ? "false" : "true");
     });
-
-    // Builder
-    fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
-    fillSelect($("#b-subtopic"), PRESENT.subtopic, "Any subtopic");
-    fillSelect($("#b-type"), PRESENT.type, "Any type");
-    // Mirror the repository behaviour: once a topic is chosen, only offer
-    // subtopics that actually appear under it.
-    $("#b-topic").addEventListener("change", function () {
-      syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
-    });
-    var bMonth = $("#b-month"); bMonth.textContent = "";
-    TAX.months.forEach(function (m) { bMonth.appendChild(option(m.value, m.label)); });
-    var bWeek = $("#b-week"); bWeek.textContent = "";
-    TAX.progressions.filter(function (p) { return /week/i.test(p); }).forEach(function (p) {
-      bWeek.appendChild(option(p.replace(/\D+/g, ""), p));
-    });
-    $all("input[name=scope]").forEach(function (r) {
-      r.addEventListener("change", function () {
-        var v = $("input[name=scope]:checked").value;
-        $("#month-field").hidden = v !== "month";
-        $("#week-field").hidden = v !== "week";
-      });
-    });
-    $("#builder-form").addEventListener("submit", function (e) { e.preventDefault(); generateWorkout(); });
-    $("#regenerate-btn").addEventListener("click", generateWorkout);
 
     // Students
     $("#student-select").addEventListener("change", function (e) { setActiveStudent(e.target.value); renderAll(); });

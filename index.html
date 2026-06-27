@@ -95,52 +95,6 @@
     <div class="grid" id="repo-grid"></div>
   </section>
 
-  <!-- ===================== Workout Builder ===================== -->
-  <section id="view-builder" class="view" aria-labelledby="builder-h">
-    <div class="view-intro">
-      <h2 id="builder-h">Workout Builder</h2>
-      <p>Assemble a mental workout from your criteria — for example “Month 1, Confidence.” Pick a progression scope and topic, choose how many activities you want, and generate a ready-to-share session.</p>
-    </div>
-
-    <div class="builder-layout">
-      <div class="panel">
-        <h3>Criteria</h3>
-        <form class="builder-form" id="builder-form">
-          <div class="field">
-            <label>Progression scope</label>
-            <div class="seg" id="scope-seg" role="radiogroup" aria-label="Progression scope">
-              <label><input type="radio" name="scope" value="any" checked><span>Any</span></label>
-              <label><input type="radio" name="scope" value="month"><span>By month</span></label>
-              <label><input type="radio" name="scope" value="week"><span>By week</span></label>
-            </div>
-          </div>
-          <div class="field" id="month-field" hidden><label for="b-month">Month</label><select id="b-month"></select></div>
-          <div class="field" id="week-field" hidden><label for="b-week">Week</label><select id="b-week"></select></div>
-          <div class="field"><label for="b-topic">Topic</label><select id="b-topic"></select></div>
-          <div class="field"><label for="b-subtopic">Subtopic</label><select id="b-subtopic"></select></div>
-          <div class="field"><label for="b-type">Content type</label><select id="b-type"></select></div>
-          <label class="check"><input type="checkbox" id="b-mix" checked> Mix content types for variety</label>
-          <div class="form-row">
-            <div class="field"><label for="b-count">How many</label><input type="number" id="b-count" min="1" max="30" value="5"></div>
-            <div class="field"><label for="b-time">Time budget (min)</label><input type="number" id="b-time" min="0" placeholder="Optional"></div>
-          </div>
-          <label class="check"><input type="checkbox" id="b-exclude"> Exclude activities the active student already completed</label>
-          <div class="builder-actions">
-            <button type="submit" class="btn btn--accent" id="generate-btn">Generate workout</button>
-            <button type="button" class="btn" id="regenerate-btn" disabled>Regenerate</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="panel" id="workout-output">
-        <div class="empty-state" id="workout-empty">
-          <h3>No workout yet</h3>
-          <p>Set your criteria and press <strong>Generate workout</strong>.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- ===================== Students ===================== -->
   <section id="view-students" class="view" aria-labelledby="students-h">
     <div class="view-intro">
