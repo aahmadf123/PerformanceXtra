@@ -11,6 +11,13 @@
   var TAX = (typeof window.PX_TAXONOMY !== "undefined" && window.PX_TAXONOMY)
     ? window.PX_TAXONOMY
     : { topics: [], subtopics: [], types: [], progressions: [], frequencies: [], months: [] };
+  // The built-in vocabulary shipped in data.js. Used as the fallback whenever a
+  // coach hasn't customised that list via the CMS (state.tracking.taxonomy).
+  var TAX_FALLBACK = {
+    topic: (TAX.topics || []).slice(),
+    subtopic: (TAX.subtopics || []).slice(),
+    type: (TAX.types || []).slice()
+  };
   var ALL = [];   // every activity, including hidden — used for BY_ID lookups & admin management
   var DATA = [];  // visible activities — what students, the builder and filters see
   var BY_ID = {};
@@ -32,6 +39,22 @@
     var out = taxList.filter(function (v) { return presentObj[v]; });
     Object.keys(presentObj).forEach(function (v) { if (out.indexOf(v) === -1) out.push(v); });
     return out;
+  }
+  // Case-insensitive alphabetical sort, returning a new array. Used for the
+  // topic / subtopic / content-type lists so every dropdown reads A→Z.
+  // (Progressions and frequencies keep their canonical taxonomy order.)
+  function alpha(list) {
+    return (list || []).slice().sort(function (a, b) {
+      return String(a).localeCompare(String(b), undefined, { sensitivity: "base" });
+    });
+  }
+  // The effective, alphabetised vocabulary for a taxonomy kind ('topic' |
+  // 'subtopic' | 'type'): the coach's CMS-managed list when they have one,
+  // otherwise the built-in data.js fallback.
+  function taxList(kind) {
+    var tx = (state.tracking && state.tracking.taxonomy) || {};
+    var managed = tx[kind];
+    return alpha((managed && managed.length) ? managed : (TAX_FALLBACK[kind] || []));
   }
   function applyOverride(a, ov) {
     if (!ov) return a;
@@ -58,16 +81,31 @@
       SEARCH_INDEX[a.id] = buildSearchIndex(a);
     });
     DATA = ALL.filter(function (a) { return !hidden[a.id]; });
+    // Fold any CMS-managed vocabulary into TAX before deriving the filter lists.
+    TAX.topics = taxList("topic");
+    TAX.subtopics = taxList("subtopic");
+    TAX.types = taxList("type");
     PRESENT = {
-      topic: ordered(TAX.topics, distinctPresent("topic")),
-      subtopic: ordered(TAX.subtopics, distinctPresent("subtopic")),
-      type: ordered(TAX.types, distinctPresent("type")),
+      topic: alpha(ordered(TAX.topics, distinctPresent("topic"))),
+      subtopic: alpha(ordered(TAX.subtopics, distinctPresent("subtopic"))),
+      type: alpha(ordered(TAX.types, distinctPresent("type"))),
       progression: ordered(TAX.progressions, distinctPresent("progression")),
       frequency: ordered(TAX.frequencies, distinctPresent("frequency"))
     };
   }
   function isHidden(id) { return !!(state.tracking.hidden && state.tracking.hidden[id]); }
   function isCustom(id) { return /^CUST-/.test(id); }
+  // Subtopics that actually co-occur with a given topic in the visible data,
+  // alphabetical. Empty topic → every present subtopic. Used to keep the
+  // Topic→Subtopic dropdowns from offering choices that yield no results.
+  function subtopicsForTopic(topic) {
+    if (!topic) return PRESENT.subtopic.slice();
+    var found = {};
+    DATA.forEach(function (a) {
+      if (a.topic === topic) (a.subtopics || []).forEach(function (s) { found[s] = true; });
+    });
+    return alpha(Object.keys(found));
+  }
 
   /* ----------------------------- DOM helpers ----------------------------- */
   function $(sel, root) { return (root || document).querySelector(sel); }
@@ -253,7 +291,8 @@
         activeStudentId: d.activeStudentId || (state.tracking && state.tracking.activeStudentId) || null,
         customActivities: d.customActivities || [],
         overrides: d.overrides || {},
-        hidden: d.hidden || {}
+        hidden: d.hidden || {},
+        taxonomy: d.taxonomy || { topic: [], subtopic: [], type: [] }
       });
       if (d.me.role === "athlete") {
         state.tracking.activeStudentId = d.me.id;
@@ -306,6 +345,7 @@
     return {
       version: 2, activeStudentId: null, students: {},
       customActivities: [], overrides: {}, hidden: {},
+      taxonomy: { topic: [], subtopic: [], type: [] },
       settings: { passcodeHash: hashPasscode(DEFAULT_PASSCODE) }
     };
   }
@@ -319,6 +359,11 @@
       if (Array.isArray(obj.customActivities)) s.customActivities = obj.customActivities;
       if (obj.overrides && typeof obj.overrides === "object") s.overrides = obj.overrides;
       if (obj.hidden && typeof obj.hidden === "object") s.hidden = obj.hidden;
+      if (obj.taxonomy && typeof obj.taxonomy === "object") {
+        ["topic", "subtopic", "type"].forEach(function (k) {
+          if (Array.isArray(obj.taxonomy[k])) s.taxonomy[k] = obj.taxonomy[k];
+        });
+      }
       if (obj.settings && obj.settings.passcodeHash) s.settings.passcodeHash = obj.settings.passcodeHash;
     }
     // Every student needs completed, assignments, and per-item reflections.
@@ -566,6 +611,38 @@
     return Object.keys(out);
   }
 
+  // A coach can override an activity's link for one student within an assignment
+  // (e.g. a doc in that student's private folder). itemLinks is a map of
+  // { activityId: customUrl }; the custom URL wins over the activity default.
+  function itemHasCustomLink(asg, id) {
+    return !!(asg && asg.itemLinks && asg.itemLinks[id] && String(asg.itemLinks[id]).trim());
+  }
+  function itemLink(asg, id) {
+    if (itemHasCustomLink(asg, id)) return String(asg.itemLinks[id]).trim();
+    var a = BY_ID[id];
+    return (a && a.link) || null;
+  }
+  // Set or clear a per-student custom URL for one activity in an assignment.
+  function setItemLinkFlow(studentId, asgId, activityId, url, onDone) {
+    var clean = (url == null ? "" : String(url)).trim();
+    if (SERVER) {
+      api("/assignments/" + encodeURIComponent(asgId) + "/items", {
+        method: "POST", body: { activity_id: activityId, custom_url: clean }
+      }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save link")); return; }
+        refreshFromServer().then(function () { if (onDone) onDone(); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    var s = students()[studentId];
+    var asg = s && studentAssignments(s).filter(function (a) { return a.id === asgId; })[0];
+    if (!asg) { toast("Assignment not found"); return; }
+    if (!asg.itemLinks) asg.itemLinks = {};
+    if (clean) asg.itemLinks[activityId] = clean; else delete asg.itemLinks[activityId];
+    saveTracking();
+    if (onDone) onDone();
+  }
+
   // Create an assignment, routing to the server in SERVER mode. onDone runs on success.
   function createAssignmentFlow(studentId, title, note, ids, onDone) {
     if (SERVER) {
@@ -696,6 +773,77 @@
     delete state.tracking.hidden[id];
     saveStore(); rebuildData();
   }
+
+  /* ----------------------------- Taxonomy (CMS) ----------------------------- */
+  function lc(s) { return String(s == null ? "" : s).trim().toLowerCase(); }
+  // The list of values for a kind after an add / rename / remove edit.
+  function nextTaxValues(kind, action, args) {
+    var out = taxList(kind).slice();
+    if (action === "add") {
+      var v = (args.value || "").trim();
+      if (v && out.map(lc).indexOf(lc(v)) === -1) out.push(v);
+    } else if (action === "rename") {
+      var to = (args.to || "").trim();
+      out = out.map(function (x) { return lc(x) === lc(args.from) ? to : x; }).filter(Boolean);
+    } else if (action === "remove") {
+      out = out.filter(function (x) { return lc(x) !== lc(args.value); });
+    }
+    var seen = {};
+    out = out.filter(function (x) { var k = lc(x); if (seen[k]) return false; seen[k] = true; return true; });
+    return alpha(out);
+  }
+  // Apply a taxonomy edit: persist the new vocabulary and cascade the value
+  // change onto existing activities. Routes to the server in SERVER mode.
+  function taxonomyFlow(kind, action, args, onDone) {
+    var values = nextTaxValues(kind, action, args);
+    if (SERVER) {
+      api("/taxonomy", { method: "POST", body: {
+        kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
+      } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
+        refreshFromServer().then(function () { if (onDone) onDone(); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    if (!state.tracking.taxonomy) state.tracking.taxonomy = { topic: [], subtopic: [], type: [] };
+    state.tracking.taxonomy[kind] = values;
+    if (action === "rename") cascadeTaxLocal(kind, args.from, args.to);
+    else if (action === "remove") cascadeTaxLocal(kind, args.value, null);
+    saveStore(); rebuildData(); refreshSelects();
+    if (onDone) onDone();
+  }
+  // Rewrite (or remove, when `to` is null) a topic/subtopic/type value across
+  // every activity in local mode: base activities via the override layer, and
+  // custom activities / existing overrides in place.
+  function cascadeTaxLocal(kind, from, to) {
+    var field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
+    function mapValue(v) {
+      if (field === "subtopics") {
+        var arr = (v || []).map(function (x) { return lc(x) === lc(from) ? to : x; }).filter(Boolean);
+        var seen = {}; return arr.filter(function (x) { var k = lc(x); if (seen[k]) return false; seen[k] = true; return true; });
+      }
+      return lc(v) === lc(from) ? to : v;
+    }
+    function affected(a) {
+      if (field === "subtopics") return (a.subtopics || []).some(function (x) { return lc(x) === lc(from); });
+      return lc(a[field]) === lc(from);
+    }
+    BASE.forEach(function (a) {
+      var merged = applyOverride(a, state.tracking.overrides[a.id]);
+      if (!affected(merged)) return;
+      var ov = Object.assign({}, state.tracking.overrides[a.id] || {});
+      ov[field] = mapValue(merged[field]);
+      state.tracking.overrides[a.id] = ov;
+    });
+    (state.tracking.customActivities || []).forEach(function (a) {
+      if (affected(a)) a[field] = mapValue(a[field]);
+    });
+    Object.keys(state.tracking.overrides).forEach(function (id) {
+      var ov = state.tracking.overrides[id];
+      if (ov && ov[field] != null && affected(ov)) ov[field] = mapValue(ov[field]);
+    });
+  }
+
   function renameStudent(id, name) {
     name = (name || "").trim();
     if (students()[id] && name) { students()[id].name = name; saveTracking(); }
@@ -862,6 +1010,8 @@
     state.filters = { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" };
     $("#f-search").value = "";
     ["topic", "subtopic", "type", "progression", "frequency"].forEach(function (k) { $("#f-" + k).value = ""; });
+    // Topic is now empty, so restore the full subtopic list.
+    syncSubtopicSelect($("#f-topic"), $("#f-subtopic"), "All subtopics");
     renderRepo();
   }
 
@@ -900,8 +1050,6 @@
       pool = pool.filter(function (a) { return weeks.indexOf(a.week) !== -1; });
     } else if (c.scope === "week" && c.week) {
       pool = pool.filter(function (a) { return a.week === c.week; });
-    } else if (c.scope === "extra") {
-      pool = pool.filter(function (a) { return a.week == null; });
     }
     if (c.topic) pool = pool.filter(function (a) { return a.topic === c.topic; });
     if (c.subtopic) pool = pool.filter(function (a) { return a.subtopics.indexOf(c.subtopic) !== -1; });
@@ -954,7 +1102,6 @@
       var m = TAX.months.filter(function (x) { return x.value === c.month; })[0];
       parts.push(m ? m.label : "Month " + c.month);
     } else if (c.scope === "week" && c.week) parts.push("Week " + c.week);
-    else if (c.scope === "extra") parts.push("Extra Activities");
     else parts.push("Any progression");
     if (c.topic) parts.push(c.topic);
     if (c.subtopic) parts.push(c.subtopic);
@@ -1113,7 +1260,7 @@
       var meta = [a.type || "—", a.time || ""].filter(Boolean).join(", ");
       lines.push((idx + 1) + ". " + a.name + " [" + meta + "]");
       lines.push("   Status: " + (student.completed[id] ? "Completed" : "Pending"));
-      lines.push("   Link: " + (a.link || "No link (on-court)"));
+      lines.push("   Link: " + (itemLink(asg, id) || "No link (on-court)"));
       if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
       if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
 
@@ -1213,7 +1360,7 @@
         a.frequency || null,
         a.time || null
       ].filter(Boolean).join("  |  ");
-      var linkText = a.link || "No external link (coach-led or on-court activity)";
+      var linkText = itemLink(asg, id) || "No external link (coach-led or on-court activity)";
       var instructionText = a.instructions || "No additional instructions provided.";
       var existing = getReflectionEntry(student, asg.id, id);
       var submittedLines = (existing && existing.text)
@@ -1420,7 +1567,7 @@
     area.appendChild(el("h1", { class: "pa-title" }, asg.title));
     var sub = "For " + student.name + " · Assigned " + fmtDate(asg.createdAt) + (asg.dueAt ? " · Due " + fmtDate(asg.dueAt) : "");
     area.appendChild(el("div", { class: "pa-sub" }, sub));
-    if (asg.note) area.appendChild(el("p", { class: "pa-note" }, asg.note));
+    if (asg.note) area.appendChild(noteNode(asg.note, "pa-note", "p"));
     var ol = el("ol", { class: "pa-list" });
     asg.items.forEach(function (id) {
       var a = BY_ID[id];
@@ -1429,7 +1576,8 @@
       li.appendChild(el("div", { class: "pa-name" }, a.name + (a.time ? " (" + a.time + ")" : "") + (student.completed[id] ? "  ✓ done" : "")));
       var meta = [a.type, a.topic, a.progression, a.frequency].filter(Boolean).join(" · ");
       if (meta) li.appendChild(el("div", { class: "pa-meta" }, meta));
-      if (a.link) li.appendChild(el("div", { class: "pa-link" }, a.link));
+      var paLink = itemLink(asg, id);
+      if (paLink) li.appendChild(el("div", { class: "pa-link" }, paLink));
       if (a.instructions) li.appendChild(detailBlock("Instructions", a.instructions));
       if (a.reflection) li.appendChild(detailBlock("Reflection prompt", a.reflection));
       ol.appendChild(li);
@@ -1532,24 +1680,27 @@
   // Shared progress block — used by the admin Students detail and the student
   // My Progress tab.
   function appendProgress(container, s) {
-    var athleteMode = SERVER && state.session && state.session.role === "athlete";
     var assigned = assignedActivityIds(s);
     var assignedMap = {};
     assigned.forEach(function (id) { assignedMap[id] = true; });
 
-    var p = computeProgress(s);
-    if (athleteMode) {
-      p = computeProgress({ completed: Object.keys(s.completed).reduce(function (acc, id) {
-        if (assignedMap[id]) acc[id] = s.completed[id];
-        return acc;
-      }, {}) });
-    }
+    // Progress is always measured against what has actually been assigned to
+    // this athlete (not the whole ~188-activity catalogue), for the coach and
+    // athlete views alike.
+    var p = computeProgress({ completed: Object.keys(s.completed).reduce(function (acc, id) {
+      if (assignedMap[id]) acc[id] = s.completed[id];
+      return acc;
+    }, {}) });
 
-    var denom = athleteMode ? assigned.length : DATA.length;
+    var denom = assigned.length;
+    if (!denom) {
+      container.appendChild(el("p", { class: "no-link" }, "No activities assigned yet — progress will appear here once this athlete has a workout."));
+      return;
+    }
     var pct = denom ? Math.round(p.total / denom * 100) : 0;
     container.appendChild(el("div", { class: "progress-stat" }, [
       el("span", { class: "big" }, String(p.total)),
-      el("span", {}, "of " + denom + (athleteMode ? " assigned activities" : " activities") + " completed (" + pct + "%)")
+      el("span", {}, "of " + denom + " assigned activities completed (" + pct + "%)")
     ]));
     container.appendChild(el("div", { class: "progress-bar" }, el("span", { style: "width:" + pct + "%" })));
 
@@ -1568,6 +1719,7 @@
         container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
         var cl = el("div", { class: "completed-list" });
         Object.keys(s.completed)
+          .filter(function (aid) { return assignedMap[aid]; })
           .sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); })
           .forEach(function (aid) {
             var a = BY_ID[aid];
@@ -1583,7 +1735,7 @@
         container.appendChild(cl);
       }
     } else {
-      container.appendChild(el("p", { class: "no-link" }, "No activities completed yet."));
+      container.appendChild(el("p", { class: "no-link" }, "No assigned activities completed yet."));
     }
   }
 
@@ -1620,7 +1772,7 @@
       card.appendChild(el("div", { class: "assignment-head" }, [
         el("div", {}, [
           el("div", { class: "assignment-title" }, asg.title),
-          asg.note ? el("div", { class: "assignment-note" }, asg.note) : null,
+          asg.note ? noteNode(asg.note) : null,
           el("div", { class: "assignment-meta" }, metaParts.join(" · "))
         ]),
         actions
@@ -1637,7 +1789,14 @@
         item.appendChild(el("span", { class: "ai-name" }, [
           el("strong", {}, a.name), a.time ? (" · " + a.time) : "", a.type ? (" · " + a.type) : ""
         ]));
-        if (a.link) item.appendChild(el("a", { class: "btn btn--sm", href: a.link, target: "_blank", rel: "noopener" }, "Open ↗"));
+        var link = itemLink(asg, id);
+        if (link) item.appendChild(el("a", { class: "btn btn--sm" + (itemHasCustomLink(asg, id) ? " has-custom-link" : ""), href: link, target: "_blank", rel: "noopener", title: itemHasCustomLink(asg, id) ? "Custom link for this student" : "" }, "Open ↗"));
+        if (opts.admin) {
+          var hasCustom = itemHasCustomLink(asg, id);
+          item.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: hasCustom ? "Edit this student's custom link" : "Set a custom link for this student", onclick: function () {
+            openItemLinkModal(s.id, asg, id);
+          } }, hasCustom ? "🔗 Edit link" : "🔗 Custom link"));
+        }
         if (opts.actionable || opts.admin) {
           var btn = el("button", { class: "btn btn--sm done-btn", "aria-pressed": done ? "true" : "false", onclick: function () {
             setCompletion(s, id, !s.completed[id], asg.id);
@@ -1898,6 +2057,39 @@
     sel.appendChild(option("", allLabel));
     values.forEach(function (v) { sel.appendChild(option(v, v)); });
   }
+  // Repopulate a subtopic <select> with only the subtopics valid for the topic
+  // currently chosen in topicSel, preserving a still-valid selection (or the
+  // supplied `preferred` value) and otherwise resetting to "all".
+  function syncSubtopicSelect(topicSel, subSel, allLabel, preferred) {
+    var prev = (preferred != null) ? preferred : subSel.value;
+    var opts = subtopicsForTopic(topicSel.value);
+    fillSelect(subSel, opts, allLabel);
+    subSel.value = (prev && opts.indexOf(prev) !== -1) ? prev : "";
+  }
+
+  // Append `text` to `node`, turning bare http(s) URLs into clickable links.
+  // Builds real text + anchor nodes (never innerHTML), so it is XSS-safe even
+  // for coach-authored notes.
+  function linkifyInto(node, text) {
+    var s = String(text == null ? "" : text);
+    var re = /(https?:\/\/[^\s<]+)/g;
+    var last = 0, m;
+    while ((m = re.exec(s))) {
+      if (m.index > last) node.appendChild(document.createTextNode(s.slice(last, m.index)));
+      var url = m[0], trail = "";
+      // Don't swallow trailing sentence punctuation into the link.
+      while (/[.,;:!?)\]]$/.test(url)) { trail = url.slice(-1) + trail; url = url.slice(0, -1); }
+      node.appendChild(el("a", { href: url, target: "_blank", rel: "noopener", class: "note-link" }, url));
+      if (trail) node.appendChild(document.createTextNode(trail));
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) node.appendChild(document.createTextNode(s.slice(last)));
+    return node;
+  }
+  // A <div> (or given tag) whose text content has clickable links.
+  function noteNode(text, cls, tag) {
+    return linkifyInto(el(tag || "div", { class: cls || "assignment-note" }), text);
+  }
 
   function renderStudentPicker() {
     var sel = $("#student-select");
@@ -1929,13 +2121,13 @@
     var s = activeStudent();
     var c = $("#student-count");
     if (s) {
+      // Always report progress out of what's assigned to this athlete, not the
+      // whole catalogue — matches the progress bars in the detail views.
       var assigned = assignedActivityIds(s);
-      if (SERVER && state.session && state.session.role === "athlete") {
-        var doneAssigned = assigned.filter(function (id) { return !!s.completed[id]; }).length;
-        c.textContent = doneAssigned + " / " + assigned.length + " assigned done";
-      } else {
-        c.textContent = Object.keys(s.completed).length + " / " + DATA.length + " done";
-      }
+      var doneAssigned = assigned.filter(function (id) { return !!s.completed[id]; }).length;
+      c.textContent = assigned.length
+        ? (doneAssigned + " / " + assigned.length + " assigned done")
+        : "Nothing assigned yet";
     } else { c.textContent = ""; }
   }
 
@@ -1943,7 +2135,8 @@
   function currentTabs() {
     return isAdminView()
       ? [{ id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
-         { id: "students", label: "Students" }, { id: "settings", label: "Settings" }]
+         { id: "students", label: "Students" }, { id: "content", label: "Content" },
+         { id: "settings", label: "Settings" }]
       : [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
   }
 
@@ -2121,6 +2314,35 @@
     ]);
   }
 
+  // Set/edit a per-student custom link for one activity in an assignment.
+  // Lets a coach point a student at a doc/sheet in that student's private folder
+  // without changing the activity's default link for everyone else.
+  function openItemLinkModal(studentId, asg, activityId) {
+    var a = BY_ID[activityId];
+    var current = (asg.itemLinks && asg.itemLinks[activityId]) || "";
+    var input = el("input", { type: "url", placeholder: "https://… (blank = use the default link)" });
+    input.value = current;
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "This link is used for " + (asg.title || "this assignment") + " only, just for this student — handy for a document in their private folder."),
+      (a && a.link) ? el("p", { class: "field-hint" }, "Default link: " + a.link) : null,
+      el("div", { class: "field" }, [el("label", {}, "Custom link for this student"), input])
+    ]);
+    function commit(v) {
+      setItemLinkFlow(studentId, asg.id, activityId, v, function () {
+        closeModal(); renderAll(); toast(v ? "Custom link saved" : "Custom link removed");
+      });
+    }
+    openModal("Custom link — " + (a ? a.name : "activity"), body, [
+      { label: "Cancel", onClick: closeModal },
+      current ? { label: "Remove", danger: true, onClick: function () { commit(""); } } : null,
+      { label: "Save link", accent: true, onClick: function () {
+        var v = input.value.trim();
+        if (v && !/^https?:\/\//i.test(v)) { toast("Enter a full http(s):// URL"); input.focus(); return; }
+        commit(v);
+      } }
+    ]);
+  }
+
   // Build an assignment for a specific student by searching + checking activities.
   function openAssignBuilderModal(studentId) {
     var s = students()[studentId];
@@ -2212,7 +2434,7 @@
         field("Topic", "topic", { list: "dl-topics" }),
         field("Content type", "type", { list: "dl-types" })
       ]),
-      field("Subtopics", "subtopics", { placeholder: "Calmness, Focus" }, false, "Separate multiple with commas."),
+      field("Subtopics", "subtopics", { list: "dl-subtopics", placeholder: "Calmness, Focus" }, false, "Separate multiple with commas."),
       el("div", { class: "form-grid2" }, [
         field("Progression", "progression", { list: "dl-progressions", placeholder: "Week 3 / Extra" }),
         field("Frequency", "frequency", { list: "dl-frequencies" })
@@ -2227,7 +2449,8 @@
       ]),
       field("Instructions", "instructions", { placeholder: "How to do it" }, true),
       field("Reflection prompt", "reflection", {}, true),
-      dl("dl-topics", PRESENT.topic), dl("dl-types", PRESENT.type),
+      dl("dl-topics", taxList("topic")), dl("dl-types", taxList("type")),
+      dl("dl-subtopics", taxList("subtopic")),
       dl("dl-progressions", PRESENT.progression), dl("dl-frequencies", PRESENT.frequency)
     ]);
     function save() {
@@ -2235,13 +2458,13 @@
       Object.keys(f).forEach(function (k) { form[k] = f[k].value; });
       if (!String(form.name || "").trim()) { toast("Name is required"); f.name.focus(); return; }
       if (editing) saveActivityEdit(id, form); else addCustomActivity(form);
-      closeModal(); refreshSelects(); renderRepo();
+      closeModal(); refreshSelects(); renderAll();
       toast(editing ? "Activity updated" : "Activity added");
     }
     openModal(editing ? "Edit activity" : "Add activity", body, [
       { label: "Cancel", onClick: closeModal },
       (editing && isCustom(id)) ? { label: "Delete", danger: true, onClick: function () {
-        if (confirm("Delete this custom activity?")) { deleteCustomActivity(id); closeModal(); refreshSelects(); renderRepo(); toast("Deleted"); }
+        if (confirm("Delete this custom activity?")) { deleteCustomActivity(id); closeModal(); refreshSelects(); renderAll(); toast("Deleted"); }
       } } : null,
       { label: editing ? "Save" : "Add activity", accent: true, onClick: save }
     ]);
@@ -2583,12 +2806,12 @@
   function refreshSelects() {
     var f = state.filters;
     fillSelect($("#f-topic"), PRESENT.topic, "All topics"); $("#f-topic").value = f.topic;
-    fillSelect($("#f-subtopic"), PRESENT.subtopic, "All subtopics"); $("#f-subtopic").value = f.subtopic;
+    syncSubtopicSelect($("#f-topic"), $("#f-subtopic"), "All subtopics", f.subtopic); f.subtopic = $("#f-subtopic").value;
     fillSelect($("#f-type"), PRESENT.type, "All types"); $("#f-type").value = f.type;
     fillSelect($("#f-progression"), PRESENT.progression, "All progressions"); $("#f-progression").value = f.progression;
     fillSelect($("#f-frequency"), PRESENT.frequency, "All frequencies"); $("#f-frequency").value = f.frequency;
     fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
-    fillSelect($("#b-subtopic"), PRESENT.subtopic, "Any subtopic");
+    syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
     fillSelect($("#b-type"), PRESENT.type, "Any type");
   }
 
@@ -2598,6 +2821,167 @@
     node.textContent = ALL.length;
   }
 
+  /* ----------------------------- Content / CMS (admin) ----------------------------- */
+  function renderContent() {
+    if (!isAdminView()) return;
+    var nav = $("#cms-subnav");
+    if (!nav) return;
+    var sub = state.cmsTab === "taxonomy" ? "taxonomy" : "activities";
+    nav.textContent = "";
+    [["activities", "Activities"], ["taxonomy", "Topics & types"]].forEach(function (pair) {
+      var input = el("input", { type: "radio", name: "cms-sub", value: pair[0] });
+      if (sub === pair[0]) input.checked = true;
+      input.addEventListener("change", function () {
+        if (!input.checked) return;
+        state.cmsTab = input.value || pair[0];
+        renderContent();
+      });
+      var lbl = el("label", {}, [input, el("span", {}, pair[1])]);
+      nav.appendChild(lbl);
+    });
+    $("#cms-activities").hidden = sub !== "activities";
+    $("#cms-taxonomy").hidden = sub !== "taxonomy";
+    if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
+  }
+
+  function renderCmsActivities() {
+    var wrap = $("#cms-activities");
+    wrap.textContent = "";
+    wrap.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Activity library"),
+      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")
+    ]));
+    var search = el("input", { type: "search", class: "cms-search", placeholder: "Search activities…" });
+    search.value = state.cmsSearch || "";
+    var hiddenCb = el("input", { type: "checkbox" });
+    hiddenCb.checked = !!state.cmsShowHidden;
+    hiddenCb.addEventListener("change", function () { state.cmsShowHidden = hiddenCb.checked; renderCmsActivities(); });
+    wrap.appendChild(el("div", { class: "cms-toolbar" }, [
+      search,
+      el("label", { class: "check" }, [hiddenCb, " Show hidden"])
+    ]));
+    var tableWrap = el("div", { class: "cms-table-wrap" });
+    wrap.appendChild(tableWrap);
+
+    function draw() {
+      var q = norm(search.value || "").trim();
+      tableWrap.textContent = "";
+      var rows = (state.cmsShowHidden ? ALL : DATA).slice();
+      if (q) rows = rows.filter(function (a) { return smartSearchScore(a, q) > 0; });
+      rows.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+      tableWrap.appendChild(el("div", { class: "cms-count" }, rows.length + " activit" + (rows.length === 1 ? "y" : "ies")));
+      if (!rows.length) { tableWrap.appendChild(el("p", { class: "no-link" }, "No activities match.")); return; }
+      var table = el("div", { class: "cms-table" });
+      rows.forEach(function (a) {
+        var hid = isHidden(a.id);
+        var tags = [];
+        if (isCustom(a.id)) tags.push(el("span", { class: "chip chip--accent" }, "Custom"));
+        if (hid) tags.push(el("span", { class: "chip" }, "Hidden"));
+        table.appendChild(el("div", { class: "cms-row" + (hid ? " is-hidden" : "") }, [
+          el("div", { class: "cms-cell cms-cell--name" }, [
+            el("strong", {}, a.name),
+            el("div", { class: "cms-meta" }, [a.topic, a.type, a.progression].filter(Boolean).join(" · ") || "—")
+          ]),
+          el("div", { class: "cms-cell cms-tags" }, tags),
+          el("div", { class: "cms-cell cms-actions" }, [
+            el("button", { class: "btn btn--sm", onclick: function () { openActivityModal(a.id); } }, "Edit"),
+            el("button", { class: "btn btn--sm btn--ghost", onclick: function () { setHidden(a.id, !hid); renderAll(); } }, hid ? "Unhide" : "Hide"),
+            isCustom(a.id) ? el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
+              if (confirm("Delete this custom activity?")) { deleteCustomActivity(a.id); renderAll(); toast("Deleted"); }
+            } }, "Delete") : null
+          ])
+        ]));
+      });
+      tableWrap.appendChild(table);
+    }
+    var timer;
+    search.addEventListener("input", function () { state.cmsSearch = search.value; clearTimeout(timer); timer = setTimeout(draw, 120); });
+    draw();
+  }
+
+  // Count how many activities reference each value of a taxonomy kind.
+  function taxUsageCounts(kind) {
+    var counts = {};
+    var field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
+    ALL.forEach(function (a) {
+      if (field === "subtopics") (a.subtopics || []).forEach(function (s) { counts[lc(s)] = (counts[lc(s)] || 0) + 1; });
+      else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
+    });
+    return counts;
+  }
+
+  function renderCmsTaxonomy() {
+    var wrap = $("#cms-taxonomy");
+    wrap.textContent = "";
+    wrap.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Topics, subtopics & content types"),
+      el("span", { class: "cms-count" }, "Drive every filter, the builder and activity tags")
+    ]));
+    [["topic", "Topics"], ["subtopic", "Subtopics"], ["type", "Content types"]].forEach(function (pair) {
+      wrap.appendChild(renderTaxGroup(pair[0], pair[1]));
+    });
+  }
+  function singular(label) { return label.toLowerCase().replace(/s$/, ""); }
+  function renderTaxGroup(kind, label) {
+    var values = taxList(kind);
+    var usage = taxUsageCounts(kind);
+    var group = el("div", { class: "cms-tax-group" });
+    group.appendChild(el("div", { class: "detail-label" }, label + " (" + values.length + ")"));
+    var list = el("div", { class: "cms-tax-list" });
+    if (!values.length) list.appendChild(el("p", { class: "no-link" }, "None yet — add one below."));
+    values.forEach(function (v) {
+      var n = usage[lc(v)] || 0;
+      list.appendChild(el("div", { class: "cms-tax-row" }, [
+        el("span", { class: "cms-tax-name" }, v),
+        el("span", { class: "cms-tax-usage" }, n + " activit" + (n === 1 ? "y" : "ies")),
+        el("div", { class: "cms-actions" }, [
+          el("button", { class: "btn btn--sm", onclick: function () { openTaxRenameModal(kind, label, v); } }, "Rename"),
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { openTaxRemoveModal(kind, label, v, n); } }, "Remove")
+        ])
+      ]));
+    });
+    group.appendChild(list);
+    var input = el("input", { type: "text", placeholder: "Add a " + singular(label) });
+    function add() {
+      var v = input.value.trim();
+      if (!v) { input.focus(); return; }
+      taxonomyFlow(kind, "add", { value: v }, function () { renderContent(); toast("Added “" + v + "”"); });
+    }
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); add(); } });
+    group.appendChild(el("div", { class: "cms-tax-add" }, [input, el("button", { class: "btn btn--sm btn--accent", onclick: add }, "+ Add")]));
+    return group;
+  }
+  function openTaxRenameModal(kind, label, from) {
+    var input = el("input", { type: "text" }); input.value = from;
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "Rename “" + from + "” everywhere. Every activity tagged with it is updated. Renaming to a name that already exists merges the two."),
+      el("div", { class: "field" }, [el("label", {}, "New name"), input])
+    ]);
+    openModal("Rename " + singular(label), body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Rename", accent: true, onClick: function () {
+        var to = input.value.trim();
+        if (!to) { input.focus(); return; }
+        if (lc(to) === lc(from)) { closeModal(); return; }
+        taxonomyFlow(kind, "rename", { from: from, to: to }, function () { closeModal(); renderContent(); toast("Renamed"); });
+      } }
+    ]);
+  }
+  function openTaxRemoveModal(kind, label, value, n) {
+    var body = el("div", { class: "form-stack" }, [
+      el("p", {}, "Remove “" + value + "” from your " + label.toLowerCase() + "?"),
+      el("p", { class: "field-hint" }, n
+        ? ("It's currently on " + n + " activit" + (n === 1 ? "y" : "ies") + ". Those activities stay, but lose this tag.")
+        : "Nothing is tagged with it.")
+    ]);
+    openModal("Remove " + value, body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Remove", danger: true, onClick: function () {
+        taxonomyFlow(kind, "remove", { value: value }, function () { closeModal(); renderContent(); toast("Removed"); });
+      } }
+    ]);
+  }
+
   function renderAll() {
     renderCatalogCount();
     renderStudentPicker();
@@ -2605,6 +2989,7 @@
     if (isAdminView()) {
       renderWorkout();
       renderStudents();
+      renderContent();
     } else {
       renderWorkoutsTab();
       renderProgressTab();
@@ -2633,10 +3018,18 @@
       var v = e.target.value;
       searchTimer = setTimeout(function () { state.filters.search = v; renderRepo(); }, 150);
     });
-    [["topic", "f-topic"], ["subtopic", "f-subtopic"], ["type", "f-type"], ["progression", "f-progression"], ["frequency", "f-frequency"]]
+    [["subtopic", "f-subtopic"], ["type", "f-type"], ["progression", "f-progression"], ["frequency", "f-frequency"]]
       .forEach(function (pair) {
         $("#" + pair[1]).addEventListener("change", function (e) { state.filters[pair[0]] = e.target.value; renderRepo(); });
       });
+    // Topic drives the subtopic list: narrow it to subtopics that exist under
+    // the chosen topic so no filter combination comes back empty.
+    $("#f-topic").addEventListener("change", function (e) {
+      state.filters.topic = e.target.value;
+      syncSubtopicSelect($("#f-topic"), $("#f-subtopic"), "All subtopics");
+      state.filters.subtopic = $("#f-subtopic").value;
+      renderRepo();
+    });
     $("#clear-filters").addEventListener("click", clearFilters);
     $("#filters-toggle").addEventListener("click", function () {
       var bar = $("#filter-bar");
@@ -2648,6 +3041,11 @@
     fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
     fillSelect($("#b-subtopic"), PRESENT.subtopic, "Any subtopic");
     fillSelect($("#b-type"), PRESENT.type, "Any type");
+    // Mirror the repository behaviour: once a topic is chosen, only offer
+    // subtopics that actually appear under it.
+    $("#b-topic").addEventListener("change", function () {
+      syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
+    });
     var bMonth = $("#b-month"); bMonth.textContent = "";
     TAX.months.forEach(function (m) { bMonth.appendChild(option(m.value, m.label)); });
     var bWeek = $("#b-week"); bWeek.textContent = "";

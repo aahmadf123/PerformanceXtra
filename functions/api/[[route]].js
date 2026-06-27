@@ -152,6 +152,14 @@ function custId() {
 async function readBody(request) {
   try { return await request.json(); } catch (e) { return {}; }
 }
+function isMissingColumnError(err, column) {
+  const msg = String((err && err.message) || "").toLowerCase();
+  const col = String(column || "").toLowerCase();
+  return !!(col && (
+    msg.includes("no such column: " + col) ||
+    msg.includes("has no column named " + col)
+  ));
+}
 
 /* ----------------------------- D1 assembly helpers ----------------------------- */
 async function assembleAthlete(env, row) {
@@ -166,16 +174,30 @@ async function assembleAthlete(env, row) {
   ).bind(row.id).all();
   const assignments = [];
   for (const a of (asg.results || [])) {
-    const items = await env.DB.prepare(
-      "SELECT activity_id FROM assignment_items WHERE assignment_id = ? ORDER BY position"
-    ).bind(a.id).all();
+    // Per-item custom_url is an additive column; fall back gracefully if the
+    // migration hasn't been applied to this database yet.
+    let itemsRes;
+    try {
+      itemsRes = await env.DB.prepare(
+        "SELECT activity_id, custom_url FROM assignment_items WHERE assignment_id = ? ORDER BY position"
+      ).bind(a.id).all();
+    } catch (e) {
+      if (!isMissingColumnError(e, "custom_url")) throw e;
+      itemsRes = await env.DB.prepare(
+        "SELECT activity_id FROM assignment_items WHERE assignment_id = ? ORDER BY position"
+      ).bind(a.id).all();
+    }
+    const itemRows = itemsRes.results || [];
+    const itemLinks = {};
+    itemRows.forEach(function (x) { if (x.custom_url) itemLinks[x.activity_id] = x.custom_url; });
     assignments.push({
       id: a.id,
       title: a.title,
       note: a.note || "",
       dueAt: a.due_at ? epochToIso(a.due_at) : null,
       createdAt: epochToIso(a.created_at),
-      items: (items.results || []).map(function (x) { return x.activity_id; })
+      items: itemRows.map(function (x) { return x.activity_id; }),
+      itemLinks: itemLinks
     });
   }
 
@@ -211,6 +233,21 @@ async function loadOverrides(env, coachId) {
     if (r.hidden) hidden[r.activity_id] = true;
   });
   return { overrides: overrides, hidden: hidden };
+}
+// CMS-managed vocabulary for a coach. Returns {topic:[],subtopic:[],type:[]};
+// empty lists mean "use the built-in data.js fallback". Tolerates a DB where
+// the taxonomy table hasn't been migrated yet.
+async function loadTaxonomy(env, coachId) {
+  const out = { topic: [], subtopic: [], type: [] };
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT kind,value FROM taxonomy WHERE coach_id = ? ORDER BY kind, position, value"
+    ).bind(coachId).all();
+    (rows.results || []).forEach(function (r) {
+      if (out[r.kind] && r.value != null) out[r.kind].push(r.value);
+    });
+  } catch (e) { /* table not migrated yet — fall back to data.js vocabulary */ }
+  return out;
 }
 
 /* ===================================================================== */
@@ -271,6 +308,7 @@ async function route(method, path, request, env, url, secure) {
   if (head === "assignments") {
     if (method === "GET" && seg.length === 1) return handleListAssignments(session, env, url);
     if (method === "POST" && seg.length === 1) return handleCreateAssignment(session, request, env);
+    if (method === "POST" && seg.length === 3 && seg[2] === "items") return handleUpdateAssignmentItem(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeleteAssignment(session, env, seg[1]);
   }
 
@@ -290,6 +328,10 @@ async function route(method, path, request, env, url, secure) {
   if (head === "overrides") {
     if (method === "GET" && seg.length === 1) return handleListOverrides(session, env);
     if (method === "POST" && seg.length === 1) return handleSaveOverride(session, request, env);
+  }
+  if (head === "taxonomy") {
+    if (method === "GET" && seg.length === 1) return json({ taxonomy: await loadTaxonomy(env, session.uid) });
+    if (method === "POST" && seg.length === 1) return handleSaveTaxonomy(session, request, env);
   }
   if (method === "POST" && path === "/import") return handleImport(session, request, env);
 
@@ -402,15 +444,16 @@ async function handleBootstrap(session, env) {
     }
     const custom = await loadCustom(env, session.uid);
     const ov = await loadOverrides(env, session.uid);
-    return json({ me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden });
+    const taxonomy = await loadTaxonomy(env, session.uid);
+    return json({ me: me, students: students, activeStudentId: null, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy });
   }
   // athlete: only self, plus their coach's custom/overrides so assigned content renders
   const meRow = await env.DB.prepare("SELECT id,name,email,coach_id,created_at FROM users WHERE id = ?").bind(session.uid).first();
   const self = await assembleAthlete(env, meRow);
   const students = {}; students[session.uid] = self;
-  let custom = [], ov = { overrides: {}, hidden: {} };
-  if (meRow && meRow.coach_id) { custom = await loadCustom(env, meRow.coach_id); ov = await loadOverrides(env, meRow.coach_id); }
-  return json({ me: me, students: students, activeStudentId: session.uid, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden });
+  let custom = [], ov = { overrides: {}, hidden: {} }, taxonomy = { topic: [], subtopic: [], type: [] };
+  if (meRow && meRow.coach_id) { custom = await loadCustom(env, meRow.coach_id); ov = await loadOverrides(env, meRow.coach_id); taxonomy = await loadTaxonomy(env, meRow.coach_id); }
+  return json({ me: me, students: students, activeStudentId: session.uid, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy });
 }
 
 async function handleListAthletes(session, env) {
@@ -470,6 +513,36 @@ async function handleListAssignments(session, env, url) {
   if (!row) return err(404, "Athlete not found");
   const data = await assembleAthlete(env, row);
   return json({ athlete_id: athleteId, assignments: data.assignments, completed: data.completed });
+}
+
+// Accept only absolute http(s) URLs; reject javascript:/data:/etc. Returns the
+// trimmed URL or null (which clears any existing custom link).
+function cleanUrl(u) {
+  const s = String(u == null ? "" : u).trim();
+  if (!s) return null;
+  return /^https?:\/\//i.test(s) ? s : null;
+}
+
+// Set/clear a per-student custom link for one activity inside an assignment.
+async function handleUpdateAssignmentItem(session, request, env, asgId) {
+  if (session.role !== "coach") return err(403, "Coaches only");
+  const b = await readBody(request);
+  const activityId = String(b.activity_id || b.activityId || "").trim();
+  if (!activityId) return err(400, "activity_id is required");
+  const url = cleanUrl(b.custom_url != null ? b.custom_url : b.customUrl);
+  const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND coach_id = ?").bind(asgId, session.uid).first();
+  if (!owns) return err(404, "Assignment not found");
+  const hasItem = await env.DB.prepare("SELECT 1 AS ok FROM assignment_items WHERE assignment_id = ? AND activity_id = ?")
+    .bind(asgId, activityId).first();
+  if (!hasItem) return err(404, "Activity not found in assignment");
+  try {
+    await env.DB.prepare("UPDATE assignment_items SET custom_url = ? WHERE assignment_id = ? AND activity_id = ?")
+      .bind(url, asgId, activityId).run();
+  } catch (e) {
+    if (!isMissingColumnError(e, "custom_url")) throw e;
+    if (url !== null) return err(409, "custom_url migration not applied yet");
+  }
+  return json({ ok: true, custom_url: url });
 }
 
 async function handleCreateAssignment(session, request, env) {
@@ -622,6 +695,118 @@ async function handleSaveOverride(session, request, env) {
   return json({ ok: true });
 }
 
+/* ----------------------------- Taxonomy (CMS) -----------------------------
+ * Stores the coach's managed topic/subtopic/type vocabulary, and on a rename or
+ * remove, cascades the value change across their activities: base activities via
+ * the override layer (never touching the shared seed) and custom activities in
+ * place. Vocabulary writes are atomic per kind; cascades are applied in chunks. */
+const TAX_FIELD = { topic: "topic", subtopic: "subtopics", type: "type" };
+
+async function handleSaveTaxonomy(session, request, env) {
+  if (session.role !== "coach") return err(403, "Coaches only");
+  const b = await readBody(request);
+  const kind = String(b.kind || "").trim();
+  if (!TAX_FIELD[kind]) return err(400, "Invalid kind");
+  const action = String(b.action || "").trim();
+  const values = Array.isArray(b.values)
+    ? b.values.map(function (v) { return String(v == null ? "" : v).trim(); }).filter(Boolean)
+    : [];
+  const coachId = session.uid;
+
+  // Replace the stored vocabulary for this kind in one atomic batch.
+  const listStmts = [env.DB.prepare("DELETE FROM taxonomy WHERE coach_id = ? AND kind = ?").bind(coachId, kind)];
+  const seen = {};
+  let pos = 0;
+  values.forEach(function (v) {
+    const k = v.toLowerCase();
+    if (seen[k]) return; seen[k] = true;
+    listStmts.push(env.DB.prepare("INSERT INTO taxonomy (coach_id,kind,value,position) VALUES (?,?,?,?)").bind(coachId, kind, v, pos++));
+  });
+
+  let cascade = [];
+  if (action === "rename" && b.from) {
+    cascade = await buildTaxCascade(env, coachId, kind, String(b.from), String(b.to || "").trim());
+  } else if (action === "remove" && b.value) {
+    cascade = await buildTaxCascade(env, coachId, kind, String(b.value), null);
+  }
+
+  try {
+    await env.DB.batch(listStmts);
+  } catch (e) {
+    return err(500, "Couldn't save taxonomy (is the taxonomy table migrated?)");
+  }
+  let cascadeError = null;
+  // The cascade can touch many activities; chunk it to stay well under D1's
+  // per-batch statement limit. Each statement is an idempotent value rewrite,
+  // so chunked (non-atomic) application is safe — re-running completes it.
+  for (let i = 0; i < cascade.length; i += 50) {
+    try {
+      await env.DB.batch(cascade.slice(i, i + 50));
+    } catch (e) {
+      cascadeError = e && e.message ? e.message : "db error";
+      break;
+    }
+  }
+  const out = { ok: true, taxonomy: await loadTaxonomy(env, coachId) };
+  if (cascadeError) out.cascade = { ok: false, error: cascadeError };
+  return json(out);
+}
+
+// Build (but don't run) the statements that rewrite `from`→`to` (or remove,
+// when `to` is null/empty) for a taxonomy kind across this coach's activities.
+async function buildTaxCascade(env, coachId, kind, from, to) {
+  const field = TAX_FIELD[kind];
+  const lcFrom = String(from).trim().toLowerCase();
+  const toVal = (to == null || String(to).trim() === "") ? null : String(to).trim();
+  const stmts = [];
+  const mapScalar = function (v) { return (v != null && String(v).trim().toLowerCase() === lcFrom) ? toVal : v; };
+  const mapArray = function (arr) {
+    const seen = {};
+    return (Array.isArray(arr) ? arr : [])
+      .map(function (x) { return (String(x).trim().toLowerCase() === lcFrom) ? toVal : x; })
+      .filter(function (x) { return x != null && String(x).trim() !== ""; })
+      .filter(function (x) { const k = String(x).trim().toLowerCase(); if (seen[k]) return false; seen[k] = true; return true; });
+  };
+  const hitScalar = function (v) { return v != null && String(v).trim().toLowerCase() === lcFrom; };
+  const hitArray = function (arr) { return (Array.isArray(arr) ? arr : []).some(function (x) { return String(x).trim().toLowerCase() === lcFrom; }); };
+
+  // Existing per-coach overrides (payload + hidden) so we can merge & keep hidden.
+  const ovRows = await env.DB.prepare("SELECT activity_id,payload,hidden FROM activity_overrides WHERE coach_id = ?").bind(coachId).all();
+  const ovMap = {};
+  (ovRows.results || []).forEach(function (r) {
+    let p = null; if (r.payload) { try { p = JSON.parse(r.payload); } catch (e) {} }
+    ovMap[r.activity_id] = { payload: p, hidden: r.hidden ? 1 : 0 };
+  });
+
+  // Base activities → write/merge an override carrying the changed field.
+  const baseRows = await env.DB.prepare("SELECT id,payload FROM base_activities").all();
+  (baseRows.results || []).forEach(function (r) {
+    let base = {}; try { base = JSON.parse(r.payload) || {}; } catch (e) {}
+    const ov = ovMap[r.id] || { payload: null, hidden: 0 };
+    const merged = Object.assign({}, base, ov.payload || {});
+    const hit = field === "subtopics" ? hitArray(merged.subtopics) : hitScalar(merged[field]);
+    if (!hit) return;
+    const newPayload = Object.assign({}, ov.payload || {});
+    newPayload[field] = field === "subtopics" ? mapArray(merged.subtopics) : mapScalar(merged[field]);
+    stmts.push(env.DB.prepare(
+      "INSERT INTO activity_overrides (coach_id,activity_id,payload,hidden) VALUES (?,?,?,?) " +
+      "ON CONFLICT(coach_id,activity_id) DO UPDATE SET payload = excluded.payload, hidden = excluded.hidden"
+    ).bind(coachId, r.id, JSON.stringify(newPayload), ov.hidden));
+  });
+
+  // Custom activities → rewrite payload in place.
+  const custRows = await env.DB.prepare("SELECT id,payload FROM custom_activities WHERE coach_id = ?").bind(coachId).all();
+  (custRows.results || []).forEach(function (r) {
+    let p = {}; try { p = JSON.parse(r.payload) || {}; } catch (e) {}
+    const hit = field === "subtopics" ? hitArray(p.subtopics) : hitScalar(p[field]);
+    if (!hit) return;
+    p[field] = field === "subtopics" ? mapArray(p.subtopics) : mapScalar(p[field]);
+    stmts.push(env.DB.prepare("UPDATE custom_activities SET payload = ? WHERE id = ? AND coach_id = ?").bind(JSON.stringify(p), r.id, coachId));
+  });
+
+  return stmts;
+}
+
 /* One-time migration of a coach's exported localStorage store into D1. */
 async function handleImport(session, request, env) {
   const store = await readBody(request);
@@ -670,9 +855,25 @@ async function handleImport(session, request, env) {
       const items = Array.isArray(asg.items) ? asg.items : [];
       const seen = {};
       const itemStmts = [];
+      const itemStmtsFallback = [];
       let pos = 0;
-      items.forEach(function (aid) { if (typeof aid === "string" && aid && !seen[aid]) { seen[aid] = true; itemStmts.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(newId, aid, pos++)); } });
-      if (itemStmts.length) await env.DB.batch(itemStmts);
+      items.forEach(function (aid) {
+        if (typeof aid === "string" && aid && !seen[aid]) {
+          seen[aid] = true;
+          const p = pos++;
+          const cu = (asg.itemLinks && asg.itemLinks[aid]) ? cleanUrl(asg.itemLinks[aid]) : null;
+          itemStmts.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position,custom_url) VALUES (?,?,?,?)").bind(newId, aid, p, cu));
+          itemStmtsFallback.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(newId, aid, p));
+        }
+      });
+      if (itemStmts.length) {
+        try {
+          await env.DB.batch(itemStmts);
+        } catch (e) {
+          if (!isMissingColumnError(e, "custom_url")) throw e;
+          await env.DB.batch(itemStmtsFallback);
+        }
+      }
     }
     const completed = s.completed || {};
     const compStmts = [];
