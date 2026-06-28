@@ -668,6 +668,20 @@
   .cms-tax-add { display: flex; gap: 8px; align-items: center; }
   .cms-tax-add input { flex: 1 1 auto; max-width: 320px; }
 
+  /* duplicate-search panel inside the create-athlete / create-staff modals */
+  .dupe-matches { margin: 4px 0 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; max-height: 220px; overflow-y: auto; }
+  .dupe-head { padding: 8px 12px; font-size: .72rem; font-weight: 600; color: var(--muted); background: var(--surface-2); }
+  .dupe-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--surface); }
+  .dupe-row.is-email { background: rgba(255,93,108,.12); }
+  .dupe-row.is-name { background: rgba(245,196,81,.1); }
+  .dupe-row .name { font-weight: 600; }
+  .dupe-tier { font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; }
+  .dupe-coach { font-size: .72rem; color: var(--muted); }
+  .dupe-flag { margin-left: auto; font-size: .68rem; font-weight: 700; color: var(--warn); }
+  .dupe-flag--email { color: var(--danger); }
+  .dupe-confirm { display: flex; align-items: center; gap: 8px; font-size: .85rem; margin-bottom: 12px; cursor: pointer; }
+  .dupe-confirm input { width: auto; }
+
   /* clickable links inside coach-authored notes */
   .note-link { color: var(--accent-strong); text-decoration: underline; text-underline-offset: 2px; word-break: break-word; }
   .howto-list { margin: 6px 0 2px; padding-left: 20px; font-size: .82rem; color: var(--ink-soft); line-height: 1.55; }

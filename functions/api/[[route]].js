@@ -38,7 +38,9 @@ function json(data, status, headers) {
     headers: Object.assign({ "content-type": "application/json; charset=utf-8" }, headers || {})
   });
 }
-function err(status, message) { return json({ error: message }, status); }
+// `extra` (optional) merges machine-readable fields into the error body — e.g.
+// { code: "DUPLICATE_NAME" } so the client can branch on the cause, not the wording.
+function err(status, message, extra) { return json(Object.assign({ error: message }, extra || {}), status); }
 
 /* ----------------------------- base64url ----------------------------- */
 function bytesToB64url(bytes) {
@@ -495,6 +497,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "GET" && seg.length === 1) return handleListUsers(env, url);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url);
     if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "any");
+    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "admin");
   }
   if (head === "site" && method === "POST" && seg.length === 1) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
@@ -513,6 +516,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "GET" && seg.length === 1) return handleListCoaches(env);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url, "coach");
     if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "coach");
+    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "coach");
   }
   /* -------- super admin only: curate the shared global content library -------- */
   if (head === "global") {
@@ -537,8 +541,9 @@ async function route(method, path, request, env, url, secure) {
   if (!atLeast(session, "coach")) return err(403, "Coaches only");
 
   if (head === "athletes") {
-    if (method === "GET" && seg.length === 1) return handleListAthletes(session, env);
+    if (method === "GET" && seg.length === 1) return handleListAthletes(session, env, url);
     if (method === "POST" && seg.length === 1) return handleCreateAthlete(session, request, env, url);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteAthlete(session, env, seg[1]);
     if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
     if (method === "POST" && seg.length === 3 && seg[2] === "links") return handleSetStudentLink(session, request, env, seg[1]);
   }
@@ -554,6 +559,9 @@ async function route(method, path, request, env, url, secure) {
   if (head === "taxonomy") {
     if (method === "GET" && seg.length === 1) return json({ taxonomy: await loadTaxonomy(env, session.uid) });
     if (method === "POST" && seg.length === 1) return handleSaveTaxonomy(session, request, env);
+  }
+  if (head === "lookup") {
+    if (method === "GET" && seg.length === 1) return handleLookup(env, url);
   }
   if (method === "POST" && path === "/import") return handleImport(session, request, env);
 
@@ -694,10 +702,15 @@ async function handleBootstrap(session, env) {
   return json({ me: me, students: students, activeStudentId: session.uid, customActivities: custom, overrides: ov.overrides, hidden: ov.hidden, taxonomy: taxonomy });
 }
 
-async function handleListAthletes(session, env) {
+async function handleListAthletes(session, env, url) {
+  // A coach sees only their own athletes. An admin/super admin may pass ?coachId= to
+  // inspect (and empty) any coach's roster — needed before deleting that coach.
+  let coachId = session.uid;
+  const want = url && url.searchParams.get("coachId");
+  if (want && atLeast(session, "admin")) coachId = want;
   const rows = await env.DB.prepare(
     "SELECT id,name,email,(password_hash IS NOT NULL) AS has_password FROM users WHERE coach_id = ? AND role='athlete' ORDER BY name"
-  ).bind(session.uid).all();
+  ).bind(coachId).all();
   const athletes = [];
   for (const r of (rows.results || [])) {
     const c = await env.DB.prepare("SELECT COUNT(DISTINCT activity_id) AS n FROM completions WHERE athlete_id = ?").bind(r.id).first();
@@ -711,6 +724,31 @@ async function handleListAthletes(session, env) {
   return json({ athletes: athletes });
 }
 
+// Org-wide directory search used by the create modals to surface possible duplicates
+// before an account is made. Coach-level (any signed-in staff): the user explicitly chose
+// full org-wide visibility, so it spans every coach's roster. ?kind=athlete|staff narrows
+// it; results are capped and carry each athlete's owning-coach name for context.
+async function handleLookup(env, url) {
+  const q = String(url.searchParams.get("q") || "").trim().toLowerCase();
+  if (q.length < 2) return json({ matches: [] });
+  const kind = String(url.searchParams.get("kind") || "").toLowerCase();
+  // Escape LIKE wildcards in the user's text so "%"/"_" match literally (ESCAPE '\').
+  const like = "%" + q.replace(/[\\%_]/g, function (c) { return "\\" + c; }) + "%";
+  let roleClause = "";
+  if (kind === "athlete") roleClause = " AND u.role='athlete'";
+  else if (kind === "staff") roleClause = " AND u.role='coach'";
+  const rows = await env.DB.prepare(
+    "SELECT u.id,u.name,u.email,u.role,u.is_admin,u.is_superadmin, c.name AS coach_name " +
+    "FROM users u LEFT JOIN users c ON c.id = u.coach_id " +
+    "WHERE u.id != ?" + roleClause + " AND (lower(u.name) LIKE ? ESCAPE '\\' OR lower(u.email) LIKE ? ESCAPE '\\') " +
+    "ORDER BY u.name LIMIT 25"
+  ).bind(GLOBAL_OWNER_ID, like, like).all();
+  const matches = (rows.results || []).map(function (r) {
+    return { id: r.id, name: r.name, email: r.email, tier: effectiveRole(r), coachName: r.coach_name || null };
+  });
+  return json({ matches: matches });
+}
+
 async function handleCreateAthlete(session, request, env, url) {
   const b = await readBody(request);
   const name = String(b.name || "").trim();
@@ -719,6 +757,13 @@ async function handleCreateAthlete(session, request, env, url) {
   if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
+  // Block an exact (case-insensitive) name collision with an existing student anywhere in
+  // the org so the same athlete isn't created twice by accident. allowDuplicateName lets a
+  // creator who has confirmed it's a genuinely different person override it.
+  if (b.allowDuplicateName !== true) {
+    const nameDupe = await env.DB.prepare("SELECT id FROM users WHERE role='athlete' AND lower(name)=lower(?)").bind(name).first();
+    if (nameDupe) return err(409, "A student named \"" + name + "\" already exists. Confirm this is a different person to continue.", { code: "DUPLICATE_NAME" });
+  }
   const id = crypto.randomUUID();
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
@@ -737,6 +782,28 @@ async function handleResetPasscode(session, env, athleteId, url) {
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
   return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
+}
+
+// Permanently delete an athlete and everything keyed to them. A plain coach may only delete
+// their own athletes; an admin/super admin may delete any. No user reference in the schema
+// has ON DELETE CASCADE, so every dependent row is removed explicitly in one atomic batch.
+async function handleDeleteAthlete(session, env, athleteId) {
+  const row = await env.DB.prepare("SELECT id,coach_id FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
+  if (!row) return err(404, "Athlete not found");
+  if (!atLeast(session, "admin") && row.coach_id !== session.uid) return err(404, "Athlete not found");
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM completions WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM reflections WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM assignment_items WHERE assignment_id IN (SELECT id FROM assignments WHERE athlete_id = ?)").bind(athleteId),
+    env.DB.prepare("DELETE FROM assignments WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM student_activity_links WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM checkins WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM journal_entries WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM messages WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM athlete_notes WHERE athlete_id = ?").bind(athleteId),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(athleteId)
+  ]);
+  return json({ ok: true });
 }
 
 /* ------------------- staff management (coaches / admins / super admins) -------------------
@@ -810,6 +877,12 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
   if (rank(tier) > rank(session.role)) return err(403, "You can't create an account above your own role");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
+  // Block an exact (case-insensitive) name collision with an existing staff member (any of
+  // coach/admin/super admin — all stored with role='coach'). Overridable via allowDuplicateName.
+  if (b.allowDuplicateName !== true) {
+    const nameDupe = await env.DB.prepare("SELECT id FROM users WHERE role='coach' AND id != ? AND lower(name)=lower(?)").bind(GLOBAL_OWNER_ID, name).first();
+    if (nameDupe) return err(409, "A staff member named \"" + name + "\" already exists. Confirm this is a different person to continue.", { code: "DUPLICATE_NAME" });
+  }
   const id = crypto.randomUUID();
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
@@ -838,6 +911,35 @@ async function handleResetUserPasscode(env, userId, url, scope) {
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, userId).run();
   const out = { id: row.id, name: row.name, email: row.email };
   return json({ user: out, coach: out, passcode: passcode, loginUrl: url.origin + "/" });
+}
+
+// Permanently delete a staff account. scope "coach" (admin-level /coaches route) targets a
+// pure coach; scope "admin" (super-admin-only /users route) targets an admin. No scope can
+// reach a super admin, and you can never delete your own account or the global-library
+// sentinel — so each tier can only delete strictly below itself. A staff member who still
+// has athletes is blocked (HAS_STUDENTS) so their roster is dealt with first; otherwise the
+// account and the private content it owns are removed together in one atomic batch.
+async function handleDeleteUser(session, env, userId, scope) {
+  if (userId === GLOBAL_OWNER_ID) return err(404, "Account not found");
+  if (userId === session.uid) return err(403, "You can't delete your own account");
+  const where = scope === "coach"
+    ? "id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0"
+    : "id = ? AND role='coach' AND is_admin=1 AND is_superadmin=0";
+  const row = await env.DB.prepare("SELECT id,name FROM users WHERE " + where).bind(userId).first();
+  if (!row) return err(404, "Account not found");
+  const kids = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE coach_id = ? AND role='athlete'").bind(userId).first();
+  const n = kids ? kids.n : 0;
+  if (n > 0) return err(409, "This " + (scope === "admin" ? "admin" : "coach") + " still has " + n + " student" + (n === 1 ? "" : "s") + ". Remove them first.", { code: "HAS_STUDENTS", count: n });
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM custom_activities WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM activity_overrides WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM taxonomy WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM assignment_templates WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM assignments WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM messages WHERE coach_id = ?").bind(userId),
+    env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId)
+  ]);
+  return json({ ok: true });
 }
 
 // Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)

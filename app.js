@@ -1630,6 +1630,7 @@
       }, active ? "● Active" : "○ Set active"));
       if (SERVER) {
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to email this athlete", "aria-label": "Reset passcode for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset passcode"));
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAthleteServer(s); } }, "✕ Delete"));
       } else {
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
           var name = prompt("Rename student", s.name);
@@ -3126,23 +3127,75 @@
     setTimeout(function () { pass.focus(); }, 30);
   }
 
+  // Org-wide duplicate search shared by the create modals. Hits GET /api/lookup and returns
+  // the matching accounts (or [] on any failure — dedupe is an aid, never a blocker).
+  function dupeLookup(kind, q) {
+    return api("/lookup?kind=" + encodeURIComponent(kind) + "&q=" + encodeURIComponent(q)).then(function (res) {
+      return (res.ok && res.data && res.data.matches) || [];
+    });
+  }
+  // Wire live "already in the system" matches onto a create modal's name + email inputs,
+  // rendering into `panel`. Typing in either field (debounced) searches by that field's value;
+  // an exact email or name match is flagged so the creator notices before clicking Create.
+  function attachDupeSearch(kind, nameInput, emailInput, panel) {
+    var timer = null;
+    var TIER_LABEL = { athlete: "Student", coach: "Coach", admin: "Admin", superadmin: "Super admin" };
+    function render(matches) {
+      panel.textContent = "";
+      if (!matches || !matches.length) { panel.hidden = true; return; }
+      panel.hidden = false;
+      var nm = lc(nameInput.value), em = lc(emailInput.value);
+      panel.appendChild(el("div", { class: "dupe-head" }, "Already in the system — check before adding:"));
+      matches.forEach(function (m) {
+        var exactEmail = !!em && lc(m.email) === em;
+        var exactName = !!nm && lc(m.name) === nm;
+        var bits = [el("span", { class: "name" }, m.name), el("span", { class: "dupe-tier" }, TIER_LABEL[m.tier] || m.tier)];
+        if (m.email) bits.push(el("span", { class: "student-email" }, m.email));
+        if (m.coachName) bits.push(el("span", { class: "dupe-coach" }, "Coach: " + m.coachName));
+        if (exactEmail) bits.push(el("span", { class: "dupe-flag dupe-flag--email" }, "Email in use"));
+        else if (exactName) bits.push(el("span", { class: "dupe-flag" }, "Same name"));
+        panel.appendChild(el("div", { class: "dupe-row" + (exactEmail ? " is-email" : (exactName ? " is-name" : "")) }, bits));
+      });
+    }
+    function schedule(input) {
+      var q = input.value.trim();
+      clearTimeout(timer);
+      if (q.length < 2) { panel.textContent = ""; panel.hidden = true; return; }
+      timer = setTimeout(function () { dupeLookup(kind, q).then(render).catch(function () {}); }, 250);
+    }
+    nameInput.addEventListener("input", function () { schedule(nameInput); });
+    emailInput.addEventListener("input", function () { schedule(emailInput); });
+  }
+
   // Coach: add an athlete. The server generates a one-time passcode the coach emails them.
   function openAddAthleteModal(prefillName) {
     var name = el("input", { type: "text", value: prefillName || "", placeholder: "Athlete's name" });
     var email = el("input", { type: "email", placeholder: "their@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    var matchesPanel = el("div", { class: "dupe-matches" }); matchesPanel.hidden = true;
+    var dupCheck = el("input", { type: "checkbox" });
+    var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
       el("p", { class: "field-hint" }, "We'll create the athlete and generate a random passcode for them. Email them their email address + that passcode — they sign in with those. Nothing to set up on their end."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
-      errBox
+      matchesPanel,
+      errBox,
+      dupConfirm
     ]);
+    attachDupeSearch("athlete", name, email, matchesPanel);
     function submit() {
       errBox.hidden = true;
       var nm = name.value.trim(), em = email.value.trim();
       if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
-      api("/athletes", { method: "POST", body: { name: nm, email: em } }).then(function (res) {
-        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add athlete."); errBox.hidden = false; return; }
+      var payload = { name: nm, email: em };
+      if (dupCheck.checked) payload.allowDuplicateName = true;
+      api("/athletes", { method: "POST", body: payload }).then(function (res) {
+        if (!res.ok) {
+          errBox.textContent = apiError(res, "Couldn't add athlete."); errBox.hidden = false;
+          if (res.data && res.data.code === "DUPLICATE_NAME") dupConfirm.hidden = false;
+          return;
+        }
         closeModal();
         refreshFromServer().then(function () { renderAll(); showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
@@ -3194,6 +3247,15 @@
       showCredentialsModal(res.data);
     }).catch(function () { toast("Couldn't reach the server"); });
   }
+  // Server-mode athlete delete (the offline-only deleteStudent() just mutates local state).
+  // Removes the athlete and all of their data on the server, then refreshes the roster.
+  function deleteAthleteServer(s) {
+    if (!confirm("Permanently delete " + s.name + " and ALL their data (completions, check-ins, journal, messages)? This can't be undone.")) return;
+    api("/athletes/" + encodeURIComponent(s.id), { method: "DELETE" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't delete athlete")); return; }
+      refreshFromServer().then(function () { renderAll(); toast("Deleted " + s.name); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
 
   /* ============================================================================
      Staff management (Coaches / Admins tabs) + Appearance (theme + page builder)
@@ -3241,10 +3303,19 @@
       var meta = bits.join(" · ");
       var nameKids = [el("span", { class: "name" }, c.name), el("span", { class: "student-email", title: "Signs in with this email" }, c.email)];
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
-      row.appendChild(el("div", { class: "student-row-actions" }, [
-        meta ? el("span", { class: "student-row-meta" }, meta) : null,
-        el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send them", onclick: function () { resetStaffPasscode(c, tier); } }, "↻ Reset passcode")
-      ]));
+      var actions = el("div", { class: "student-row-actions" });
+      if (meta) actions.appendChild(el("span", { class: "student-row-meta" }, meta));
+      // Coaches/admins can own athletes — let the admin above them view (and clear) that
+      // roster, which is required before the staff account itself can be deleted.
+      if (tier === "coach" || tier === "admin") {
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "View and manage this " + tier + "'s students", onclick: function () { openCoachStudentsModal(c, tier); } }, "View students"));
+      }
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send them", onclick: function () { resetStaffPasscode(c, tier); } }, "↻ Reset passcode"));
+      // No delete on super admins (the top tier is never removable via the UI).
+      if (tier !== "superadmin") {
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + tier, "aria-label": "Delete " + c.name, onclick: function () { deleteStaff(c, tier); } }, "✕ Delete"));
+      }
+      row.appendChild(actions);
       list.appendChild(row);
     });
   }
@@ -3275,20 +3346,31 @@
     var name = el("input", { type: "text", placeholder: "Full name" });
     var email = el("input", { type: "email", placeholder: "name@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    var matchesPanel = el("div", { class: "dupe-matches" }); matchesPanel.hidden = true;
+    var dupCheck = el("input", { type: "checkbox" });
+    var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
       el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time passcode. Send them their email + that passcode — they sign in with those and can set their own password afterwards."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
-      errBox
+      matchesPanel,
+      errBox,
+      dupConfirm
     ]);
+    attachDupeSearch("staff", name, email, matchesPanel);
     function submit() {
       errBox.hidden = true;
       var nm = name.value.trim(), em = email.value.trim();
       if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
       var path = tier === "coach" ? "/coaches" : "/users";
       var payload = tier === "coach" ? { name: nm, email: em } : { tier: tier, name: nm, email: em };
+      if (dupCheck.checked) payload.allowDuplicateName = true;
       api(path, { method: "POST", body: payload }).then(function (res) {
-        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't add " + who + "."); errBox.hidden = false; return; }
+        if (!res.ok) {
+          errBox.textContent = apiError(res, "Couldn't add " + who + "."); errBox.hidden = false;
+          if (res.data && res.data.code === "DUPLICATE_NAME") dupConfirm.hidden = false;
+          return;
+        }
         closeModal();
         refreshStaff().then(function () { showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
@@ -3307,6 +3389,58 @@
       if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
       refreshStaff().then(function () { showCredentialsModal(res.data); });
     }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Delete a coach (admin+) or admin (super admin). The server refuses while the account
+  // still has students (HAS_STUDENTS); when that happens we open their roster so the admin
+  // can clear it first. Super admins are never deletable (no button is rendered for them).
+  function deleteStaff(c, tier) {
+    if (tier === "superadmin") return;
+    if (!confirm("Permanently delete " + c.name + " (" + tier + ")? Their private content (custom activities, templates, taxonomy) will be removed. This can't be undone.")) return;
+    var path = (tier === "coach" ? "/coaches/" : "/users/") + encodeURIComponent(c.id);
+    api(path, { method: "DELETE" }).then(function (res) {
+      if (!res.ok) {
+        if (res.data && res.data.code === "HAS_STUDENTS") { toast(apiError(res, "Remove their students first")); openCoachStudentsModal(c, tier); return; }
+        toast(apiError(res, "Couldn't delete")); return;
+      }
+      refreshStaff().then(function () { toast("Deleted " + c.name); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Admin/super-admin view of another staff member's athletes, each with a delete button.
+  // Used to empty a coach/admin before deleting them. Re-fetches after each delete so the
+  // list (and the Team roster's student counts, via refreshStaff) stays accurate.
+  function openCoachStudentsModal(c, tier) {
+    var listBox = el("div", { class: "student-list" });
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "Students belonging to " + c.name + ". Delete them here to free up this " + tier + " for removal."),
+      listBox
+    ]);
+    function load() {
+      listBox.textContent = "Loading…";
+      api("/athletes?coachId=" + encodeURIComponent(c.id)).then(function (res) {
+        listBox.textContent = "";
+        var rows = (res.ok && res.data && res.data.athletes) || [];
+        if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, "No students — this " + tier + " can be deleted now.")); return; }
+        rows.forEach(function (s) {
+          var nameKids = [el("span", { class: "name" }, s.name)];
+          if (s.email) nameKids.push(el("span", { class: "student-email" }, s.email));
+          var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+          row.appendChild(el("div", { class: "student-row-actions" }, [
+            el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () {
+              if (!confirm("Permanently delete " + s.name + " and ALL their data? This can't be undone.")) return;
+              api("/athletes/" + encodeURIComponent(s.id), { method: "DELETE" }).then(function (r) {
+                if (!r.ok) { toast(apiError(r, "Couldn't delete")); return; }
+                toast("Deleted " + s.name); load(); refreshStaff();
+              }).catch(function () { toast("Couldn't reach the server"); });
+            } }, "✕ Delete")
+          ]));
+          listBox.appendChild(row);
+        });
+      }).catch(function () { listBox.textContent = ""; listBox.appendChild(el("p", { class: "no-link" }, "Couldn't load students.")); });
+    }
+    openModal(c.name + " · students", body, [{ label: "Done", primary: true, onClick: closeModal }]);
+    load();
   }
 
   /* ----------------------------- Appearance: theme ----------------------------- */
@@ -3938,8 +4072,18 @@
     var usage = cmsTaxUsage(kind);
     var group = el("div", { class: "cms-tax-group" });
     group.appendChild(el("div", { class: "detail-label" }, label + " (" + values.length + ")"));
+    // Add box sits at the top so adding never requires scrolling past the whole list. The
+    // list itself stays alphabetical (cmsTaxList -> alpha()), so a new item lands in place.
+    var input = el("input", { type: "text", placeholder: "Add a " + singular(label) });
+    function add() {
+      var v = input.value.trim();
+      if (!v) { input.focus(); return; }
+      taxonomyFlow(kind, "add", { value: v }, function () { renderContent(); toast("Added “" + v + "”"); });
+    }
+    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); add(); } });
+    group.appendChild(el("div", { class: "cms-tax-add" }, [input, el("button", { class: "btn btn--sm btn--accent", onclick: add }, "+ Add")]));
     var list = el("div", { class: "cms-tax-list" });
-    if (!values.length) list.appendChild(el("p", { class: "no-link" }, "None yet — add one below."));
+    if (!values.length) list.appendChild(el("p", { class: "no-link" }, "No items yet."));
     values.forEach(function (v) {
       var n = usage[lc(v)] || 0;
       list.appendChild(el("div", { class: "cms-tax-row" }, [
@@ -3952,14 +4096,6 @@
       ]));
     });
     group.appendChild(list);
-    var input = el("input", { type: "text", placeholder: "Add a " + singular(label) });
-    function add() {
-      var v = input.value.trim();
-      if (!v) { input.focus(); return; }
-      taxonomyFlow(kind, "add", { value: v }, function () { renderContent(); toast("Added “" + v + "”"); });
-    }
-    input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); add(); } });
-    group.appendChild(el("div", { class: "cms-tax-add" }, [input, el("button", { class: "btn btn--sm btn--accent", onclick: add }, "+ Add")]));
     return group;
   }
   function openTaxRenameModal(kind, label, from) {
