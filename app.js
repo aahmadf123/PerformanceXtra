@@ -309,6 +309,7 @@
   }
   // Re-pull server state, then refresh dependent dropdowns. Callers re-render after.
   function refreshFromServer() {
+    state.allStudents = null;   // roster may have changed; re-fetch the org directory on next view
     return loadServerSnapshot().then(function () { refreshSelects(); })
       .catch(function () { toast("Couldn't refresh from the server"); });
   }
@@ -922,7 +923,9 @@
     tracking: loadStore(),
     coaches: [], admins: [], superadmins: [],   // staff rosters, populated on bootstrap
     templates: [],          // reusable assignment templates (coach), from bootstrap
-    globalTracking: null    // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
+    globalTracking: null,   // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
+    studentTab: "mine",     // Students subtab: "mine" (own roster) | "all" (org-wide directory)
+    allStudents: null       // org-wide student directory, lazy-loaded for the "All students" subtab
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -1130,12 +1133,42 @@
     grid.appendChild(frag);
   }
 
+  function repoAdvancedFilterKeys() {
+    return ["subtopic", "progression", "frequency"];
+  }
+
+  function repoHasAdvancedFilters() {
+    return repoAdvancedFilterKeys().some(function (key) { return !!(state.filters && state.filters[key]); });
+  }
+
+  function syncRepoFilterDensity() {
+    var bar = $("#filter-bar");
+    var toggle = $("#filters-toggle");
+    if (!bar || !toggle) return;
+    if (state.repoFiltersExpanded == null) state.repoFiltersExpanded = repoHasAdvancedFilters();
+    bar.classList.toggle("is-condensed", !state.repoFiltersExpanded);
+    toggle.textContent = state.repoFiltersExpanded ? "Fewer filters" : "More filters";
+    toggle.setAttribute("aria-expanded", state.repoFiltersExpanded ? "true" : "false");
+  }
+
+  function configureRepoFilterDensity() {
+    [["f-search", "primary"], ["f-topic", "primary"], ["f-type", "primary"], ["f-subtopic", "advanced"], ["f-progression", "advanced"], ["f-frequency", "advanced"]]
+      .forEach(function (pair) {
+        var input = $("#" + pair[0]);
+        if (!input || !input.parentNode) return;
+        input.parentNode.setAttribute("data-filter-tier", pair[1]);
+      });
+    syncRepoFilterDensity();
+  }
+
   function clearFilters() {
     state.filters = { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" };
     $("#f-search").value = "";
     ["topic", "subtopic", "type", "progression", "frequency"].forEach(function (k) { $("#f-" + k).value = ""; });
     // Topic is now empty, so restore the full subtopic list.
     syncSubtopicSelect($("#f-topic"), $("#f-subtopic"), "All subtopics");
+    state.repoFiltersExpanded = false;
+    syncRepoFilterDensity();
     renderRepo();
   }
 
@@ -1597,6 +1630,17 @@
 
   /* ----------------------------- Students ----------------------------- */
   function renderStudents() {
+    // Subtab: "My students" (this coach's roster) vs "All students" (org-wide directory,
+    // SERVER only). The toggle just swaps which pane is shown; the org list is lazy-loaded.
+    renderStudentsSubnav();
+    var showAll = SERVER && state.studentTab === "all";
+    var myLayout = $("#my-students-layout"); if (myLayout) myLayout.hidden = showAll;
+    var allPane = $("#all-students-pane"); if (allPane) allPane.hidden = !showAll;
+    var na = $("#needs-attention"); if (na) na.hidden = showAll;
+    if (showAll) { renderAllStudents(); return; }
+
+    renderStudentsGuide();
+
     var list = $("#student-list");
     list.textContent = "";
     var all = studentList();
@@ -1627,9 +1671,9 @@
         class: "btn btn--sm btn--ghost", title: "Set active",
         "aria-pressed": active ? "true" : "false",
         onclick: function () { setActiveStudent(s.id); renderAll(); }
-      }, active ? "● Active" : "○ Set active"));
+      }, active ? "Working here" : "Open workspace"));
       if (SERVER) {
-        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to email this athlete", "aria-label": "Reset passcode for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset passcode"));
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code to email this athlete", "aria-label": "Reset sign-in code for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset sign-in code"));
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAthleteServer(s); } }, "✕ Delete"));
       } else {
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
@@ -1646,6 +1690,151 @@
 
     renderStudentDetail();
     renderNeedsAttention();
+  }
+
+  function renderStudentsGuide() {
+    var host = $("#students-guide");
+    if (!host) return;
+    host.textContent = "";
+    var panel = buildStudentsGuidePanel(studentList(), activeStudent());
+    if (panel) host.appendChild(panel);
+  }
+
+  function buildStudentsGuidePanel(all, active) {
+    all = all || [];
+    var title = "";
+    var copy = "";
+    var steps = [];
+    var actions = [];
+
+    if (!all.length) {
+      title = "Start your athlete roster";
+      copy = "Add the first athlete here, send their sign-in details, then come back to assign their first focused set of work.";
+      steps = [
+        "Add one athlete with name and email.",
+        "Send them the sign-in code PerformanceXtra generates.",
+        "Create their first assignment once they appear in this list."
+      ];
+      actions.push(el("button", { class: "btn btn--accent", type: "button", onclick: function () {
+        if (SERVER) openAddAthleteModal("");
+        else {
+          var input = $("#new-student-name");
+          if (input) input.focus();
+        }
+      } }, SERVER ? "Add first athlete" : "Add first student"));
+      actions.push(el("button", { class: "btn btn--ghost", type: "button", onclick: function () { setTab("repo"); } }, "Preview the library"));
+    } else if (!active) {
+      title = "Pick one athlete to work on next";
+      copy = "Your roster is ready. Choose one athlete as the current workspace so assignments, progress, and messages all point to the same person.";
+      steps = [
+        "Pick an athlete from the list on the left.",
+        "Use their detail pane to create or review assignments.",
+        "Switch the current athlete any time from this view or the header picker."
+      ];
+      actions.push(el("button", { class: "btn btn--primary", type: "button", onclick: function () {
+        setActiveStudent(all[0].id);
+        renderAll();
+      } }, "Open first athlete"));
+    } else if (!studentAssignments(active).length) {
+      title = "Give " + active.name + " a first assignment";
+      copy = "The roster is in place. The next useful step is to turn the library into one clear assignment for this athlete so progress and reflections can start.";
+      steps = [
+        "Create one short assignment from the library or a template.",
+        "Keep the title specific so the athlete knows what this set is for.",
+        "Return here to review progress, reflections, and coach communication in one place."
+      ];
+      actions.push(el("button", { class: "btn btn--accent", type: "button", onclick: function () { openAssignBuilderModal(active.id); } }, "Create first assignment"));
+      actions.push(el("button", { class: "btn btn--ghost", type: "button", onclick: function () { setTab("repo"); } }, "Browse activities first"));
+    } else {
+      return null;
+    }
+
+    return el("div", { class: "panel students-guide-panel" }, [
+      el("div", { class: "students-guide-kicker" }, "First-run path"),
+      el("div", { class: "students-guide-head" }, [
+        el("h3", {}, title),
+        el("p", {}, copy)
+      ]),
+      el("ol", { class: "students-guide-list" }, steps.map(function (step) {
+        return el("li", { class: "students-guide-step" }, step);
+      })),
+      el("div", { class: "students-guide-actions" }, actions)
+    ]);
+  }
+
+  // Segmented "My students / All students" control. SERVER-only (the org directory needs the
+  // backend); hidden in LOCAL mode so the offline app is unchanged.
+  function renderStudentsSubnav() {
+    var nav = $("#students-subnav");
+    if (!nav) return;
+    if (!SERVER) { nav.hidden = true; state.studentTab = "mine"; return; }
+    if (state.studentTab !== "all") state.studentTab = "mine";
+    nav.hidden = false;
+    nav.textContent = "";
+    [["mine", "My students"], ["all", "All students"]].forEach(function (pair) {
+      var input = el("input", { type: "radio", name: "students-sub", value: pair[0] });
+      if (state.studentTab === pair[0]) input.checked = true;
+      input.addEventListener("change", function () {
+        if (!input.checked) return;
+        state.studentTab = input.value || pair[0];
+        renderStudents();
+      });
+      nav.appendChild(el("label", {}, [input, el("span", {}, pair[1])]));
+    });
+  }
+
+  // Org-wide student directory (GET /all-athletes), lazy-loaded into state.allStudents and
+  // filtered client-side by the search box. Everyone sees it; only admin+ get a delete action.
+  function renderAllStudents() {
+    var listBox = $("#all-students-list");
+    if (!listBox) return;
+    if (state.allStudents == null) {
+      listBox.textContent = "";
+      listBox.appendChild(el("p", { class: "no-link" }, "Loading…"));
+      api("/all-athletes").then(function (res) {
+        state.allStudents = (res.ok && res.data && res.data.athletes) || [];
+        if (state.tab === "students" && state.studentTab === "all") renderAllStudents();
+      }).catch(function () {
+        listBox.textContent = ""; listBox.appendChild(el("p", { class: "no-link" }, "Couldn't load students."));
+      });
+      return;
+    }
+    var countEl = $("#all-students-count");
+    var searchEl = $("#all-students-search");
+    var q = norm(searchEl ? searchEl.value : "").trim();
+    var rows = state.allStudents.slice();
+    if (q) rows = rows.filter(function (s) {
+      return norm(s.name).indexOf(q) >= 0 || norm(s.email).indexOf(q) >= 0 || norm(s.coachName || "").indexOf(q) >= 0;
+    });
+    if (countEl) countEl.textContent = state.allStudents.length ? (rows.length + " of " + state.allStudents.length + " student" + (state.allStudents.length === 1 ? "" : "s")) : "";
+    listBox.textContent = "";
+    if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, state.allStudents.length ? "No students match." : "No students yet.")); return; }
+    rows.forEach(function (s) {
+      var nameKids = [el("span", { class: "name" }, s.name)];
+      if (s.email) nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
+      if (s.coachName) nameKids.push(el("span", { class: "dupe-coach" }, "Coach: " + s.coachName));
+      var stat = s.completedCount + " completed · " + s.assignmentCount + " assignment" + (s.assignmentCount === 1 ? "" : "s");
+      nameKids.push(el("span", { class: "student-stat" }, stat));
+      var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+      if (isAtLeastAdmin()) {
+        row.appendChild(el("div", { class: "student-row-actions" }, [
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAllStudent(s); } }, "✕ Delete")
+        ]));
+      }
+      listBox.appendChild(row);
+    });
+  }
+
+  // Delete an athlete from the All-students directory (admin+). Invalidates the cache and
+  // re-syncs the coach's own roster so both views stay accurate.
+  function deleteAllStudent(s) {
+    if (!confirm("Permanently delete " + s.name + (s.coachName ? " (coach " + s.coachName + ")" : "") + " and ALL their data? This can't be undone.")) return;
+    api("/athletes/" + encodeURIComponent(s.id), { method: "DELETE" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
+      toast("Deleted " + s.name);
+      state.allStudents = null;
+      refreshFromServer().then(function () { renderAll(); });
+    }).catch(function () { toast("Couldn't reach the server"); });
   }
 
   // Coach overview: athletes with overdue work, a stale check-in, a low recent mood, or
@@ -1721,7 +1910,7 @@
 
     var denom = assigned.length;
     if (!denom) {
-      container.appendChild(el("p", { class: "no-link" }, "No activities assigned yet — progress will appear here once this athlete has a workout."));
+      container.appendChild(el("p", { class: "no-link" }, "No activities assigned yet. Progress will appear here once this athlete has a workout."));
       return;
     }
     var pct = denom ? Math.round(p.total / denom * 100) : 0;
@@ -1934,14 +2123,213 @@
     list.forEach(function (asg) { container.appendChild(buildAssignmentCard(asg)); });
   }
 
+  /* ----------------------------- Athlete "Today" — tempo-spine workout home -----------------------------
+     A focus-first redesign of the athlete My Workouts surface: today's work as a calm
+     descent. The next undone item is the hero ("now", ember); finished work goes quiet
+     (lime, checked); the rest waits ahead. The spine encodes sequence + time + progress.
+     Uses the app's own two-signal palette (lime = done, ember = live) so it stays on-theme.
+     Coach view keeps appendAssignmentList; this path is athlete-only. */
+  function appendWorkoutSpine(panel, s) {
+    var all = studentAssignments(s);
+    if (!all.length) {
+      panel.appendChild(el("div", { class: "wk-empty" }, [
+        el("div", { class: "wk-flag", "aria-hidden": "true" }),
+        el("div", {}, [
+          el("h3", {}, "Nothing assigned right now"),
+          el("p", {}, "When your coach sends your next set, it shows up here — one focused thing at a time.")
+        ])
+      ]));
+      return;
+    }
+    function isComplete(asg) { var p = assignmentProgress(s, asg); return p.total > 0 && p.done === p.total; }
+    var active = all.filter(function (a) { return !isComplete(a); });
+    var finished = all.filter(isComplete);
+
+    // status across active sets: how much is done, roughly how much work is left
+    var totItems = 0, totDone = 0, minsLeft = 0, haveMins = false;
+    active.forEach(function (asg) {
+      asg.items.forEach(function (id) {
+        if (!BY_ID[id]) return;
+        totItems++;
+        if (s.completed[id]) { totDone++; return; }
+        var m = BY_ID[id].timeMinutes;
+        if (m != null && m !== "" && !isNaN(+m)) { minsLeft += +m; haveMins = true; }
+      });
+    });
+    var statusParts;
+    if (active.length) {
+      statusParts = [el("span", {}, [el("b", {}, String(totDone)), " of ", el("b", {}, String(totItems)), " done"])];
+      if (haveMins && minsLeft > 0) {
+        statusParts.push(el("span", { class: "wk-sep", "aria-hidden": "true" }, "/"));
+        statusParts.push(el("span", {}, ["about ", el("b", {}, String(minsLeft)), " min of work left"]));
+      }
+    } else {
+      statusParts = [el("span", {}, "You're all caught up — nice work. Your finished sets are below.")];
+    }
+    panel.appendChild(el("p", { class: "wk-status" }, statusParts));
+
+    function metaRow(a) {
+      var parts = [];
+      if (a.time) parts.push(el("span", {}, a.time));
+      if (a.type) {
+        if (parts.length) parts.push(el("span", { "aria-hidden": "true" }, "·"));
+        parts.push(el("span", { class: "wk-type" }, a.type));
+      }
+      return el("div", { class: "wk-time" }, parts.length ? parts : el("span", {}, "Activity"));
+    }
+
+    function buildRep(asg, id, a, stateName) {
+      var rep = el("div", { class: "wk-rep wk-" + stateName });
+      rep.appendChild(el("div", { class: "wk-node", "aria-hidden": "true" }));
+      var body = el("div", { class: "wk-body" });
+      var link = itemLink(asg, id);
+      var openBtn = link ? el("a", { class: "btn btn--sm wk-open", href: link, target: "_blank", rel: "noopener" }, "Open ↗") : null;
+
+      function markBtn(primary) {
+        return el("button", { class: "btn btn--sm wk-mark" + (primary ? " btn--accent" : ""), onclick: function () {
+          setCompletion(s, id, !s.completed[id], asg.id); renderAll();
+        } }, "Mark done");
+      }
+      function instrDetail() {
+        if (!a.reflection && !a.instructions) return null;
+        var det = el("details", { class: "detail wk-detail" }, el("summary", {}, a.reflection ? "Instructions & reflection prompt" : "Instructions"));
+        if (a.instructions) det.appendChild(detailBlock("How to do it", a.instructions));
+        if (a.reflection) det.appendChild(detailBlock("Reflection prompt", a.reflection));
+        return det;
+      }
+
+      if (stateName === "now") {
+        body.appendChild(el("div", { class: "wk-eyebrow" }, "Up next"));
+        body.appendChild(el("div", { class: "wk-name" }, a.name));
+        body.appendChild(metaRow(a));
+        if (a.instructions) body.appendChild(el("p", { class: "wk-blurb" }, a.instructions));
+        body.appendChild(el("div", { class: "wk-actions" }, [markBtn(true), openBtn]));
+        if (a.reflection) {
+          var dt = el("details", { class: "detail wk-detail" }, el("summary", {}, "Reflection prompt"));
+          dt.appendChild(detailBlock("Reflection prompt", a.reflection));
+          body.appendChild(dt);
+        }
+      } else if (stateName === "done") {
+        body.appendChild(metaRow(a));
+        body.appendChild(el("div", { class: "wk-name" }, a.name));
+        body.appendChild(el("div", { class: "wk-doneline" }, [
+          el("span", { class: "wk-logged" }, "Logged"),
+          openBtn,
+          el("button", { class: "wk-undo", onclick: function () { setCompletion(s, id, false, asg.id); renderAll(); } }, "undo")
+        ]));
+      } else { // upcoming
+        body.appendChild(metaRow(a));
+        body.appendChild(el("div", { class: "wk-name" }, a.name));
+        if (a.instructions) body.appendChild(el("p", { class: "wk-blurb" }, a.instructions));
+        body.appendChild(el("div", { class: "wk-actions" }, [markBtn(false), openBtn, instrDetail()]));
+      }
+      rep.appendChild(body);
+      return rep;
+    }
+
+    function buildReflection(asg) {
+      var KEY = "__assignment__";
+      var entry = getReflectionEntry(s, asg.id, KEY);
+      var ta = el("textarea", {
+        class: "wk-reflect-input",
+        placeholder: "A line or two is plenty. What worked, what was hard, what you noticed…",
+        "aria-label": "Your reflection for " + asg.title
+      });
+      ta.value = entry && entry.text ? entry.text : "";
+      var status = el("div", { class: "wk-reflect-status" }, entry && entry.updatedAt
+        ? ("Saved " + fmtDateTime(entry.updatedAt))
+        : "Saves to your coach · only the two of you can see it");
+      ta.addEventListener("input", function () {
+        var k = [s.id, asg.id, KEY].join("::");
+        clearTimeout(state.reflectionTimers[k]);
+        status.textContent = "Saving…";
+        state.reflectionTimers[k] = setTimeout(function () {
+          saveReflectionFlow(s, asg.id, KEY, ta.value, function (ok, msg) {
+            if (ok) {
+              var latest = getReflectionEntry(s, asg.id, KEY);
+              status.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Saved";
+            } else {
+              status.textContent = msg || "Could not save";
+              toast(msg || "Couldn't save reflection");
+            }
+          });
+        }, 450);
+      });
+      return el("div", { class: "wk-finish" }, [
+        el("div", { class: "wk-flag", "aria-hidden": "true" }),
+        el("div", { class: "wk-reflect" }, [
+          el("div", { class: "wk-reflect-label" }, "Close the loop"),
+          el("p", { class: "wk-reflect-prompt" }, "How did this set feel? There are no wrong answers."),
+          ta, status
+        ])
+      ]);
+    }
+
+    function buildSet(asg) {
+      var validIds = asg.items.filter(function (id) { return BY_ID[id]; });
+      var firstUndone = validIds.findIndex(function (id) { return !s.completed[id]; });
+      var complete = isComplete(asg);
+      var set = el("section", { class: "wk-set" });
+
+      var dueState = assignmentDueState(s, asg);
+      var dueChip = dueState === "overdue" ? el("span", { class: "due-chip due-chip--overdue" }, "Overdue")
+        : (dueState === "soon" ? el("span", { class: "due-chip due-chip--soon" }, "Due soon") : null);
+      var metaParts = ["Assigned " + fmtDate(asg.createdAt)];
+      if (asg.dueAt) metaParts.push("Due " + fmtDate(asg.dueAt));
+      set.appendChild(el("div", { class: "wk-set-head" }, [
+        el("h3", { class: "wk-set-title" }, [asg.title, dueChip]),
+        el("div", { class: "wk-set-meta" }, metaParts.join(" · "))
+      ]));
+      if (asg.note) set.appendChild(el("div", { class: "wk-coachnote-wrap" }, [
+        el("div", { class: "wk-coachnote-from" }, "From your coach"),
+        noteNode(asg.note, "wk-coachnote")
+      ]));
+
+      var spine = el("div", { class: "wk-spine" });
+      spine.appendChild(el("p", { class: "wk-spine-head" }, complete ? "The set" : "The set · in order"));
+      if (!validIds.length) {
+        spine.appendChild(el("p", { class: "no-link", style: "margin-left:56px" }, "This set has no activities yet."));
+      }
+      validIds.forEach(function (id, i) {
+        var stateName = s.completed[id] ? "done" : (i === firstUndone ? "now" : "upcoming");
+        spine.appendChild(buildRep(asg, id, BY_ID[id], stateName));
+      });
+      set.appendChild(spine);
+      set.appendChild(buildReflection(asg));
+      return set;
+    }
+
+    var wrap = el("div", { class: "wk" });
+    active.forEach(function (asg) { wrap.appendChild(buildSet(asg)); });
+    panel.appendChild(wrap);
+
+    if (finished.length) {
+      var det = el("details", { class: "completed-assignments wk-done-sets" });
+      det.appendChild(el("summary", { class: "completed-assignments-summary" }, [
+        el("span", { class: "ca-title" }, "Finished sets"),
+        el("span", { class: "ca-meta" }, String(finished.length) + (finished.length === 1 ? " set" : " sets"))
+      ]));
+      var body = el("div", { class: "completed-assignments-body wk" });
+      finished.forEach(function (asg) { body.appendChild(buildSet(asg)); });
+      det.appendChild(body);
+      panel.appendChild(det);
+    }
+  }
+
   function renderStudentDetail() {
     var detail = $("#student-detail");
     detail.textContent = "";
     var s = activeStudent();
     if (!s) {
       detail.appendChild(el("div", { class: "empty-state" }, [
-        el("h3", {}, "No student selected"),
-        el("p", {}, "Add a student, then set them active to assign work and see progress.")
+        el("h3", {}, studentList().length ? "Choose an athlete to open their workspace" : "No athlete selected yet"),
+        el("p", {}, studentList().length
+          ? "Pick one athlete from the list so assignments, progress, and messages all stay in one place."
+          : "Add an athlete first, then this panel becomes the place to assign work and review progress."),
+        studentList().length ? el("button", { class: "btn btn--primary", type: "button", onclick: function () {
+          setActiveStudent(studentList()[0].id);
+          renderAll();
+        } }, "Open first athlete") : null
       ]));
       return;
     }
@@ -1954,6 +2342,13 @@
       el("h3", {}, s.name + " — Assignments"),
       headActions
     ]));
+    if (!studentAssignments(s).length) {
+      detail.appendChild(el("div", { class: "note-banner students-next-step" }, [
+        el("strong", {}, "Next step:"),
+        el("span", {}, " Create the first assignment for " + s.name + " so progress, reflections, and check-ins have a clear starting point."),
+        el("button", { class: "btn btn--sm btn--accent", type: "button", onclick: function () { openAssignBuilderModal(s.id); } }, "Create first assignment")
+      ]));
+    }
     if (studentAssignments(s).length) {
       var sum = assignmentStatusSummary(s);
       var summaryParts = [
@@ -1987,7 +2382,7 @@
       ])));
       return;
     }
-    appendAssignmentList(panel, s, { actionable: true });
+    appendWorkoutSpine(panel, s);
   }
 
   function renderProgressTab() {
@@ -2141,8 +2536,8 @@
     if (checkins.length) {
       var latest = checkins[0], avg = checkinAverages(checkins.slice(0, 14)), streak = checkinStreak(checkins);
       var head = el("div", { class: "wellbeing-summary" }, [
-        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + " — Mood " + scoreText(latest.mood) + " · Energy " + scoreText(latest.energy) + " · Stress " + scoreText(latest.stress)),
-        el("span", { class: "wb-chip" }, "14-day avg — Mood " + avg.mood + " · Energy " + avg.energy + " · Stress " + avg.stress),
+        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + ": Mood " + scoreText(latest.mood) + " · Energy " + scoreText(latest.energy) + " · Stress " + scoreText(latest.stress)),
+        el("span", { class: "wb-chip" }, "14-day average: Mood " + avg.mood + " · Energy " + avg.energy + " · Stress " + avg.stress),
         streak > 1 ? el("span", { class: "wb-chip" }, "🔥 " + streak + "-day streak") : null
       ]);
       container.appendChild(head);
@@ -2169,7 +2564,7 @@
     if (SERVER) {
       api("/checkins", { method: "POST", body: { day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save check-in")); return; }
-        refreshFromServer().then(function () { renderAll(); toast("Check-in saved — thanks for showing up"); });
+        refreshFromServer().then(function () { renderAll(); toast("Check-in saved. Thanks for checking in."); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -2251,7 +2646,7 @@
   // Coach's per-athlete private note + message thread (Students detail).
   function appendCoachComms(container, s) {
     container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Private note"));
-    container.appendChild(el("p", { class: "field-hint" }, "Only you can see this — the athlete never does."));
+    container.appendChild(el("p", { class: "field-hint" }, "Only you can see this. The athlete never will."));
     var note = el("textarea", { class: "msg-input", placeholder: "A private note about this athlete…" });
     note.value = s.coachNote || "";
     container.appendChild(note);
@@ -2331,13 +2726,13 @@
     var sl = studentList();
     if (!sl.length) { toast("Add students first"); return; }
     var templates = state.templates || [];
-    var title = el("input", { type: "text", placeholder: "e.g. Week 2 — Focus" });
+    var title = el("input", { type: "text", placeholder: "e.g. Week 2: Focus" });
     var note = el("textarea", { placeholder: "Optional note" });
     var due = el("input", { type: "date" });
     var chosenActs = {};
     var actSummary = el("p", { class: "field-hint" }, "Pick a template to choose the activities.");
     var tsel = el("select", {});
-    tsel.appendChild(option("", templates.length ? "Choose a template…" : "No templates yet — save one from an assignment first"));
+    tsel.appendChild(option("", templates.length ? "Choose a template…" : "No templates yet. Save one from an assignment first."));
     templates.forEach(function (t) { tsel.appendChild(option(t.id, t.title + " (" + t.items.length + ")")); });
     tsel.addEventListener("change", function () {
       var t = templates.filter(function (x) { return x.id === tsel.value; })[0];
@@ -2517,6 +2912,7 @@
     var all = studentList();
     if (isAdminView()) {
       // Coach gets a dropdown to switch the student they're working with.
+      if (label) label.textContent = "Current athlete";
       label.hidden = false; sel.hidden = false; nameTag.hidden = true;
       sel.textContent = "";
       if (!all.length) {
@@ -2539,6 +2935,11 @@
   function updateStudentCount() {
     var s = activeStudent();
     var c = $("#student-count");
+    if (!c) return;
+    if (isAdminView() && !s) {
+      c.textContent = studentList().length ? "Choose an athlete to keep working." : "Add an athlete to get started.";
+      return;
+    }
     if (s) {
       // Always report progress out of what's assigned to this athlete, not the
       // whole catalogue — matches the progress bars in the detail views.
@@ -2665,18 +3066,41 @@
       api("/logout", { method: "POST" }).then(function () { location.reload(); }).catch(function () { location.reload(); });
       return;
     }
-    setAuthed(false); goStudent(); toast("Logged out — student view");
+    setAuthed(false); goStudent(); toast("Logged out. Back in student view.");
   }
 
   /* ----------------------------- Modal ----------------------------- */
+  var modalReturnFocus = null;
+  function modalFocusables(container) {
+    return $all('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])', container)
+      .filter(function (n) { return n.offsetWidth > 0 || n.offsetHeight > 0 || n === document.activeElement; });
+  }
   function closeModal() {
     var root = $("#modal-root");
     root.hidden = true; root.setAttribute("aria-hidden", "true"); root.textContent = ""; root.onclick = null;
     document.removeEventListener("keydown", modalKeydown);
+    // Return focus to whatever opened the modal (WCAG 2.4.3 / keyboard-first).
+    var ret = modalReturnFocus; modalReturnFocus = null;
+    if (ret && typeof ret.focus === "function") { try { ret.focus(); } catch (e) {} }
   }
-  function modalKeydown(e) { if (e.key === "Escape") closeModal(); }
+  function modalKeydown(e) {
+    if (e.key === "Escape") { closeModal(); return; }
+    if (e.key !== "Tab") return;
+    // Trap Tab focus inside the dialog so keyboard users can't fall into the page behind it.
+    var modal = $("#modal-root .modal");
+    if (!modal) return;
+    var f = modalFocusables(modal);
+    if (!f.length) { e.preventDefault(); return; }
+    var first = f[0], last = f[f.length - 1], active = document.activeElement;
+    if (e.shiftKey) {
+      if (active === first || !modal.contains(active)) { e.preventDefault(); last.focus(); }
+    } else if (active === last || !modal.contains(active)) {
+      e.preventDefault(); first.focus();
+    }
+  }
   function openModal(title, bodyNode, actions) {
     var root = $("#modal-root");
+    modalReturnFocus = document.activeElement;
     root.textContent = "";
     var modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": title });
     modal.appendChild(el("div", { class: "modal-head" }, [
@@ -2697,6 +3121,11 @@
     root.hidden = false; root.setAttribute("aria-hidden", "false");
     root.onclick = function (e) { if (e.target === root) closeModal(); };
     document.addEventListener("keydown", modalKeydown);
+    // Move focus into the dialog: first real field, else the close button. Callers that
+    // want a specific field still focus it after this returns (their call wins).
+    var f = modalFocusables(modal);
+    var target = f.filter(function (n) { return !/modal-close/.test(n.className); })[0] || f[0];
+    if (target) setTimeout(function () { try { target.focus(); } catch (e) {} }, 30);
     return modal;
   }
 
@@ -2737,7 +3166,7 @@
     if (!studentList().length) { toast("Add a student first (Students tab)"); return; }
     var sel = studentSelectNode();
     var title = el("input", { type: "text", value: defaultTitle || "Workout" });
-    var note = el("textarea", { placeholder: "Optional note — why this matters, how often to do it…" });
+    var note = el("textarea", { placeholder: "Optional note: why this matters, or how often to do it…" });
     var due = el("input", { type: "date" });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Assign to"), sel]),
@@ -2782,27 +3211,27 @@
       el("summary", {}, "How do I get a link?"),
       el("ol", { class: "howto-list" }, [
         el("li", {}, "Open the document or sheet you want this student to use (for example in their Google Drive folder)."),
-        el("li", {}, "Click Share → Copy link — or simply copy the address from your browser's address bar."),
+        el("li", {}, "Click Share → Copy link, or simply copy the address from your browser's address bar."),
         el("li", {}, "Make sure the file is shared with this student's own account, or it won't open for them."),
         el("li", {}, "Paste it below and press Test to confirm it opens.")
       ])
     ]);
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "This link is just for this student — handy for a document in their private folder. Set it once and it applies wherever this activity is assigned to them, replacing the activity's normal link for them."),
+      el("p", { class: "field-hint" }, "This link is only for this student. It's useful for a document in their private folder. Set it once and it applies anywhere this activity is assigned to them, replacing the default link."),
       (a && a.link) ? el("p", { class: "field-hint" }, "Default link (everyone else): " + a.link) : null,
       howto,
       el("div", { class: "field" }, [
         el("label", {}, "Custom link for this student"),
         el("div", { style: "display:flex; gap:8px; align-items:center;" }, [input, testBtn])
       ]),
-      el("p", { class: "field-hint" }, "Tip: the student must be able to open this link with their own account. If they see “Request access,” share the file with them first.")
+      el("p", { class: "field-hint" }, "Tip: the student needs access with their own account. If they see “Request access,” share the file with them first.")
     ]);
     function commit(v) {
       setItemLinkFlow(studentId, asg.id, activityId, v, function () {
         closeModal(); renderAll(); toast(v ? "Custom link saved" : "Custom link removed");
       });
     }
-    openModal("Custom link — " + (a ? a.name : "activity"), body, [
+    openModal("Custom link: " + (a ? a.name : "activity"), body, [
       { label: "Cancel", onClick: closeModal },
       current ? { label: "Remove", danger: true, onClick: function () { commit(""); } } : null,
       { label: "Save link", accent: true, onClick: function () {
@@ -2818,7 +3247,7 @@
     var s = students()[studentId];
     if (!s) return;
     var selected = {};
-    var title = el("input", { type: "text", placeholder: "e.g. Week 1 — Confidence" });
+    var title = el("input", { type: "text", placeholder: "e.g. Week 1: Confidence" });
     var note = el("textarea", { placeholder: "Optional note for the student" });
     var search = el("input", { type: "search", placeholder: "Search activities to add…" });
     var listWrap = el("div", { class: "picker-list" });
@@ -2864,7 +3293,7 @@
       }
       pool = pool.filter(function (a) { return !selected[a.id]; });   // keep current picks, add new ones
       var picks = selectWorkout(pool, c);
-      if (!picks.length) { toast("No new activities match — try a broader topic/type"); return; }
+      if (!picks.length) { toast("No new activities match. Try a broader topic or type."); return; }
       picks.forEach(function (a) { selected[a.id] = true; });
       if (!title.value) title.value = [c.topic, c.type].filter(Boolean).join(" · ") || "Workout";
       refresh(); updateCount();
@@ -3001,15 +3430,183 @@
   // visitor has no session. Routes to an invite-accept form if ?invite= is present.
   function showAuthGate(offline) {
     if ($("#auth-gate")) return;
-    var landing = el("div", { class: "auth-landing", id: "auth-landing", hidden: true });
+    document.body.setAttribute("data-auth-shell", "signed-out");
+    var customLanding = el("div", { class: "auth-landing-custom", id: "auth-landing", hidden: true });
+    var hero = buildSignedOutHero(customLanding);
     var card = el("div", { class: "auth-card" });
-    var stack = el("div", { class: "auth-stack" }, [landing, card]);
+    var top = el("div", { class: "auth-shell-top" }, [hero, card]);
+    var preview = buildSignedOutPreview();
+    var stack = el("div", { class: "auth-stack auth-stack--hybrid" }, [top, preview]);
     var root = el("div", { class: "auth-gate", id: "auth-gate", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" }, stack);
     document.body.appendChild(root);
     var invite = getQueryParam("invite");
     if (invite) { renderAcceptForm(card, invite); return; }
     renderLoginForm(card, offline);
-    if (!offline) renderLandingInto(landing);   // show the super-admin's published landing page above the form
+    if (!offline) renderLandingInto(customLanding);
+  }
+
+  function buildSignedOutHero(customLanding) {
+    return el("section", { class: "signedout-hero", "aria-labelledby": "signedout-hero-title" }, [
+      el("div", { class: "signedout-brand" }, [authHeader()]),
+      el("div", { class: "signedout-kicker" }, "Mental training, kept in motion"),
+      el("h1", { class: "signedout-title", id: "signedout-hero-title" }, "One focused place for athlete check-ins, coach guidance, and mental performance work."),
+      el("p", { class: "signedout-copy" }, "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools."),
+      buildSignedOutMoment(),
+      el("div", { class: "signedout-roles", "aria-label": "Who this is for" }, [
+        el("span", { class: "signedout-role" }, "Athletes: workouts, check-ins, messages"),
+        el("span", { class: "signedout-role" }, "Coaches: assignments, tracking, support"),
+        el("span", { class: "signedout-role" }, "Admins: team setup, content, operations")
+      ]),
+      buildSignedOutStartGuide(),
+      el("div", { class: "signedout-actions" }, [
+        el("button", { class: "btn btn--primary", type: "button", onclick: focusAuthCard }, "Go to sign in"),
+        el("button", { class: "btn btn--ghost", type: "button", onclick: focusPreviewSection }, "See sample activities")
+      ]),
+      el("div", { class: "signedout-note" }, [
+        el("strong", {}, "Preview the library"),
+        el("span", {}, " Then sign in to open your workspace.")
+      ]),
+      customLanding
+    ]);
+  }
+
+  function buildSignedOutMoment() {
+    var cue = signedOutMomentCue();
+    return el("div", { class: "signedout-moment", "aria-label": "Current training moment" }, [
+      el("span", { class: "signedout-moment-label" }, cue.label),
+      el("span", { class: "signedout-moment-copy" }, cue.copy)
+    ]);
+  }
+
+  function signedOutMomentCue() {
+    var hour = new Date().getHours();
+    if (hour < 11) {
+      return {
+        label: "Morning reset",
+        copy: "Start the day with one clear assignment, one honest check-in, and one place to return later."
+      };
+    }
+    if (hour < 17) {
+      return {
+        label: "Midday focus",
+        copy: "Keep practice notes, reflections, and coach direction together while the session is still fresh."
+      };
+    }
+    return {
+      label: "Evening review",
+      copy: "Close the loop on today's work, send reflections, and leave coaches a cleaner picture of progress."
+    };
+  }
+
+  function buildSignedOutStartGuide() {
+    return el("section", { class: "signedout-guide", "aria-labelledby": "signedout-guide-title" }, [
+      el("div", { class: "signedout-guide-head" }, [
+        el("h2", { class: "signedout-guide-title", id: "signedout-guide-title" }, "Start in a few focused steps"),
+        el("span", { class: "signedout-guide-meta" }, "Usually 1 to 2 minutes")
+      ]),
+      el("ol", { class: "signedout-guide-list" }, [
+        el("li", { class: "signedout-guide-step" }, [
+          el("strong", {}, "Athletes sign in with the email and passcode their coach shared."),
+          el("span", {}, " Open your assigned workouts, send reflections, and check in without extra setup.")
+        ]),
+        el("li", { class: "signedout-guide-step" }, [
+          el("strong", {}, "Coaches and staff sign in with their own account."),
+          el("span", {}, " If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.")
+        ]),
+        el("li", { class: "signedout-guide-step" }, [
+          el("strong", {}, "The first screen after sign-in is role-specific."),
+          el("span", {}, " Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.")
+        ])
+      ])
+    ]);
+  }
+
+  function focusAuthCard() {
+    var card = document.querySelector("#auth-gate .auth-card");
+    if (!card) return;
+    try { card.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (e) {}
+    var target = card.querySelector("input, button, a");
+    if (target && typeof target.focus === "function") setTimeout(function () { target.focus(); }, 120);
+  }
+
+  function focusPreviewSection() {
+    var preview = document.querySelector("#auth-gate .signedout-preview");
+    if (!preview) return;
+    try { preview.scrollIntoView({ block: "start", behavior: "smooth" }); } catch (e) {}
+  }
+
+  function buildSignedOutPreview() {
+    var sample = pickSignedOutPreviewActivities();
+    var list = el("div", { class: "signedout-preview-grid" });
+    sample.forEach(function (a) { list.appendChild(createSignedOutPreviewCard(a)); });
+    return el("section", { class: "signedout-preview", "aria-labelledby": "signedout-preview-title" }, [
+      el("div", { class: "signedout-preview-head" }, [
+        el("div", {}, [
+          el("div", { class: "signedout-preview-kicker" }, "Inside the library"),
+          el("h2", { id: "signedout-preview-title" }, "A small preview of the work athletes return to"),
+            el("p", { class: "signedout-preview-copy" }, "These sample activities show the kind of work inside the full library. Filters, assignments, and role-specific tools appear after sign-in.")
+        ]),
+        el("div", { class: "signedout-preview-meta" }, sample.length + " sample activities")
+      ]),
+      list
+    ]);
+  }
+
+  function pickSignedOutPreviewActivities() {
+    var picked = [];
+    var seenTopics = {};
+    (BASE || []).forEach(function (a) {
+      if (!a || picked.length >= 4) return;
+      var topic = a.topic || "General";
+      if (seenTopics[topic]) return;
+      seenTopics[topic] = true;
+      picked.push(a);
+    });
+    if (picked.length < 4) {
+      (BASE || []).forEach(function (a) {
+        if (!a || picked.length >= 4) return;
+        if (picked.indexOf(a) === -1) picked.push(a);
+      });
+    }
+    return picked;
+  }
+
+  function createSignedOutPreviewCard(a) {
+    var summary = (a.instructions || a.reflection || "A guided mental performance activity.").replace(/\s+/g, " ").trim();
+    if (summary.length > 160) summary = summary.slice(0, 157).trim() + "...";
+    var tags = [];
+    var cue = signedOutPreviewCue(a, tags.length);
+    if (a.topic) tags.push(el("span", { class: "signedout-preview-chip signedout-preview-chip--topic" }, a.topic));
+    if (a.type) tags.push(el("span", { class: "signedout-preview-chip" }, a.type));
+    if (a.time) tags.push(el("span", { class: "signedout-preview-chip signedout-preview-chip--meta" }, a.time));
+    return el("article", { class: "signedout-preview-card" }, [
+      el("div", { class: "signedout-preview-card-head" }, [
+        el("h3", { class: "signedout-preview-card-title" }, a.name || "Activity"),
+        a.progression ? el("span", { class: "signedout-preview-week" }, a.progression) : null
+      ]),
+      cue.eyebrow ? el("div", { class: "signedout-preview-eyebrow" }, cue.eyebrow) : null,
+      el("div", { class: "signedout-preview-chips" }, tags),
+      el("p", { class: "signedout-preview-summary" }, summary),
+      el("div", { class: "signedout-preview-footer" }, [
+        el("span", { class: "signedout-preview-hint" }, cue.hint),
+        el("span", { class: "signedout-preview-lock", "aria-hidden": "true" }, cue.badge)
+      ])
+    ]);
+  }
+
+  function signedOutPreviewCue(a) {
+    var type = String(a && a.type || "").toLowerCase();
+    var topic = String(a && a.topic || "").toLowerCase();
+    if (type === "video") {
+      return { eyebrow: "Watch, then reflect", hint: "A quick visual reset before the full workspace opens.", badge: "Sample" };
+    }
+    if (type === "exercise") {
+      return { eyebrow: "Do this in the moment", hint: "Open your workspace to track it as part of an assignment.", badge: "Try first" };
+    }
+    if (topic.indexOf("focus") !== -1) {
+      return { eyebrow: "Good before practice", hint: "Keep this kind of focus work attached to your coach plan.", badge: "Focus cue" };
+    }
+    return { eyebrow: "Built for steady reps", hint: "Sign in to save progress, reflections, and follow-up from coaches.", badge: "Preview" };
   }
   // Render the published 'landing' builder page (if any) for signed-out visitors. The
   // endpoint is public and returns 404 when no published page exists, in which case the
@@ -3037,15 +3634,16 @@
         location.reload();
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
-    card.appendChild(authHeader());
+    card.appendChild(el("div", { class: "auth-card-kicker" }, "Sign in to continue"));
     card.appendChild(el("h3", { class: "auth-title" }, "Sign in"));
-    card.appendChild(el("p", { class: "field-hint" }, "Coaches and athletes sign in here with their email and password. Athletes: use the email and passcode your coach sent you."));
+    card.appendChild(el("p", { class: "field-hint" }, "Sign in with your email and password. Athletes should use the email and sign-in code their coach shared with them."));
+    card.appendChild(buildAuthFlowGuide("signin"));
     if (offline) {
-      card.appendChild(el("div", { class: "warn" }, "Can’t reach the PerformanceXtra server right now, so sign-in is temporarily unavailable. Please try this link again in a moment."));
+      card.appendChild(el("div", { class: "warn" }, "We can't reach the PerformanceXtra server right now, so sign-in is temporarily unavailable. Try this link again in a moment."));
     }
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", { for: "auth-email" }, "Email"), email]),
-      el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password / passcode"), pass]),
+      el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password / sign-in code"), pass]),
       errBox,
       el("button", { class: "btn btn--primary btn--block", onclick: submit }, "Sign in"),
       setupRow
@@ -3059,7 +3657,7 @@
         setupRow.appendChild(document.createTextNode("First time here? "));
         setupRow.appendChild(el("a", { href: "#", onclick: function (e) { e.preventDefault(); renderSetupForm(card); } }, "Create the admin account"));
       } else {
-        setupRow.textContent = "Athletes: sign in with the email and passcode your coach sent you.";
+        setupRow.textContent = "Athletes should sign in with the email and sign-in code their coach shared with them.";
       }
     }).catch(function () {});
   }
@@ -3081,9 +3679,10 @@
         location.reload();
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
-    card.appendChild(authHeader());
+    card.appendChild(el("div", { class: "auth-card-kicker" }, "First-time setup"));
     card.appendChild(el("h3", { class: "auth-title" }, "Create the admin account"));
-    card.appendChild(el("p", { class: "field-hint" }, "This is the first account on this site — it becomes the super admin. You add coaches afterwards, and each coach manages their own athletes."));
+    card.appendChild(el("p", { class: "field-hint" }, "This first account becomes the super admin. After that, you can add coaches, and each coach manages their own athletes."));
+    card.appendChild(buildAuthFlowGuide("setup"));
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
@@ -3114,9 +3713,10 @@
         location.href = location.pathname;
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
-    card.appendChild(authHeader());
+    card.appendChild(el("div", { class: "auth-card-kicker" }, "Finish your account"));
     card.appendChild(el("h3", { class: "auth-title" }, "Set your password"));
     card.appendChild(el("p", { class: "field-hint" }, "Welcome! Pick a password to finish setting up your account. Next time you'll sign in with your email and this password."));
+    card.appendChild(buildAuthFlowGuide("accept"));
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Password"), pass]),
       el("div", { class: "field" }, [el("label", {}, "Confirm password"), confirm]),
@@ -3125,6 +3725,43 @@
     ]));
     [pass, confirm].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } }); });
     setTimeout(function () { pass.focus(); }, 30);
+  }
+
+  function buildAuthFlowGuide(kind) {
+    var config = {
+      signin: {
+        title: "What happens next",
+        items: [
+          "Athletes use the email and sign-in code shared by their coach.",
+          "Coaches, admins, and super admins use their staff password.",
+          "After sign-in, PerformanceXtra opens the workspace that matches your role."
+        ]
+      },
+      setup: {
+        title: "First-time setup flow",
+        items: [
+          "Create one super admin account for the workspace.",
+          "Sign in, then add coaches and team members from the management area.",
+          "You can refine content, branding, and landing copy after access is live."
+        ]
+      },
+      accept: {
+        title: "After you set your password",
+        items: [
+          "You'll use your email and this password next time you sign in.",
+          "Your assigned workouts and check-ins appear right away.",
+          "If something looks missing, your coach controls what shows up in your workspace."
+        ]
+      }
+    };
+    var flow = config[kind];
+    if (!flow) return null;
+    return el("section", { class: "auth-flow-guide", "aria-label": flow.title }, [
+      el("div", { class: "auth-flow-guide-title" }, flow.title),
+      el("ol", { class: "auth-flow-guide-list" }, flow.items.map(function (item) {
+        return el("li", { class: "auth-flow-guide-step" }, item);
+      }))
+    ]);
   }
 
   // Org-wide duplicate search shared by the create modals. Hits GET /api/lookup and returns
@@ -3176,7 +3813,7 @@
     var dupCheck = el("input", { type: "checkbox" });
     var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the athlete and generate a random passcode for them. Email them their email address + that passcode — they sign in with those. Nothing to set up on their end."),
+      el("p", { class: "field-hint" }, "We'll create the athlete and generate a one-time sign-in code. Send them their email address and that code. They can use it right away to enter the shared workspace."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       matchesPanel,
@@ -3202,11 +3839,11 @@
     }
     openModal("Add athlete", body, [
       { label: "Cancel", onClick: closeModal },
-      { label: "Create & get passcode", accent: true, onClick: submit }
+      { label: "Create & get sign-in code", accent: true, onClick: submit }
     ]);
     setTimeout(function () { name.focus(); }, 30);
   }
-  // Show the one-time login credentials (email + passcode) the coach emails to a student.
+  // Show the one-time login credentials (email + sign-in code) the coach emails to a student.
   function showCredentialsModal(data) {
     var athlete = (data && (data.athlete || data.coach || data.user)) || {};
     var who = athlete.name || "this person";
@@ -3214,7 +3851,7 @@
     var passcode = (data && data.passcode) || "";
     var loginUrl = (data && data.loginUrl) || location.origin + "/";
 
-    var creds = "Email: " + email + "\nPasscode: " + passcode + "\nSign in at: " + loginUrl;
+    var creds = "Email: " + email + "\nSign-in code: " + passcode + "\nSign in at: " + loginUrl;
     var emailField = el("input", { type: "text", value: email, readonly: true });
     var passField = el("input", { type: "text", value: passcode, readonly: true, style: "font-family:monospace; letter-spacing:0.5px" });
     [emailField, passField].forEach(function (i) { i.addEventListener("focus", function () { this.select(); }); });
@@ -3222,15 +3859,15 @@
     var subject = encodeURIComponent("Your PerformanceXtra login");
     var bodyText = encodeURIComponent(
       "Hi " + who + ",\n\nYou've been set up on PerformanceXtra. Sign in with:\n\n" +
-      "Email: " + email + "\nPasscode: " + passcode + "\n\nSign in here: " + loginUrl +
-      "\n\nYou can keep using this passcode to sign in.\n"
+      "Email: " + email + "\nSign-in code: " + passcode + "\n\nSign in here: " + loginUrl +
+      "\n\nYou can keep using this sign-in code until it is reset.\n"
     );
     var mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + subject + "&body=" + bodyText;
 
     var body = el("div", { class: "form-stack" }, [
-      el("p", {}, "Send these sign-in details to " + who + ". This passcode is shown once — copy it now. If it's lost, use “Reset passcode” on their row to make a new one."),
+      el("p", {}, "Send these sign-in details to " + who + ". This sign-in code is shown once, so copy it now. If it is lost, use “Reset sign-in code” on their row to create a new one."),
       el("div", { class: "field" }, [el("label", {}, "Email"), emailField]),
-      el("div", { class: "field" }, [el("label", {}, "Passcode"), passField]),
+      el("div", { class: "field" }, [el("label", {}, "Sign-in code"), passField]),
       el("a", { class: "btn btn--block", href: mailto }, "✉ Email " + who)
     ]);
     openModal("Sign-in details", body, [
@@ -3240,9 +3877,9 @@
     setTimeout(function () { passField.focus(); passField.select(); }, 30);
   }
   function resetPasscode(s) {
-    if (!confirm("Generate a new passcode for " + s.name + "? Their old passcode stops working.")) return;
+    if (!confirm("Generate a new sign-in code for " + s.name + "? Their old code stops working.")) return;
     api("/athletes/" + encodeURIComponent(s.id) + "/reset-passcode", { method: "POST" }).then(function (res) {
-      if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
+      if (!res.ok) { toast(apiError(res, "Couldn't reset sign-in code")); return; }
       refreshFromServer().then(function () { renderStudents(); });
       showCredentialsModal(res.data);
     }).catch(function () { toast("Couldn't reach the server"); });
@@ -3275,11 +3912,18 @@
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
-  function staffPanel(title, addLabel, tier, rows) {
-    var panel = el("div", { class: "panel" });
-    panel.appendChild(el("div", { class: "section-head" }, [
-      el("h3", {}, title),
-      el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddStaffModal(tier); } }, addLabel)
+  function staffPanel(title, addLabel, tier, rows, note) {
+    rows = rows || [];
+    var panel = el("div", { class: "panel team-panel team-panel--" + tier });
+    panel.appendChild(el("div", { class: "section-head section-head--stacked" }, [
+      el("div", { class: "section-head-copy" }, [
+        el("h3", {}, title),
+        note ? el("p", { class: "section-head-note" }, note) : null
+      ]),
+      el("div", { class: "section-head-actions" }, [
+        el("span", { class: "cms-count" }, rows.length + " total"),
+        el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddStaffModal(tier); } }, addLabel)
+      ])
     ]));
     var list = el("div", { class: "student-list" });
     panel.appendChild(list);
@@ -3310,7 +3954,7 @@
       if (tier === "coach" || tier === "admin") {
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "View and manage this " + tier + "'s students", onclick: function () { openCoachStudentsModal(c, tier); } }, "View students"));
       }
-      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new passcode to send them", onclick: function () { resetStaffPasscode(c, tier); } }, "↻ Reset passcode"));
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code to send them", onclick: function () { resetStaffPasscode(c, tier); } }, "↻ Reset sign-in code"));
       // No delete on super admins (the top tier is never removable via the UI).
       if (tier !== "superadmin") {
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + tier, "aria-label": "Delete " + c.name, onclick: function () { deleteStaff(c, tier); } }, "✕ Delete"));
@@ -3330,14 +3974,19 @@
     view.appendChild(el("div", { class: "view-intro" }, [
       el("h2", {}, "Team"),
       el("p", {}, isSuperadmin()
-        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the global library and site appearance. Each person signs in with their email and a one-time passcode you send them, then sets their own password."
-        : "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
+        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the shared library and site appearance. Each person signs in with their email and a one-time sign-in code you send them, then sets their own password."
+        : "Create and manage coach accounts. Each coach signs in with their email and a one-time sign-in code you send them, then manages their own athletes.")
     ]));
-    view.appendChild(staffPanel("Coaches", "+ Add coach", "coach", state.coaches || []));
+    var stack = el("div", { class: "team-stack" + (isSuperadmin() ? " team-stack--superadmin" : "") });
+    stack.appendChild(staffPanel("Coaches", "+ Add coach", "coach", state.coaches || [], "The people assigning work, checking progress, and staying in touch with athletes."));
     if (isSuperadmin()) {
-      view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
-      view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+      var side = el("div", { class: "team-side-stack" }, [
+        staffPanel("Admins", "+ Add admin", "admin", state.admins || [], "Program operators who can add coaches and manage the shared team setup."),
+        staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || [], "Top-level access for appearance, global content, and operational control.")
+      ]);
+      stack.appendChild(side);
     }
+    view.appendChild(stack);
   }
 
   // Create a coach (POST /coaches) or an admin/super admin (POST /users {tier}).
@@ -3350,7 +3999,7 @@
     var dupCheck = el("input", { type: "checkbox" });
     var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time passcode. Send them their email + that passcode — they sign in with those and can set their own password afterwards."),
+      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time sign-in code. Send them their email and that code. They sign in with those details and can set their own password afterward."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       matchesPanel,
@@ -3377,16 +4026,16 @@
     }
     openModal("Add " + who, body, [
       { label: "Cancel", onClick: closeModal },
-      { label: "Create & get passcode", accent: true, onClick: submit }
+      { label: "Create & get sign-in code", accent: true, onClick: submit }
     ]);
     setTimeout(function () { name.focus(); }, 30);
   }
 
   function resetStaffPasscode(c, tier) {
-    if (!confirm("Generate a new passcode for " + c.name + "? Their old passcode stops working.")) return;
+    if (!confirm("Generate a new sign-in code for " + c.name + "? Their old code stops working.")) return;
     var path = (tier === "coach" ? "/coaches/" : "/users/") + encodeURIComponent(c.id) + "/reset-passcode";
     api(path, { method: "POST" }).then(function (res) {
-      if (!res.ok) { toast(apiError(res, "Couldn't reset passcode")); return; }
+      if (!res.ok) { toast(apiError(res, "Couldn't reset sign-in code")); return; }
       refreshStaff().then(function () { showCredentialsModal(res.data); });
     }).catch(function () { toast("Couldn't reach the server"); });
   }
@@ -3421,7 +4070,7 @@
       api("/athletes?coachId=" + encodeURIComponent(c.id)).then(function (res) {
         listBox.textContent = "";
         var rows = (res.ok && res.data && res.data.athletes) || [];
-        if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, "No students — this " + tier + " can be deleted now.")); return; }
+        if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, "No students. This " + tier + " can be deleted now.")); return; }
         rows.forEach(function (s) {
           var nameKids = [el("span", { class: "name" }, s.name)];
           if (s.email) nameKids.push(el("span", { class: "student-email" }, s.email));
@@ -3823,13 +4472,13 @@
     { sel: ".filter-bar", title: "Filter to what you need", text: "Narrow by topic, content type, progression week, or frequency to find the right activity fast." },
     { sel: "[data-tab=\"builder\"]", title: "Workout Builder", text: "Auto-assemble a session from criteria like “Month 1, Confidence”, then assign it to an athlete." },
     { sel: "[data-tab=\"students\"]", title: "Your athletes", text: "Add athletes, build them tailored assignments, and track each one's progress." },
-    { sel: "#student-select", title: "Active athlete", text: "Pick who you're working with — assignments and progress follow this selection." },
+    { sel: "#student-select", title: "Active athlete", text: "Pick who you're working with. Assignments and progress follow this selection." },
     { sel: "[data-tab=\"settings\"]", title: "Settings", text: "Manage your account and back up or import data here." }
   ];
   var TOUR_STUDENT = [
     { sel: ".brand", title: "Welcome!", text: "This is your personal training space. Here's a quick tour." },
     { sel: "[data-tab=\"workouts\"]", title: "My Workouts", text: "The activities your coach assigned you. Work through them and tick each one done." },
-    { sel: ".assign-item details.detail", title: "Read the instructions", text: "Open this to see the activity's instructions and reflection prompt — no need to leave the page." },
+    { sel: ".assign-item details.detail", title: "Read the instructions", text: "Open this to see the activity's instructions and reflection prompt. There is no need to leave the page." },
     { sel: "[data-tab=\"progress\"]", title: "My Progress", text: "See how much you've completed, broken down by topic and by week." }
   ];
 
@@ -3958,7 +4607,7 @@
         if (state.cmsScope !== "global") state.cmsScope = "private";
         scopeWrap.hidden = false;
         scopeWrap.textContent = "";
-        [["private", "My content"], ["global", "Global library"]].forEach(function (pair) {
+        [["private", "My library"], ["global", "Shared library"]].forEach(function (pair) {
           var input = el("input", { type: "radio", name: "cms-scope", value: pair[0] });
           if (state.cmsScope === pair[0]) input.checked = true;
           input.addEventListener("change", function () { if (!input.checked) return; state.cmsScope = pair[0]; renderContent(); });
@@ -3994,7 +4643,7 @@
     $("#cms-taxonomy").hidden = sub !== "taxonomy";
     if (cmsGlobal() && state.globalTracking && state.globalTracking.loading) {
       var pane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
-      pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the global library…"));
+      pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the shared library…"));
       return;
     }
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
@@ -4011,10 +4660,15 @@
     search.value = state.cmsSearch || "";
     var hiddenCb = el("input", { type: "checkbox" });
     hiddenCb.checked = !!state.cmsShowHidden;
-    hiddenCb.addEventListener("change", function () { state.cmsShowHidden = hiddenCb.checked; renderCmsActivities(); });
+    hiddenCb.addEventListener("change", function () { state.cmsShowHidden = hiddenCb.checked; state.cmsShowAll = false; renderCmsActivities(); });
     wrap.appendChild(el("div", { class: "cms-toolbar" }, [
       search,
-      el("label", { class: "check" }, [hiddenCb, " Show hidden"])
+      el("details", { class: "cms-toolbar-more" }, [
+        el("summary", {}, "Library options"),
+        el("div", { class: "cms-toolbar-panel" }, [
+          el("label", { class: "check" }, [hiddenCb, " Show hidden"])
+        ])
+      ])
     ]));
     var tableWrap = el("div", { class: "cms-table-wrap" });
     wrap.appendChild(tableWrap);
@@ -4027,8 +4681,16 @@
       rows.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
       tableWrap.appendChild(el("div", { class: "cms-count" }, rows.length + " activit" + (rows.length === 1 ? "y" : "ies")));
       if (!rows.length) { tableWrap.appendChild(el("p", { class: "no-link" }, "No activities match.")); return; }
+      var maxRows = (!q && !state.cmsShowAll) ? 36 : rows.length;
+      var visibleRows = rows.slice(0, maxRows);
+      if (visibleRows.length < rows.length) {
+        tableWrap.appendChild(el("div", { class: "cms-window-note" }, [
+          el("span", {}, "Showing the first " + visibleRows.length + " activities so this list stays scannable."),
+          el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () { state.cmsShowAll = true; draw(); } }, "Show all " + rows.length)
+        ]));
+      }
       var table = el("div", { class: "cms-table" });
-      rows.forEach(function (a) {
+      visibleRows.forEach(function (a) {
         var hid = cmsHidden(a.id);
         var tags = [];
         if (isCustom(a.id)) tags.push(el("span", { class: "chip chip--accent" }, "Custom"));
@@ -4041,17 +4703,22 @@
           el("div", { class: "cms-cell cms-tags" }, tags),
           el("div", { class: "cms-cell cms-actions" }, [
             el("button", { class: "btn btn--sm", onclick: function () { openActivityModal(a.id); } }, "Edit"),
-            el("button", { class: "btn btn--sm btn--ghost", onclick: function () { setHidden(a.id, !hid); renderAll(); } }, hid ? "Unhide" : "Hide"),
-            isCustom(a.id) ? el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
-              if (confirm("Delete this custom activity?")) { deleteCustomActivity(a.id); renderAll(); toast("Deleted"); }
-            } }, "Delete") : null
+            el("details", { class: "cms-row-menu" }, [
+              el("summary", {}, "More"),
+              el("div", { class: "cms-row-menu-panel" }, [
+                el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () { setHidden(a.id, !hid); renderAll(); } }, hid ? "Unhide" : "Hide"),
+                isCustom(a.id) ? el("button", { class: "btn btn--sm btn--ghost btn--danger", type: "button", onclick: function () {
+                  if (confirm("Delete this custom activity?")) { deleteCustomActivity(a.id); renderAll(); toast("Deleted"); }
+                } }, "Delete") : null
+              ])
+            ])
           ])
         ]));
       });
       tableWrap.appendChild(table);
     }
     var timer;
-    search.addEventListener("input", function () { state.cmsSearch = search.value; clearTimeout(timer); timer = setTimeout(draw, 120); });
+    search.addEventListener("input", function () { state.cmsSearch = search.value; state.cmsShowAll = false; clearTimeout(timer); timer = setTimeout(draw, 120); });
     draw();
   }
 
@@ -4182,9 +4849,8 @@
     });
     $("#clear-filters").addEventListener("click", clearFilters);
     $("#filters-toggle").addEventListener("click", function () {
-      var bar = $("#filter-bar");
-      var collapsed = bar.classList.toggle("is-collapsed");
-      this.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      state.repoFiltersExpanded = !state.repoFiltersExpanded;
+      syncRepoFilterDensity();
     });
 
     // Students
@@ -4196,6 +4862,14 @@
       var id = addStudent(input.value);
       if (id) { input.value = ""; renderAll(); toast("Student added"); }
     });
+    var allStudentsSearch = $("#all-students-search");
+    if (allStudentsSearch) {
+      var allStudentsTimer;
+      allStudentsSearch.addEventListener("input", function () {
+        clearTimeout(allStudentsTimer);
+        allStudentsTimer = setTimeout(function () { if (state.studentTab === "all") renderAllStudents(); }, 120);
+      });
+    }
     $("#export-btn").addEventListener("click", exportTracking);
     var rosterBtn = $("#export-roster-btn");
     if (rosterBtn) rosterBtn.addEventListener("click", exportRosterCSV);
@@ -4295,6 +4969,7 @@
     var initial = (location.hash || "").replace("#", "");
     if (initial) state.tab = initial;
 
+    configureRepoFilterDensity();
     boot();
   }
 

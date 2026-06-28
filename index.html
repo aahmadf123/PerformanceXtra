@@ -48,12 +48,12 @@
 </header>
 
 <div class="preview-banner" id="preview-banner" hidden>
-  <span>👀 Coach preview — you’re seeing what the student sees.</span>
+  <span>👀 Coach preview: you’re seeing the student view.</span>
   <button class="btn btn--sm" id="back-to-admin-btn">← Back to admin view</button>
 </div>
 
 <div class="nudge-banner admin-only local-only" id="default-pass-banner" hidden>
-  <span>⚠️ You’re still on the default admin passcode — anyone who knows it can open your coaching tools.</span>
+  <span>⚠️ You’re still using the default admin passcode. Anyone who knows it can open your coaching tools.</span>
   <button class="btn btn--sm" id="goto-passcode-btn">Change passcode</button>
 </div>
 
@@ -102,16 +102,20 @@
       <p>Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.</p>
     </div>
 
+    <div class="seg" id="students-subnav" hidden></div>
+
     <div class="note-banner local-only">
-      <strong>Heads up:</strong> students, assignments and progress are saved only in this browser on this device — they aren’t shared across computers. Use <strong>Export</strong> in Settings to back up or move them.
+      <strong>Heads up:</strong> students, assignments, and progress are saved only in this browser on this device. They are not shared across computers. Use <strong>Export</strong> in Settings to back them up or move them.
     </div>
     <div class="note-banner server-only" hidden>
       <strong>Shared &amp; synced:</strong> athletes, assignments and progress live in your team database and stay in sync across every device. Add an athlete to generate their personal invite link.
     </div>
 
+    <div id="students-guide"></div>
+
     <div id="needs-attention"></div>
 
-    <div class="students-layout">
+    <div class="students-layout" id="my-students-layout">
       <div class="panel">
         <div class="section-head"><h3>Students</h3><span class="section-head-actions"><button class="btn btn--sm" id="bulk-assign-btn" title="Assign one template to several athletes at once">⊕ Bulk assign</button><button class="btn btn--sm" id="export-roster-btn" title="Download roster &amp; progress as CSV">⬇ Roster CSV</button></span></div>
         <div class="student-list" id="student-list"></div>
@@ -123,13 +127,19 @@
 
       <div class="panel" id="student-detail"></div>
     </div>
+
+    <div class="panel" id="all-students-pane" hidden>
+      <div class="section-head"><h3>All students</h3><span class="cms-count" id="all-students-count"></span></div>
+      <input type="search" id="all-students-search" class="all-students-search" placeholder="Search by name, email or coach" aria-label="Search all students" autocomplete="off">
+      <div class="student-list" id="all-students-list"></div>
+    </div>
   </section>
 
   <!-- ===================== Content (admin CMS) ===================== -->
   <section id="view-content" class="view" aria-labelledby="content-h">
     <div class="view-intro">
       <h2 id="content-h">Content</h2>
-      <p>Manage your activity library and the Topic, Subtopic and Content-type lists used across the whole app. Changes save to your team database and take effect right away — no developer needed.</p>
+      <p>Manage your activity library and the Topic, Subtopic, and Content-type lists used across the app. Changes save to your team database and take effect right away, with no developer needed.</p>
     </div>
     <div class="cms-scope seg" id="cms-scope" role="radiogroup" aria-label="Content library" hidden></div>
     <div class="cms-subnav seg" id="cms-subnav" role="navigation" aria-label="Content sections"></div>
@@ -159,7 +169,7 @@
   <section id="view-checkin" class="view" aria-labelledby="checkin-h">
     <div class="view-intro">
       <h2 id="checkin-h">Daily check-in</h2>
-      <p>A quick, private moment to notice how you’re doing. There are no wrong answers — it just helps you and your coach see patterns over time.</p>
+      <p>A quick, private moment to notice how you’re doing. There are no wrong answers. It simply helps you and your coach notice patterns over time.</p>
     </div>
     <div id="checkin-panel"></div>
   </section>
@@ -186,23 +196,23 @@
   <section id="view-settings" class="view" aria-labelledby="settings-h">
     <div class="view-intro">
       <h2 id="settings-h">Settings</h2>
-      <p>Admin passcode, plus backup and restore of all coaching data on this device.</p>
+      <p>Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.</p>
     </div>
 
     <div class="settings-layout">
       <div class="panel local-only">
-        <h3>Admin passcode</h3>
-        <p class="field-hint" style="margin:8px 0 14px">This passcode unlocks the admin tools. It’s checked in the browser, so it keeps students out of admin features — change it from the default before sharing this site.</p>
+        <h3>Local admin passcode</h3>
+        <p class="field-hint" style="margin:8px 0 14px">This browser-only passcode unlocks the coaching tools when the shared server is unavailable. Change it from the default before using the fallback mode with other people.</p>
         <form class="form-stack" id="passcode-form">
           <div class="field"><label for="new-passcode">New passcode</label><input type="password" id="new-passcode" autocomplete="new-password" placeholder="Choose a passcode"></div>
           <div class="field"><label for="confirm-passcode">Confirm passcode</label><input type="password" id="confirm-passcode" autocomplete="new-password" placeholder="Repeat it"></div>
-          <div><button class="btn btn--primary" type="submit">Update passcode</button></div>
+          <div><button class="btn btn--primary" type="submit">Update local passcode</button></div>
         </form>
       </div>
 
       <div class="panel server-only" hidden>
         <h3>Your account</h3>
-        <p class="field-hint" style="margin:8px 0 14px">You’re signed in to your team database. Roles and access are enforced on the server, so athletes only ever see their own work.</p>
+        <p class="field-hint" style="margin:8px 0 14px">You’re signed in to the shared workspace. Roles and access are enforced on the server, so athletes only ever see their own work and staff actions stay tied to named accounts.</p>
         <div id="account-info"></div>        <form class="form-stack" id="change-password-form" style="margin-top:16px">
           <div class="field"><label for="current-password">Current password</label><input type="password" id="current-password" autocomplete="current-password" placeholder="Enter your current password"></div>
           <div class="field"><label for="new-password">New password</label><input type="password" id="new-password" autocomplete="new-password" placeholder="8+ characters"></div>
@@ -215,16 +225,16 @@
       <div class="panel">
         <h3>Backup &amp; restore</h3>
         <div class="note-banner local-only" style="margin:12px 0">
-          <strong>Heads up:</strong> all students, assignments, and custom activities are saved only in this browser on this device. Export regularly to back up or move to another device.
+          <strong>Device-only mode:</strong> students, assignments, and custom activities are saved only in this browser on this device. Export regularly to back them up or move them elsewhere.
         </div>
         <div class="note-banner server-only" hidden style="margin:12px 0">
-          <strong>Migrating from a device?</strong> Export the old browser’s JSON, then use <strong>Import old data</strong> to pull those students, assignments and progress into your shared database.
+          <strong>Moving from device-only data?</strong> Export the old browser’s JSON, then use <strong>Import device backup</strong> to bring those athletes, assignments, and progress into the shared workspace.
         </div>
         <div class="backup-bar">
           <button class="btn btn--sm" id="export-btn">Export JSON</button>
           <button class="btn btn--sm local-only" id="import-merge-btn">Import (merge)</button>
           <button class="btn btn--sm local-only" id="import-replace-btn">Import (replace)</button>
-          <button class="btn btn--sm server-only" id="import-server-btn" hidden>Import old data</button>
+          <button class="btn btn--sm server-only" id="import-server-btn" hidden>Import device backup</button>
           <input type="file" id="import-file" accept="application/json,.json" hidden>
         </div>
       </div>

@@ -563,6 +563,9 @@ async function route(method, path, request, env, url, secure) {
   if (head === "lookup") {
     if (method === "GET" && seg.length === 1) return handleLookup(env, url);
   }
+  if (head === "all-athletes") {
+    if (method === "GET" && seg.length === 1) return handleAllAthletes(env);
+  }
   if (method === "POST" && path === "/import") return handleImport(session, request, env);
 
   return err(404, "Not found: " + method + " " + path);
@@ -747,6 +750,29 @@ async function handleLookup(env, url) {
     return { id: r.id, name: r.name, email: r.email, tier: effectiveRole(r), coachName: r.coach_name || null };
   });
   return json({ matches: matches });
+}
+
+// Org-wide student directory for the Students tab's "All students" subtab. Coach-level
+// (any signed-in staff): the user chose full org-wide visibility. One query — a self-join
+// for the owning coach's name plus correlated counts — keeps it to a single round trip.
+async function handleAllAthletes(env) {
+  const rows = await env.DB.prepare(
+    "SELECT u.id,u.name,u.email,u.coach_id, c.name AS coach_name, " +
+    "  (u.password_hash IS NOT NULL) AS has_password, " +
+    "  (SELECT COUNT(DISTINCT activity_id) FROM completions WHERE athlete_id=u.id) AS completed, " +
+    "  (SELECT COUNT(*) FROM assignments WHERE athlete_id=u.id) AS assignments " +
+    "FROM users u LEFT JOIN users c ON c.id = u.coach_id " +
+    "WHERE u.role='athlete' ORDER BY u.name"
+  ).all();
+  const athletes = (rows.results || []).map(function (r) {
+    return {
+      id: r.id, name: r.name, email: r.email,
+      coachId: r.coach_id || null, coachName: r.coach_name || null,
+      hasPassword: !!r.has_password,
+      completedCount: r.completed || 0, assignmentCount: r.assignments || 0
+    };
+  });
+  return json({ athletes: athletes });
 }
 
 async function handleCreateAthlete(session, request, env, url) {

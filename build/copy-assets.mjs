@@ -1,4 +1,5 @@
-import { mkdirSync, copyFileSync } from "node:fs";
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,3 +16,22 @@ mkdirSync(publicDir, { recursive: true });
 for (const file of files) {
   copyFileSync(resolve(root, file), resolve(publicDir, file));
 }
+
+// Cache-busting: stamp a short content hash onto the linked asset URLs in the built
+// index.html (styles.css / data.js / app.js). The hash only changes when a file's bytes
+// change, so browsers and the Cloudflare CDN always fetch the current asset after an
+// edit/deploy — no more "I shipped new JS but the old one still runs". The source
+// index.html stays clean; only public/index.html gets stamped.
+function hashOf(file) {
+  return createHash("sha1").update(readFileSync(resolve(root, file))).digest("hex").slice(0, 10);
+}
+const versioned = ["styles.css", "data.js", "app.js"];
+let html = readFileSync(resolve(root, "index.html"), "utf8");
+for (const file of versioned) {
+  const v = hashOf(file);
+  // Match href="file" or src="file" (the local asset references only — the jspdf CDN
+  // <script> uses an absolute https:// URL and is left untouched).
+  const re = new RegExp('((?:href|src)=")' + file.replace(/[.]/g, "\\.") + '(")', "g");
+  html = html.replace(re, '$1' + file + "?v=" + v + '$2');
+}
+writeFileSync(resolve(publicDir, "index.html"), html);
