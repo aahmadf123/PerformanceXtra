@@ -1,8 +1,8 @@
 # PerformanceXtra — Mental Workout Repository
 
 A web app that consolidates PerformanceXtra's mental-performance training resources
-into one tagged, searchable repository — with a workout builder, per-athlete completion
-tracking, and **super-admin / coach / athlete** roles.
+into one tagged, searchable repository — with assignment building, per-athlete completion
+tracking, and **super-admin / admin / coach / athlete** roles.
 
 It runs against a **Cloudflare Worker + D1 database**: a super admin creates coach accounts,
 coaches manage their own athletes, everyone has **real accounts**, data is **shared across
@@ -39,25 +39,27 @@ A strict ladder — **coach < admin < super admin** — where each higher tier c
 the one below it can, plus more. All three sign in to the same tabbed app; the tab set grows
 with the role.
 
-- **Coach** can: browse the repository, build workouts, **assign** activities to specific
-  athletes, **add** custom activities, **edit or hide** any activity, manage athletes, manage
-  their **own** private content (Content tab), and export rosters/assignments.
-- **Admin** can do everything a coach can, **plus**: **create and manage coach accounts**, and
-  curate the **global content library** — a shared set of activities and taxonomy that every
-  coach and athlete sees, edited from the Content tab's **Global library** scope.
+- **Coach** can: browse the repository, build & **assign** workouts to specific athletes,
+  **add** custom activities, **edit or hide** any activity, manage athletes, manage their
+  **own** private content (Content tab), and export rosters/assignments.
+- **Admin** can do everything a coach can, **plus create and manage coach accounts** (from the
+  **Team** tab). Admins work in their **own** private content only — the shared **global
+  library** and the site's **Appearance** are super-admin-only.
 - **Super admin** can do everything an admin can, **plus**: **create and manage admins and
-  other super admins**, and control the site's **Appearance** — a built-in CMS to change colors,
-  fonts and sizes (saved to the database and applied site-wide) and build the landing page from
-  drag-ordered content blocks (hero, heading, text, image, cards, button, spacer). The
-  production super admin is seeded by a migration (see Deploy).
+  other super admins** (alongside coaches, all from the **Team** tab); curate the **global
+  content library** — a shared set of activities and taxonomy that every coach and athlete sees,
+  edited from the Content tab's **Global library** scope; and control the site's **Appearance** —
+  a built-in CMS to change colors, fonts and sizes (saved to the database and applied site-wide)
+  and build the landing page from drag-ordered content blocks (hero, heading, text, image,
+  cards, button, spacer). The production super admin is seeded by a migration (see Deploy).
 
 Internally, admin and super admin are flag columns (`is_admin` / `is_superadmin`) on a
 `role='coach'` row — the FK-referenced `role` column is never changed (see `db/schema.sql`).
 
 ### Adding coaches, admins & super admins
 
-An **admin or super admin** adds a coach by **name + email** from the **Coaches** tab; a **super
-admin** adds admins and other super admins from the **Admins** tab. In every case the server
+An **admin or super admin** adds a coach by **name + email** from the **Team** tab; a **super
+admin** adds admins and other super admins from that same **Team** tab. In every case the server
 generates a one-time passcode, shown **once**; you send the person their email + passcode, they
 sign in, and can change their password in Settings. A creator can never mint an account **above**
 their own role. **Reset passcode** on any row issues a fresh one if it's lost.
@@ -79,10 +81,14 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   only those that exist under it (no dead-end searches). Each card shows its tags and time,
   links to the resource, and expands to show instructions and reflection prompts. Coaches also
   get per-card **Edit / Hide / Assign** controls and **+ Add activity**.
-- **Workout Builder** *(coach)* — assemble a session from criteria like *“Month 1,
-  Confidence.”* Print, copy, download, or **Assign to an athlete**.
 - **Students** *(coach)* — manage athletes, build **assignments** (a titled set of
-  activities with an optional note), track per-athlete progress, and **export the roster to
+  activities with an optional note) — picking activities by hand or with the built-in
+  **Generate by criteria** helper that auto-assembles a balanced set from the library —
+  set an optional **due date** per assignment, see a **Needs attention** overview (overdue work,
+  a stale check-in, a low recent mood, or unread messages), save any assignment as a reusable
+  **template** and **bulk-assign** one template to several athletes at once, see at-a-glance
+  per-athlete **completion % + streak** on the roster, track per-athlete progress, and
+  **export the roster to
   CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
   to each athlete. Assignment notes support **clickable links** — both bare URLs and
   `[label](https://…)` markdown — and any activity can be given a **student-level custom link**
@@ -91,11 +97,12 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 - **Content** *(coach / admin / super admin)* — a built-in CMS to manage the activity library
   **and** the Topic / Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or
   delete activities, and add / rename / merge / remove taxonomy values (renames cascade across
-  every activity). Coaches edit their **own private** content; admins & super admins get a
-  **Global library** scope switch to edit the shared library every coach/athlete sees. Each
-  coach still sees the global library **merged** with their own private items, and a coach's
-  private edit always wins over the global one. Everything is stored in D1, so it survives
-  redeploys — no spreadsheet edit or developer needed.
+  every activity). Coaches and admins edit their **own private** content; **super admins** get a
+  **Global library** scope switch to edit the shared library every coach/athlete sees (the
+  switch loads a global-only view, so a super admin's private items never leak into the shared
+  library). Each coach still sees the global library **merged** with their own private items, and
+  a coach's private edit always wins over the global one. Everything is stored in D1, so it
+  survives redeploys — no spreadsheet edit or developer needed.
 - **Appearance** *(super admin)* — change the site's **colors, fonts, text size, spacing and
   corner radius** (mapped to the CSS variables in `styles.css`, saved to D1 and applied
   site-wide for everyone, including the signed-out login page), and a **page builder** to
@@ -103,7 +110,18 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   Block text renders as plain text and links are forced to `https://`, so builder content can't
   inject script.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
-  and a **Mark done** button on each item.
+  and a **Mark done** button on each item. Assignments with a **due date** show an **Overdue** or
+  **Due soon** badge so nothing is missed.
+- **Check-in** *(athlete)* — a calm daily **mood / energy / stress** check-in (each 1–5, plus an
+  optional note), a running **streak**, and a free-form **journal**. It's deliberately low-pressure
+  and supportive — a mindset tool, not a clinical form. The coach sees it read-only in a per-athlete
+  **Wellbeing** panel (recent check-ins, 14-day averages, streak, and journal entries), so patterns
+  surface without anyone exchanging emails.
+- **Messages** *(coach ↔ athlete)* — a direct in-app thread per athlete: the athlete gets a
+  **Messages** tab (with an unread count), the coach gets a thread plus a **private note** (never
+  shown to the athlete) in the Students detail. Unread counts surface on the athlete's tab and on
+  each coach roster row. It's **in-app only — no email/SMS is sent** (see *Notifications* below);
+  this replaces the email/text back-and-forth that used to live outside the app.
 - **Onboarding tour** — a `?` button in the header launches a short guided tour; it also runs
   automatically the first time a coach or athlete signs in.
 
@@ -167,13 +185,19 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0005_student_activity_links.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0006_admin_role.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0007_site_builder.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0008_checkins_journal.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0009_messages.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0010_assignment_templates.sql --remote
    ```
 
    `0003` adds the super-admin role, `0004` seeds the super-admin login (email
    `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
    sign-in**; edit the migration first if you want different credentials), `0005` moves
    custom links to the student level, `0006` adds the **admin** tier plus the global-library
-   owner row, and `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`).
+   owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), `0008`
+   adds the **check-in** + **journal** tables (`checkins`, `journal_entries`), `0009` adds the
+   **messaging** tables (`messages`, `athlete_notes`), and `0010` adds the **assignment_templates**
+   table.
    Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
@@ -187,10 +211,25 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.
 
+### Notifications (in-app only — no email yet)
+
+Everything that "notifies" — unread message counts, the wellbeing panel, and the
+scheduling/overdue cues — is **surfaced inside the app**; the project sends **no email or SMS**.
+That's deliberate: it keeps the app dependency-free (no domain, no Resend/SMTP key, no DKIM/SPF
+setup). When you're ready to add real notifications, the data is already shaped for it:
+
+- **Unread messages** are rows in `messages` with `read_at IS NULL` — query them per athlete/coach.
+- **Overdue work** is any `assignments.due_at` in the past without completions for the athlete.
+
+A future developer can add a scheduled Worker (Cron Trigger) that reads those and calls an email
+provider — no schema change required. Nothing in the current code path makes an outbound email call.
+
 ### Security model
 
 - Roles come **only** from the signed, HTTP-only session cookie — never from the request body.
 - A coach can only read/write their own rows (or athletes whose `coach_id` is theirs); an
-  athlete can only read their own assignments and write their own completions.
+  athlete can only read their own assignments and write their own completions. Messages and the
+  coach-private note are scoped to the coach↔athlete pair; the private note is never sent to the
+  athlete's own bootstrap.
 - Passwords are hashed with PBKDF2 (WebCrypto). Session cookies are JWT (HS256), `HttpOnly`,
   `Secure`, `SameSite=Lax`.

@@ -95,52 +95,6 @@
     <div class="grid" id="repo-grid"></div>
   </section>
 
-  <!-- ===================== Workout Builder ===================== -->
-  <section id="view-builder" class="view" aria-labelledby="builder-h">
-    <div class="view-intro">
-      <h2 id="builder-h">Workout Builder</h2>
-      <p>Assemble a mental workout from your criteria — for example “Month 1, Confidence.” Pick a progression scope and topic, choose how many activities you want, and generate a ready-to-share session.</p>
-    </div>
-
-    <div class="builder-layout">
-      <div class="panel">
-        <h3>Criteria</h3>
-        <form class="builder-form" id="builder-form">
-          <div class="field">
-            <label>Progression scope</label>
-            <div class="seg" id="scope-seg" role="radiogroup" aria-label="Progression scope">
-              <label><input type="radio" name="scope" value="any" checked><span>Any</span></label>
-              <label><input type="radio" name="scope" value="month"><span>By month</span></label>
-              <label><input type="radio" name="scope" value="week"><span>By week</span></label>
-            </div>
-          </div>
-          <div class="field" id="month-field" hidden><label for="b-month">Month</label><select id="b-month"></select></div>
-          <div class="field" id="week-field" hidden><label for="b-week">Week</label><select id="b-week"></select></div>
-          <div class="field"><label for="b-topic">Topic</label><select id="b-topic"></select></div>
-          <div class="field"><label for="b-subtopic">Subtopic</label><select id="b-subtopic"></select></div>
-          <div class="field"><label for="b-type">Content type</label><select id="b-type"></select></div>
-          <label class="check"><input type="checkbox" id="b-mix" checked> Mix content types for variety</label>
-          <div class="form-row">
-            <div class="field"><label for="b-count">How many</label><input type="number" id="b-count" min="1" max="30" value="5"></div>
-            <div class="field"><label for="b-time">Time budget (min)</label><input type="number" id="b-time" min="0" placeholder="Optional"></div>
-          </div>
-          <label class="check"><input type="checkbox" id="b-exclude"> Exclude activities the active student already completed</label>
-          <div class="builder-actions">
-            <button type="submit" class="btn btn--accent" id="generate-btn">Generate workout</button>
-            <button type="button" class="btn" id="regenerate-btn" disabled>Regenerate</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="panel" id="workout-output">
-        <div class="empty-state" id="workout-empty">
-          <h3>No workout yet</h3>
-          <p>Set your criteria and press <strong>Generate workout</strong>.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- ===================== Students ===================== -->
   <section id="view-students" class="view" aria-labelledby="students-h">
     <div class="view-intro">
@@ -155,9 +109,11 @@
       <strong>Shared &amp; synced:</strong> athletes, assignments and progress live in your team database and stay in sync across every device. Add an athlete to generate their personal invite link.
     </div>
 
+    <div id="needs-attention"></div>
+
     <div class="students-layout">
       <div class="panel">
-        <div class="section-head"><h3>Students</h3><button class="btn btn--sm" id="export-roster-btn" title="Download roster &amp; progress as CSV">⬇ Roster CSV</button></div>
+        <div class="section-head"><h3>Students</h3><span class="section-head-actions"><button class="btn btn--sm" id="bulk-assign-btn" title="Assign one template to several athletes at once">⊕ Bulk assign</button><button class="btn btn--sm" id="export-roster-btn" title="Download roster &amp; progress as CSV">⬇ Roster CSV</button></span></div>
         <div class="student-list" id="student-list"></div>
         <form class="add-student" id="add-student-form">
           <input type="text" id="new-student-name" placeholder="New student name" aria-label="New student name" autocomplete="off">
@@ -197,6 +153,24 @@
       <p>These are the activities your coach has assigned for you. Work through them and mark each one done as you go.</p>
     </div>
     <div id="workouts-panel"></div>
+  </section>
+
+  <!-- ===================== Check-in (student) ===================== -->
+  <section id="view-checkin" class="view" aria-labelledby="checkin-h">
+    <div class="view-intro">
+      <h2 id="checkin-h">Daily check-in</h2>
+      <p>A quick, private moment to notice how you’re doing. There are no wrong answers — it just helps you and your coach see patterns over time.</p>
+    </div>
+    <div id="checkin-panel"></div>
+  </section>
+
+  <!-- ===================== Messages (student) ===================== -->
+  <section id="view-messages" class="view" aria-labelledby="messages-h">
+    <div class="view-intro">
+      <h2 id="messages-h">Messages</h2>
+      <p>A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.</p>
+    </div>
+    <div id="messages-panel"></div>
   </section>
 
   <!-- ===================== My Progress (student) ===================== -->

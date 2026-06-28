@@ -289,6 +289,7 @@
       state.coaches = d.coaches || [];
       state.admins = d.admins || [];
       state.superadmins = d.superadmins || [];
+      state.templates = d.templates || [];
       state.tracking = normalizeStore({
         students: d.students || {},
         activeStudentId: d.activeStudentId || (state.tracking && state.tracking.activeStudentId) || null,
@@ -375,6 +376,10 @@
       if (!st.completed || typeof st.completed !== "object") st.completed = {};
       if (!Array.isArray(st.assignments)) st.assignments = [];
       if (!st.reflections || typeof st.reflections !== "object") st.reflections = {};
+      if (!Array.isArray(st.checkins)) st.checkins = [];
+      if (!Array.isArray(st.journal)) st.journal = [];
+      if (!Array.isArray(st.messages)) st.messages = [];
+      if (typeof st.coachNote !== "string") st.coachNote = "";
     });
     return s;
   }
@@ -551,7 +556,7 @@
   /* ----------------------------- Assignments ----------------------------- */
   function studentAssignments(s) { return (s && Array.isArray(s.assignments)) ? s.assignments : []; }
 
-  function addAssignment(studentId, title, note, activityIds) {
+  function addAssignment(studentId, title, note, activityIds, dueAt) {
     var s = students()[studentId];
     if (!s) return null;
     if (!Array.isArray(s.assignments)) s.assignments = [];
@@ -562,6 +567,7 @@
       title: (title || "").trim() || "Workout",
       note: (note || "").trim(),
       createdAt: new Date().toISOString(),
+      dueAt: dueAt || null,
       items: items
     };
     s.assignments.unshift(asg);
@@ -653,17 +659,38 @@
   }
 
   // Create an assignment, routing to the server in SERVER mode. onDone runs on success.
-  function createAssignmentFlow(studentId, title, note, ids, onDone) {
+  function createAssignmentFlow(studentId, title, note, ids, onDone, dueAt) {
     if (SERVER) {
-      api("/assignments", { method: "POST", body: { athlete_id: studentId, title: title, note: note, activity_ids: ids } })
+      api("/assignments", { method: "POST", body: { athlete_id: studentId, title: title, note: note, activity_ids: ids, due_at: dueAt || null } })
         .then(function (res) {
           if (!res.ok) { toast(apiError(res, "Couldn't create assignment")); return; }
           refreshFromServer().then(function () { if (onDone) onDone(); });
         }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
-    if (addAssignment(studentId, title, note, ids)) { if (onDone) onDone(); }
+    if (addAssignment(studentId, title, note, ids, dueAt)) { if (onDone) onDone(); }
     else { toast("Couldn't create assignment"); }
+  }
+  // A <input type="date"> value ("YYYY-MM-DD") -> the coach's LOCAL end-of-day as an
+  // unambiguous UTC instant (…Z). Building the Date from local parts and calling
+  // toISOString() bakes in the timezone offset, so an assignment due "today" only turns
+  // overdue once the coach's local day is over (not at UTC midnight). Empty -> null.
+  function dueInputToIso(v) {
+    v = (v || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+    var p = v.split("-");
+    return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]), 23, 59, 59).toISOString();
+  }
+  // An assignment is overdue when its due date has passed and it isn't fully complete;
+  // "due soon" is the same but within the next 7 days. Both are in-app cues only.
+  function assignmentDueState(s, asg) {
+    if (!asg.dueAt) return "";
+    var prog = assignmentProgress(s, asg);
+    if (prog.total > 0 && prog.done === prog.total) return "";
+    var t = new Date(asg.dueAt).getTime(), now = Date.now();
+    if (t < now) return "overdue";
+    if (t <= now + 7 * 864e5) return "soon";
+    return "";
   }
   function deleteAssignmentFlow(studentId, asgId) {
     if (SERVER) {
@@ -712,7 +739,7 @@
       var payload = Object.assign({}, a); delete payload.id;
       api(cmsRoute("/custom-activities"), { method: "POST", body: { payload: payload } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save activity")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return a.id;
     }
@@ -729,11 +756,11 @@
         var payload = Object.assign({}, fields); delete payload.id;
         path = cmsRoute("/custom-activities"); body = { payload: Object.assign({ id: id }, payload) };
       } else {
-        path = cmsRoute("/overrides"); body = { activity_id: id, payload: fields, hidden: isHidden(id) };
+        path = cmsRoute("/overrides"); body = { activity_id: id, payload: fields, hidden: cmsHidden(id) };
       }
       api(path, { method: "POST", body: body }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save changes")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -751,7 +778,7 @@
     if (SERVER) {
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: null, hidden: false } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't revert")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -759,11 +786,12 @@
   }
   function setHidden(id, on) {
     if (SERVER) {
-      // Preserve any existing edit payload while flipping the hidden flag.
-      var payload = state.tracking.overrides[id] || null;
+      // Preserve any existing edit payload while flipping the hidden flag (scope-aware:
+      // in Global scope read the global override, not the merged/private one).
+      var payload = (cmsGlobal() ? (cmsTrack().overrides || {}) : state.tracking.overrides)[id] || null;
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't update")); return; }
-        refreshFromServer().then(function () { renderRepo(); });
+        afterCmsWrite(function () { renderRepo(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -774,7 +802,7 @@
     if (SERVER) {
       api(cmsRoute("/custom-activities/" + encodeURIComponent(id)), { method: "DELETE" }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
-        refreshFromServer().then(function () { renderAll(); });
+        afterCmsWrite(function () { renderAll(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -787,7 +815,7 @@
   function lc(s) { return String(s == null ? "" : s).trim().toLowerCase(); }
   // The list of values for a kind after an add / rename / remove edit.
   function nextTaxValues(kind, action, args) {
-    var out = taxList(kind).slice();
+    var out = cmsTaxList(kind).slice();
     if (action === "add") {
       var v = (args.value || "").trim();
       if (v && out.map(lc).indexOf(lc(v)) === -1) out.push(v);
@@ -809,8 +837,8 @@
       api(cmsRoute("/taxonomy"), { method: "POST", body: {
         kind: kind, action: action, value: args.value, from: args.from, to: args.to, values: values
       } }).then(function (res) {
-        if (!res.ok) { toast(apiError(res, "Couldn't save")); refreshFromServer(); return; }
-        refreshFromServer().then(function () { if (onDone) onDone(); });
+        if (!res.ok) { toast(apiError(res, "Couldn't save")); afterCmsWrite(); return; }
+        afterCmsWrite(function () { if (onDone) onDone(); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
@@ -891,8 +919,10 @@
     showHidden: false,      // admin toggle to surface hidden activities in the repo
     reflectionTimers: {},
     filters: { search: "", topic: "", subtopic: "", type: "", progression: "", frequency: "" },
-    workout: { criteria: null, results: [] },
-    tracking: loadStore()
+    tracking: loadStore(),
+    coaches: [], admins: [], superadmins: [],   // staff rosters, populated on bootstrap
+    templates: [],          // reusable assignment templates (coach), from bootstrap
+    globalTracking: null    // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -918,6 +948,71 @@
   // accidentally hit the global library.
   var currentCmsTarget = "private";
   function cmsRoute(p) { return currentCmsTarget === "global" ? ("/global" + p) : p; }
+  function cmsGlobal() { return currentCmsTarget === "global"; }
+
+  // Lazily fetch the global-library-ONLY content for the super-admin Content "Global"
+  // scope, kept separate from state.tracking (which is the merged catalog every coach
+  // sees). Editing in Global scope reads AND writes only this snapshot, so a super
+  // admin's own private items can never leak into the shared library.
+  function loadGlobalTracking() {
+    return Promise.all([
+      api("/global/custom-activities"),
+      api("/global/overrides"),
+      api("/global/taxonomy")
+    ]).then(function (rs) {
+      var ca = (rs[0] && rs[0].ok && rs[0].data && rs[0].data.customActivities) || [];
+      var ov = (rs[1] && rs[1].ok && rs[1].data) || {};
+      var tx = (rs[2] && rs[2].ok && rs[2].data && rs[2].data.taxonomy) || {};
+      state.globalTracking = {
+        customActivities: ca,
+        overrides: ov.overrides || {},
+        hidden: ov.hidden || {},
+        taxonomy: { topic: tx.topic || [], subtopic: tx.subtopic || [], type: tx.type || [] }
+      };
+    }).catch(function () {
+      state.globalTracking = { customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+    });
+  }
+  function cmsTrack() { return cmsGlobal() ? (state.globalTracking || { customActivities: [], overrides: {}, hidden: {}, taxonomy: {} }) : state.tracking; }
+  // Scope-aware reads for the CMS table. In Global scope they come from the global-only
+  // snapshot; otherwise from the merged catalog (ALL/DATA/isHidden/taxList) as before.
+  function cmsActivityRows(showHidden) {
+    if (!cmsGlobal()) return (showHidden ? ALL : DATA).slice();
+    var gt = cmsTrack(), ov = gt.overrides || {}, hid = gt.hidden || {}, cust = gt.customActivities || [];
+    var merged = BASE.map(function (a) { return applyOverride(a, ov[a.id]); });
+    cust.forEach(function (a) { merged.push(applyOverride(a, ov[a.id])); });
+    return showHidden ? merged : merged.filter(function (a) { return !hid[a.id]; });
+  }
+  function cmsHidden(id) { if (!cmsGlobal()) return isHidden(id); return !!(cmsTrack().hidden || {})[id]; }
+  function cmsTaxList(kind) {
+    if (!cmsGlobal()) return taxList(kind);
+    var m = (cmsTrack().taxonomy || {})[kind];
+    return alpha((m && m.length) ? m : (TAX_FALLBACK[kind] || []));
+  }
+  function cmsTaxUsage(kind) {
+    var counts = {}, field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
+    cmsActivityRows(true).forEach(function (a) {
+      if (field === "subtopics") (a.subtopics || []).forEach(function (s) { counts[lc(s)] = (counts[lc(s)] || 0) + 1; });
+      else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
+    });
+    return counts;
+  }
+  // Scope-aware single-activity lookup for the CMS edit form. In Global scope the form
+  // must initialize from the GLOBAL snapshot's view (global override on a base activity,
+  // or a global custom), NOT BY_ID (the merged private+global catalog) — otherwise saving
+  // would write a super admin's private values into the shared library.
+  function cmsActivityById(id) {
+    if (!cmsGlobal()) return BY_ID[id];
+    return cmsActivityRows(true).filter(function (a) { return a.id === id; })[0] || BY_ID[id];
+  }
+  // After a CMS write, refresh the merged catalog; in Global scope also invalidate the
+  // global-only snapshot so the next render re-fetches it (keeping the table truthful).
+  function afterCmsWrite(cb) {
+    return refreshFromServer().then(function () {
+      if (cmsGlobal()) state.globalTracking = null;
+      if (cb) cb();
+    });
+  }
 
   /* ----------------------------- Repository ----------------------------- */
   function applyFilters() {
@@ -1055,22 +1150,6 @@
 
   var TYPE_ORDER = { Exercise: 0, Breathing: 0, Meditation: 1, Video: 2, Blog: 3, Article: 3, Book: 4, Module: 4 };
 
-  function readCriteria() {
-    var scope = $("input[name=scope]:checked").value;
-    return {
-      scope: scope,
-      month: scope === "month" ? Number($("#b-month").value) : null,
-      week: scope === "week" ? Number($("#b-week").value) : null,
-      topic: $("#b-topic").value,
-      subtopic: $("#b-subtopic").value,
-      type: $("#b-type").value,
-      mix: $("#b-mix").checked,
-      count: Math.max(1, Number($("#b-count").value) || 5),
-      timeBudget: Number($("#b-time").value) || 0,
-      excludeCompleted: $("#b-exclude").checked
-    };
-  }
-
   function candidatePool(c) {
     var pool = DATA.slice();
     if (c.scope === "month" && c.month) {
@@ -1123,136 +1202,6 @@
       return oa - ob || (a.week || 99) - (b.week || 99);
     });
     return chosen;
-  }
-
-  function criteriaSummary(c) {
-    var parts = [];
-    if (c.scope === "month" && c.month) {
-      var m = TAX.months.filter(function (x) { return x.value === c.month; })[0];
-      parts.push(m ? m.label : "Month " + c.month);
-    } else if (c.scope === "week" && c.week) parts.push("Week " + c.week);
-    else parts.push("Any progression");
-    if (c.topic) parts.push(c.topic);
-    if (c.subtopic) parts.push(c.subtopic);
-    if (c.type) parts.push(c.type);
-    return parts.join(" · ");
-  }
-
-  function totalMinutes(list) {
-    return list.reduce(function (sum, a) { return sum + (a.timeMinutes || 0); }, 0);
-  }
-
-  function generateWorkout() {
-    var c = readCriteria();
-    var pool = candidatePool(c);
-    var results = selectWorkout(pool, c);
-    state.workout = { criteria: c, results: results, poolSize: pool.length };
-    $("#regenerate-btn").disabled = results.length === 0;
-    renderWorkout();
-  }
-
-  function renderWorkout() {
-    var out = $("#workout-output");
-    out.textContent = "";
-    var w = state.workout;
-    if (!w.criteria) {
-      out.appendChild(el("div", { class: "empty-state", id: "workout-empty" }, [
-        el("h3", {}, "No workout yet"),
-        el("p", {}, "Set your criteria and press Generate workout.")
-      ]));
-      return;
-    }
-    if (!w.results.length) {
-      out.appendChild(el("div", { class: "empty-state" }, [
-        el("h3", {}, "No activities match"),
-        el("p", {}, "No activities fit those criteria. Try a broader scope or a different topic.")
-      ]));
-      return;
-    }
-
-    out.appendChild(el("h3", {}, "Your Workout"));
-    out.appendChild(el("div", { class: "workout-meta" }, [
-      el("span", {}, [el("b", {}, w.results.length + " "), "activities"]),
-      el("span", {}, [el("b", {}, "~" + totalMinutes(w.results) + " min "), "estimated"]),
-      el("span", {}, criteriaSummary(w.criteria))
-    ]));
-
-    if (w.results.length < w.criteria.count) {
-      out.appendChild(el("div", { class: "warn" },
-        "Only " + w.results.length + " of " + w.criteria.count + " requested activities matched these criteria."));
-    }
-
-    var exportBar = el("div", { class: "export-bar" }, [
-      el("button", { class: "btn btn--sm", onclick: function () { window.print(); } }, "🖨 Print"),
-      el("button", { class: "btn btn--sm", onclick: copyWorkout }, "📋 Copy"),
-      el("button", { class: "btn btn--sm", onclick: downloadWorkout }, "⬇ Download .txt")
-    ]);
-    if (isAdminView()) {
-      exportBar.appendChild(el("button", {
-        class: "btn btn--sm btn--accent",
-        onclick: function () { openAssignModal(w.results.map(function (a) { return a.id; }), criteriaSummary(w.criteria)); }
-      }, "👤 Assign to student"));
-    }
-    out.appendChild(exportBar);
-
-    var listWrap = el("div", {});
-    w.results.forEach(function (a, idx) {
-      var sub = el("div", { class: "workout-sub" }, [
-        el("span", {}, a.type || "—"),
-        a.time ? el("span", {}, a.time) : null,
-        el("span", {}, a.topic || ""),
-        a.link ? el("a", { href: a.link, target: "_blank", rel: "noopener" }, "Open ↗") : el("span", { class: "no-link" }, "No link (on-court)")
-      ]);
-      var body = el("div", { class: "workout-body" }, [
-        el("div", { class: "workout-title" }, a.name),
-        sub
-      ]);
-      if (a.instructions) {
-        var d = el("details", { class: "detail" }, el("summary", {}, "Instructions"));
-        d.appendChild(detailBlock("Instructions", a.instructions));
-        body.appendChild(d);
-      }
-      listWrap.appendChild(el("div", { class: "workout-item" }, [
-        el("div", { class: "workout-num" }, String(idx + 1)),
-        body
-      ]));
-    });
-    out.appendChild(listWrap);
-  }
-
-  function workoutToText() {
-    var w = state.workout;
-    var lines = [];
-    lines.push("PERFORMANCEXTRA — MENTAL WORKOUT");
-    lines.push(criteriaSummary(w.criteria));
-    lines.push(w.results.length + " activities · ~" + totalMinutes(w.results) + " min");
-    lines.push("");
-    w.results.forEach(function (a, i) {
-      lines.push((i + 1) + ". " + a.name + "  [" + (a.type || "—") + (a.time ? ", " + a.time : "") + "]");
-      lines.push("   Link: " + (a.link || "No link (on-court)"));
-      if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
-      lines.push("");
-    });
-    return lines.join("\n");
-  }
-
-  function copyWorkout() {
-    var text = workoutToText();
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () { toast("Workout copied to clipboard"); },
-        function () { fallbackCopy(text); });
-    } else { fallbackCopy(text); }
-  }
-  function fallbackCopy(text) {
-    var ta = el("textarea", {}, text);
-    ta.style.position = "fixed"; ta.style.opacity = "0";
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand("copy"); toast("Workout copied"); }
-    catch (e) { toast("Copy not supported — use Download instead"); }
-    document.body.removeChild(ta);
-  }
-  function downloadWorkout() {
-    downloadFile("performancextra-workout.txt", workoutToText(), "text/plain");
   }
 
   function downloadFile(filename, content, mime) {
@@ -1657,9 +1606,19 @@
     all.forEach(function (s) {
       var active = state.tracking.activeStudentId === s.id;
       var nameKids = [el("span", { class: "name" }, s.name)];
+      var unreadMsgs = threadUnread(s, "athlete");
+      if (unreadMsgs) nameKids.push(el("span", { class: "msg-badge", title: unreadMsgs + " unread message" + (unreadMsgs === 1 ? "" : "s") }, "✉ " + unreadMsgs));
       if (SERVER && s.email) {
         nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, s.email));
       }
+      // At-a-glance dashboard stat: completion across all assigned work + check-in streak.
+      var totalI = 0, doneI = 0;
+      (s.assignments || []).forEach(function (a) { (a.items || []).forEach(function (id) { totalI++; if (s.completed[id]) doneI++; }); });
+      var statBits = [];
+      if (totalI) statBits.push(Math.round(doneI / totalI * 100) + "% done");
+      var stk = checkinStreak(s.checkins);
+      if (stk > 1) statBits.push(stk + "d streak");
+      if (statBits.length) nameKids.push(el("span", { class: "student-stat" }, statBits.join(" · ")));
       var row = el("div", { class: "student-row" + (active ? " is-active" : "") }, [
         el("span", { class: "name-wrap" }, nameKids)
       ]);
@@ -1685,6 +1644,44 @@
     });
 
     renderStudentDetail();
+    renderNeedsAttention();
+  }
+
+  // Coach overview: athletes with overdue work, a stale check-in, a low recent mood, or
+  // unread messages — a single glance so nothing slips. In-app only (no email reminders).
+  function renderNeedsAttention() {
+    var host = $("#needs-attention");
+    if (!host) return;
+    host.textContent = "";
+    var items = [];
+    studentList().forEach(function (s) {
+      var reasons = [];
+      var overdue = (s.assignments || []).filter(function (a) { return assignmentDueState(s, a) === "overdue"; }).length;
+      if (overdue) reasons.push(overdue + " overdue");
+      var latest = s.checkins && s.checkins[0];
+      if (latest && latest.day) {
+        var days = Math.floor((Date.now() - new Date(latest.day + "T12:00:00").getTime()) / 864e5);
+        if (days >= 7) reasons.push("no check-in " + days + "d");
+      }
+      if (latest && latest.mood != null && latest.mood <= 2) reasons.push("low mood");
+      var unread = threadUnread(s, "athlete");
+      if (unread) reasons.push(unread + " unread");
+      if (reasons.length) items.push({ s: s, reasons: reasons });
+    });
+    if (!items.length) return;
+    var panel = el("div", { class: "panel attention-panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Needs attention"),
+      el("span", { class: "cms-count" }, items.length + " athlete" + (items.length === 1 ? "" : "s"))
+    ]));
+    items.forEach(function (it) {
+      var openIt = function () { setActiveStudent(it.s.id); renderAll(); };
+      panel.appendChild(el("div", { class: "attention-row", role: "button", tabindex: "0", title: "Open " + it.s.name, onclick: openIt, onkeydown: function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openIt(); } } }, [
+        el("span", { class: "attention-name" }, it.s.name),
+        el("span", { class: "attention-reasons" }, it.reasons.join(" · "))
+      ]));
+    });
+    host.appendChild(panel);
   }
 
   function bars(map, total) {
@@ -1787,6 +1784,9 @@
 
       var actions = el("div", { class: "assignment-actions" });
       if (opts.admin) {
+        if (SERVER) actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Save this set as a reusable template", onclick: function () {
+          saveTemplate(asg.title, asg.note || "", asg.items);
+        } }, "★ Template"));
         actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete assignment", "aria-label": "Delete assignment", onclick: function () {
           if (confirm("Delete assignment “" + asg.title + "”?")) { deleteAssignmentFlow(s.id, asg.id); }
         } }, "✕"));
@@ -1798,9 +1798,12 @@
         var times = asg.items.map(function (id) { return s.completed[id]; }).filter(Boolean).sort();
         if (times.length) metaParts.push("Completed " + fmtDate(times[times.length - 1]));
       }
+      var dueState = assignmentDueState(s, asg);
+      var dueChip = dueState === "overdue" ? el("span", { class: "due-chip due-chip--overdue" }, "Overdue")
+        : (dueState === "soon" ? el("span", { class: "due-chip due-chip--soon" }, "Due soon") : null);
       card.appendChild(el("div", { class: "assignment-head" }, [
         el("div", {}, [
-          el("div", { class: "assignment-title" }, asg.title),
+          el("div", { class: "assignment-title" }, [asg.title, dueChip]),
           asg.note ? noteNode(asg.note) : null,
           el("div", { class: "assignment-meta" }, metaParts.join(" · "))
         ]),
@@ -1967,6 +1970,8 @@
 
     detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
     appendProgress(detail, s);
+    appendWellbeing(detail, s);
+    appendCoachComms(detail, s);
   }
 
   /* ----------------------------- Student views ----------------------------- */
@@ -1997,6 +2002,380 @@
     }
     panel.appendChild(el("h3", { style: "margin-bottom:14px" }, s.name + " — Progress"));
     appendProgress(panel, s);
+  }
+
+  /* ----------------------------- Check-ins & journal ----------------------------- */
+  var CHECKIN_DIMS = [
+    { key: "mood", label: "Mood", low: "Tough", high: "Great" },
+    { key: "energy", label: "Energy", low: "Drained", high: "Energized" },
+    { key: "stress", label: "Stress", low: "Calm", high: "Stressed" }
+  ];
+  function todayKey() {
+    var d = new Date();
+    function p(n) { return (n < 10 ? "0" : "") + n; }
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+  }
+  function fmtDay(day) {
+    try { return new Date(day + "T12:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+    catch (e) { return day; }
+  }
+  function scoreText(v) { return v == null ? "—" : String(v); }
+  function todaysCheckin(s) {
+    var t = todayKey();
+    return (s.checkins || []).filter(function (c) { return c.day === t; })[0] || null;
+  }
+  // Consecutive days with a check-in, counting back from today (or yesterday, so a
+  // streak isn't "broken" simply because today's check-in hasn't happened yet).
+  function checkinStreak(checkins) {
+    if (!checkins || !checkins.length) return 0;
+    var days = {};
+    checkins.forEach(function (c) { if (c.day) days[c.day] = true; });
+    function key(dt) { function p(n) { return (n < 10 ? "0" : "") + n; } return dt.getFullYear() + "-" + p(dt.getMonth() + 1) + "-" + p(dt.getDate()); }
+    var d = new Date(); d.setHours(12, 0, 0, 0);
+    if (!days[key(d)]) d.setDate(d.getDate() - 1);
+    var n = 0;
+    while (days[key(d)]) { n++; d.setDate(d.getDate() - 1); }
+    return n;
+  }
+  function checkinAverages(list) {
+    function avg(key) {
+      var vals = list.map(function (c) { return c[key]; }).filter(function (v) { return v != null; });
+      if (!vals.length) return "—";
+      return (vals.reduce(function (a, b) { return a + b; }, 0) / vals.length).toFixed(1);
+    }
+    return { mood: avg("mood"), energy: avg("energy"), stress: avg("stress") };
+  }
+  function checkinRow(c) {
+    return el("div", { class: "checkin-history-row" }, [
+      el("span", { class: "ch-date" }, fmtDay(c.day)),
+      el("span", { class: "ch-scores" }, "Mood " + scoreText(c.mood) + " · Energy " + scoreText(c.energy) + " · Stress " + scoreText(c.stress)),
+      c.note ? el("span", { class: "ch-note" }, c.note) : null
+    ]);
+  }
+
+  // Athlete's own daily check-in + journal (the "Check-in" tab).
+  function renderCheckinTab() {
+    var panel = $("#checkin-panel");
+    if (!panel) return;
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No check-in yet"),
+        el("p", {}, "Ask your coach to set you up to start checking in.")
+      ]));
+      return;
+    }
+    var today = todaysCheckin(s);
+    var picked = { mood: today ? today.mood : null, energy: today ? today.energy : null, stress: today ? today.stress : null };
+
+    var card = el("div", { class: "panel checkin-card" });
+    card.appendChild(el("h3", {}, today ? "Update today’s check-in" : "How are you today?"));
+    CHECKIN_DIMS.forEach(function (dim) {
+      var scale = el("div", { class: "checkin-scale" });
+      [1, 2, 3, 4, 5].forEach(function (n) {
+        var btn = el("button", { type: "button", class: "checkin-dot" + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
+          picked[dim.key] = (picked[dim.key] === n ? null : n);
+          $all(".checkin-dot", scale).forEach(function (b, i) { var on = picked[dim.key] === (i + 1); b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
+        } }, String(n));
+        scale.appendChild(btn);
+      });
+      card.appendChild(el("div", { class: "checkin-dim" }, [
+        el("div", { class: "checkin-dim-head" }, [
+          el("span", { class: "checkin-dim-label" }, dim.label),
+          el("span", { class: "checkin-dim-ends" }, dim.low + " → " + dim.high)
+        ]),
+        scale
+      ]));
+    });
+    var note = el("textarea", { class: "checkin-note", placeholder: "Anything on your mind? (optional)" });
+    if (today && today.note) note.value = today.note;
+    card.appendChild(el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]));
+    card.appendChild(el("button", { class: "btn btn--accent", onclick: function () {
+      saveCheckin({ mood: picked.mood, energy: picked.energy, stress: picked.stress, note: note.value.trim() });
+    } }, today ? "Update check-in" : "Save check-in"));
+    panel.appendChild(card);
+
+    var streak = checkinStreak(s.checkins);
+    var recent = (s.checkins || []).slice(0, 14);
+    var hist = el("div", { class: "panel" });
+    hist.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Recent check-ins"),
+      streak > 1 ? el("span", { class: "checkin-streak" }, "🔥 " + streak + "-day streak") : null
+    ]));
+    if (!recent.length) hist.appendChild(el("p", { class: "no-link" }, "No check-ins yet — your first one is above."));
+    else recent.forEach(function (c) { hist.appendChild(checkinRow(c)); });
+    panel.appendChild(hist);
+
+    var jpanel = el("div", { class: "panel" });
+    jpanel.appendChild(el("h3", {}, "Journal"));
+    jpanel.appendChild(el("p", { class: "field-hint" }, "Write a longer reflection whenever you want. Your coach can read these to support you."));
+    var jbody = el("textarea", { class: "checkin-note", placeholder: "Write a journal entry…" });
+    jpanel.appendChild(jbody);
+    jpanel.appendChild(el("button", { class: "btn btn--accent", onclick: function () {
+      var v = jbody.value.trim();
+      if (!v) { jbody.focus(); return; }
+      addJournalEntry(v);
+    } }, "Add entry"));
+    var jlist = el("div", { class: "journal-list" });
+    if (!(s.journal || []).length) jlist.appendChild(el("p", { class: "no-link" }, "No journal entries yet."));
+    (s.journal || []).forEach(function (j) {
+      jlist.appendChild(el("div", { class: "journal-entry" }, [
+        el("div", { class: "journal-meta" }, fmtDate(j.createdAt)),
+        el("div", { class: "journal-body" }, j.body),
+        el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete entry", onclick: function () {
+          if (confirm("Delete this journal entry?")) deleteJournalEntry(j.id);
+        } }, "Delete")
+      ]));
+    });
+    jpanel.appendChild(jlist);
+    panel.appendChild(jpanel);
+  }
+
+  // Coach's read-only Wellbeing view of an athlete (Students detail).
+  function appendWellbeing(container, s) {
+    var checkins = s.checkins || [], journal = s.journal || [];
+    if (!checkins.length && !journal.length) return;
+    container.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Wellbeing"));
+    if (checkins.length) {
+      var latest = checkins[0], avg = checkinAverages(checkins.slice(0, 14)), streak = checkinStreak(checkins);
+      var head = el("div", { class: "wellbeing-summary" }, [
+        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + " — Mood " + scoreText(latest.mood) + " · Energy " + scoreText(latest.energy) + " · Stress " + scoreText(latest.stress)),
+        el("span", { class: "wb-chip" }, "14-day avg — Mood " + avg.mood + " · Energy " + avg.energy + " · Stress " + avg.stress),
+        streak > 1 ? el("span", { class: "wb-chip" }, "🔥 " + streak + "-day streak") : null
+      ]);
+      container.appendChild(head);
+      var list = el("div", { class: "wellbeing-list" });
+      checkins.slice(0, 10).forEach(function (c) { list.appendChild(checkinRow(c)); });
+      container.appendChild(list);
+    }
+    if (journal.length) {
+      container.appendChild(el("div", { class: "detail-label", style: "margin:14px 0 8px" }, "Journal"));
+      var jl = el("div", { class: "journal-list" });
+      journal.slice(0, 10).forEach(function (j) {
+        jl.appendChild(el("div", { class: "journal-entry" }, [
+          el("div", { class: "journal-meta" }, fmtDate(j.createdAt)),
+          el("div", { class: "journal-body" }, j.body)
+        ]));
+      });
+      container.appendChild(jl);
+    }
+  }
+
+  function saveCheckin(scores) {
+    var s = activeStudent(); if (!s) return;
+    var day = todayKey();
+    if (SERVER) {
+      api("/checkins", { method: "POST", body: { day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save check-in")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Check-in saved — thanks for showing up"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.checkins = (s.checkins || []).filter(function (c) { return c.day !== day; });
+    s.checkins.unshift({ day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note, updatedAt: new Date().toISOString() });
+    saveStore(); renderAll(); toast("Check-in saved");
+  }
+  function addJournalEntry(body) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      api("/journal", { method: "POST", body: { body: body } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save entry")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Journal entry added"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.journal = s.journal || [];
+    s.journal.unshift({ id: "J-" + Date.now(), body: body, createdAt: new Date().toISOString() });
+    saveStore(); renderAll(); toast("Journal entry added");
+  }
+  function deleteJournalEntry(id) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      api("/journal/" + encodeURIComponent(id), { method: "DELETE" }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Entry deleted"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.journal = (s.journal || []).filter(function (j) { return j.id !== id; });
+    saveStore(); renderAll(); toast("Entry deleted");
+  }
+
+  /* ----------------------------- Messaging & coach notes ----------------------------- */
+  function threadUnread(s, otherSender) {
+    return ((s && s.messages) || []).filter(function (m) { return m.sender === otherSender && !m.readAt; }).length;
+  }
+  function messageThreadPanel(s) {
+    var wrap = el("div", { class: "msg-thread" });
+    var msgs = (s && s.messages) || [];
+    if (!msgs.length) { wrap.appendChild(el("p", { class: "no-link" }, "No messages yet. Say hello 👋")); return wrap; }
+    msgs.forEach(function (m) {
+      wrap.appendChild(el("div", { class: "msg msg--" + (m.sender === "coach" ? "coach" : "athlete") + (m.readAt ? "" : " is-unread") }, [
+        el("div", { class: "msg-body" }, m.body),
+        el("div", { class: "msg-meta" }, (m.sender === "coach" ? "Coach" : "Athlete") + " · " + fmtDate(m.createdAt))
+      ]));
+    });
+    return wrap;
+  }
+  function composeRow(onSend) {
+    var ta = el("textarea", { class: "msg-input", placeholder: "Write a message…" });
+    var btn = el("button", { class: "btn btn--accent", onclick: function () {
+      var v = ta.value.trim(); if (!v) { ta.focus(); return; } onSend(v);
+    } }, "Send");
+    return el("div", { class: "msg-compose" }, [ta, btn]);
+  }
+
+  // Athlete's "Messages" tab — their thread with their coach.
+  function renderMessagesTab() {
+    var panel = $("#messages-panel");
+    if (!panel) return;
+    panel.textContent = "";
+    var s = activeStudent();
+    if (!s) {
+      panel.appendChild(el("div", { class: "empty-state" }, [
+        el("h3", {}, "No messages"),
+        el("p", {}, "Ask your coach to set you up.")
+      ]));
+      return;
+    }
+    if (state.tab === "messages") markThreadRead(s);   // only when the tab is actually open
+    var card = el("div", { class: "panel" });
+    card.appendChild(el("h3", {}, "Messages with your coach"));
+    card.appendChild(messageThreadPanel(s));
+    card.appendChild(composeRow(function (v) { sendMessage(v); }));
+    panel.appendChild(card);
+  }
+
+  // Coach's per-athlete private note + message thread (Students detail).
+  function appendCoachComms(container, s) {
+    container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Private note"));
+    container.appendChild(el("p", { class: "field-hint" }, "Only you can see this — the athlete never does."));
+    var note = el("textarea", { class: "msg-input", placeholder: "A private note about this athlete…" });
+    note.value = s.coachNote || "";
+    container.appendChild(note);
+    container.appendChild(el("button", { class: "btn btn--sm", style: "margin-top:8px", onclick: function () { saveAthleteNote(s.id, note.value.trim()); } }, "Save note"));
+
+    container.appendChild(el("h3", { style: "margin:24px 0 12px" }, "Messages"));
+    if (state.tab === "students") markThreadRead(s);   // only when the Students tab is open
+    container.appendChild(messageThreadPanel(s));
+    container.appendChild(composeRow(function (v) { sendMessage(v); }));
+  }
+
+  function sendMessage(body) {
+    var s = activeStudent(); if (!s) return;
+    if (SERVER) {
+      var payload = isAdminView() ? { athlete_id: s.id, body: body } : { body: body };
+      api("/messages", { method: "POST", body: payload }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't send")); return; }
+        refreshFromServer().then(function () { renderAll(); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    s.messages = s.messages || [];
+    s.messages.push({ id: "M-" + Date.now(), sender: isAdminView() ? "coach" : "athlete", body: body, createdAt: new Date().toISOString(), readAt: null });
+    saveStore(); renderAll();
+  }
+  function saveAthleteNote(athleteId, note) {
+    if (SERVER) {
+      api("/athlete-note", { method: "POST", body: { athlete_id: athleteId, note: note } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't save note")); return; }
+        refreshFromServer().then(function () { renderAll(); toast("Note saved"); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+      return;
+    }
+    var s = students()[athleteId]; if (s) { s.coachNote = note; saveStore(); }
+    toast("Note saved");
+  }
+  // Optimistically mark the OTHER party's messages read + tell the server. No re-render
+  // here (it's called mid-render); the cleared state shows on the next natural render.
+  function markThreadRead(s) {
+    s = s || activeStudent(); if (!s || !s.messages) return;
+    var other = isAdminView() ? "athlete" : "coach";
+    var changed = false;
+    s.messages.forEach(function (m) { if (m.sender === other && !m.readAt) { m.readAt = new Date().toISOString(); changed = true; } });
+    if (!changed) return;
+    if (SERVER) {
+      api("/messages/read", { method: "POST", body: isAdminView() ? { athlete_id: s.id } : {} }).catch(function () {});
+    } else { saveStore(); }
+  }
+
+  /* ----------------------------- Templates & bulk assign ----------------------------- */
+  function saveTemplate(title, note, items) {
+    if (!SERVER) { toast("Templates need the shared server"); return; }
+    api("/templates", { method: "POST", body: { title: title, note: note, activity_ids: items } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't save template")); return; }
+      refreshFromServer().then(function () { toast("Saved as template"); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function deleteTemplate(id) {
+    if (!SERVER) return;
+    api("/templates/" + encodeURIComponent(id), { method: "DELETE" }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't delete")); return; }
+      refreshFromServer().then(function () { renderAll(); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function bulkAssign(athleteIds, title, note, items, dueAt) {
+    if (!SERVER) { toast("Bulk assign needs the shared server"); return; }
+    api("/assignments/bulk", { method: "POST", body: { athlete_ids: athleteIds, title: title, note: note, activity_ids: items, due_at: dueAt || null } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't bulk assign")); return; }
+      closeModal();
+      var n = (res.data && res.data.created) || athleteIds.length;
+      refreshFromServer().then(function () { renderAll(); toast("Assigned to " + n + " athlete" + (n === 1 ? "" : "s")); });
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Save the same workout to several athletes at once, from a reusable template.
+  function openBulkAssignModal() {
+    var sl = studentList();
+    if (!sl.length) { toast("Add students first"); return; }
+    var templates = state.templates || [];
+    var title = el("input", { type: "text", placeholder: "e.g. Week 2 — Focus" });
+    var note = el("textarea", { placeholder: "Optional note" });
+    var due = el("input", { type: "date" });
+    var chosenActs = {};
+    var actSummary = el("p", { class: "field-hint" }, "Pick a template to choose the activities.");
+    var tsel = el("select", {});
+    tsel.appendChild(option("", templates.length ? "Choose a template…" : "No templates yet — save one from an assignment first"));
+    templates.forEach(function (t) { tsel.appendChild(option(t.id, t.title + " (" + t.items.length + ")")); });
+    tsel.addEventListener("change", function () {
+      var t = templates.filter(function (x) { return x.id === tsel.value; })[0];
+      chosenActs = {};
+      if (t) {
+        t.items.forEach(function (id) { chosenActs[id] = true; });
+        if (!title.value) title.value = t.title;
+        if (!note.value && t.note) note.value = t.note;
+      }
+      actSummary.textContent = Object.keys(chosenActs).length + " activities from this template";
+    });
+    var pickedAthletes = {};
+    var athletesWrap = el("div", { class: "picker-list" });
+    sl.forEach(function (s) {
+      var cb = el("input", { type: "checkbox" });
+      cb.addEventListener("change", function () { if (cb.checked) pickedAthletes[s.id] = true; else delete pickedAthletes[s.id]; });
+      athletesWrap.appendChild(el("label", { class: "picker-row" }, [cb, el("span", { class: "p-name" }, s.name)]));
+    });
+    var selectAll = el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () {
+      var boxes = $all("input[type=checkbox]", athletesWrap);
+      var allOn = boxes.every(function (b) { return b.checked; });
+      boxes.forEach(function (b, i) { b.checked = !allOn; if (!allOn) pickedAthletes[sl[i].id] = true; else delete pickedAthletes[sl[i].id]; });
+    } }, "Toggle all");
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Template"), tsel]), actSummary,
+      el("div", { class: "field" }, [el("label", {}, "Title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
+      el("div", { class: "field" }, [el("div", { class: "section-head" }, [el("label", {}, "Assign to"), selectAll]), athletesWrap])
+    ]);
+    openModal("Bulk assign from a template", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Assign to selected", accent: true, onClick: function () {
+        var aids = Object.keys(pickedAthletes), ids = Object.keys(chosenActs);
+        if (!ids.length) { toast("Pick a template first"); return; }
+        if (!aids.length) { toast("Pick at least one athlete"); return; }
+        bulkAssign(aids, title.value, note.value, ids, dueInputToIso(due.value));
+      } }
+    ]);
   }
 
   /* ----------------------------- Export / Import ----------------------------- */
@@ -2172,14 +2551,23 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
-    if (!isAdminView()) return [{ id: "workouts", label: "My Workouts" }, { id: "progress", label: "My Progress" }];
+    if (!isAdminView()) {
+      var meS = activeStudent();
+      var unread = meS ? threadUnread(meS, "coach") : 0;
+      return [
+        { id: "workouts", label: "My Workouts" },
+        { id: "checkin", label: "Check-in" },
+        { id: "messages", label: "Messages" + (unread ? " (" + unread + ")" : "") },
+        { id: "progress", label: "My Progress" }
+      ];
+    }
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
-      { id: "repo", label: "Repository" }, { id: "builder", label: "Workout Builder" },
+      { id: "repo", label: "Repository" },
       { id: "students", label: "Students" }, { id: "content", label: "Content" }
     ];
-    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Coaches" });
-    if (isSuperadmin()) tabs.push({ id: "users", label: "Admins" }, { id: "appearance", label: "Appearance" });
+    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
+    if (isSuperadmin()) tabs.push({ id: "appearance", label: "Appearance" });
     tabs.push({ id: "settings", label: "Settings" });
     return tabs;
   }
@@ -2201,7 +2589,6 @@
     if (tab !== "content") currentCmsTarget = "private";
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
-    else if (tab === "users" && isSuperadmin()) renderUsers();
     else if (tab === "appearance" && isSuperadmin()) renderAppearance();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
@@ -2350,10 +2737,12 @@
     var sel = studentSelectNode();
     var title = el("input", { type: "text", value: defaultTitle || "Workout" });
     var note = el("textarea", { placeholder: "Optional note — why this matters, how often to do it…" });
+    var due = el("input", { type: "date" });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Assign to"), sel]),
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
       el("p", { class: "field-hint" }, activityIds.length + " activit" + (activityIds.length === 1 ? "y" : "ies") + " will be assigned.")
     ]);
     openModal("Assign to student", body, [
@@ -2364,7 +2753,7 @@
         var sname = students()[sid] ? students()[sid].name : "student";
         createAssignmentFlow(sid, title.value, note.value, activityIds, function () {
           closeModal(); renderAll(); toast("Assigned to " + sname);
-        });
+        }, dueInputToIso(due.value));
       } }
     ]);
   }
@@ -2456,19 +2845,63 @@
       });
     }
 
-    var quick = null;
-    if (state.workout && state.workout.results && state.workout.results.length) {
-      quick = el("button", { class: "btn btn--sm", type: "button", onclick: function () {
-        state.workout.results.forEach(function (a) { selected[a.id] = true; });
-        if (!title.value) title.value = criteriaSummary(state.workout.criteria);
-        refresh(); updateCount(); toast("Added last generated workout");
-      } }, "↪ Use last generated workout");
+    // Generate-by-criteria: auto-pick a balanced set from the library (the old
+    // standalone Workout Builder, folded into the assign flow), then let the coach
+    // tweak the selection below before assigning.
+    var genTopic = el("select", {}); fillSelect(genTopic, PRESENT.topic, "Any topic");
+    var genType = el("select", {}); fillSelect(genType, PRESENT.type, "Any type");
+    var genCount = el("input", { type: "number", min: "1", max: "30", value: "5" });
+    var genExclude = el("input", { type: "checkbox" }); genExclude.checked = true;
+    function generateInto() {
+      var c = { scope: "any", month: null, week: null, topic: genTopic.value || "", subtopic: "",
+                type: genType.value || "", mix: true, count: Math.max(1, Number(genCount.value) || 5),
+                timeBudget: 0, excludeCompleted: false };
+      var pool = candidatePool(c);
+      if (genExclude.checked) {
+        var done = (students()[studentId] && students()[studentId].completed) || {};
+        pool = pool.filter(function (a) { return !done[a.id]; });
+      }
+      pool = pool.filter(function (a) { return !selected[a.id]; });   // keep current picks, add new ones
+      var picks = selectWorkout(pool, c);
+      if (!picks.length) { toast("No new activities match — try a broader topic/type"); return; }
+      picks.forEach(function (a) { selected[a.id] = true; });
+      if (!title.value) title.value = [c.topic, c.type].filter(Boolean).join(" · ") || "Workout";
+      refresh(); updateCount();
+      toast("Added " + picks.length + " activit" + (picks.length === 1 ? "y" : "ies"));
     }
+    var generator = el("details", { class: "detail assign-generator" }, [
+      el("summary", {}, "✦ Generate by criteria"),
+      el("p", { class: "field-hint" }, "Auto-pick a balanced set from the library, then tweak the list below before assigning."),
+      el("div", { class: "form-grid2" }, [
+        el("div", { class: "field" }, [el("label", {}, "Topic"), genTopic]),
+        el("div", { class: "field" }, [el("label", {}, "Content type"), genType])
+      ]),
+      el("div", { class: "form-grid2" }, [
+        el("div", { class: "field" }, [el("label", {}, "How many"), genCount]),
+        el("label", { class: "check" }, [genExclude, " Skip ones they've completed"])
+      ]),
+      el("button", { class: "btn btn--sm btn--accent", type: "button", onclick: generateInto }, "Generate")
+    ]);
 
+    var due = el("input", { type: "date" });
+    var tmpls = state.templates || [];
+    var tmplSel = el("select", {});
+    tmplSel.appendChild(option("", "Start from a template…"));
+    tmpls.forEach(function (t) { tmplSel.appendChild(option(t.id, t.title + " (" + t.items.length + ")")); });
+    tmplSel.addEventListener("change", function () {
+      var t = tmpls.filter(function (x) { return x.id === tmplSel.value; })[0];
+      if (!t) return;
+      t.items.forEach(function (id) { if (BY_ID[id]) selected[id] = true; });
+      if (!title.value) title.value = t.title;
+      if (!note.value && t.note) note.value = t.note;
+      refresh(); updateCount(); toast("Loaded template");
+    });
     var body = el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Title"), title]),
       el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]),
-      quick,
+      el("div", { class: "field" }, [el("label", {}, "Due date (optional)"), due]),
+      tmpls.length ? el("div", { class: "field" }, [el("label", {}, "Start from template"), tmplSel]) : null,
+      generator,
       el("div", { class: "field" }, [el("label", {}, "Add activities"), search]),
       listWrap, countEl
     ]);
@@ -2478,7 +2911,7 @@
       { label: "Create assignment", accent: true, onClick: function () {
         var ids = Object.keys(selected);
         if (!ids.length) { toast("Pick at least one activity"); return; }
-        createAssignmentFlow(studentId, title.value, note.value, ids, function () { closeModal(); renderAll(); toast("Assignment created"); });
+        createAssignmentFlow(studentId, title.value, note.value, ids, function () { closeModal(); renderAll(); toast("Assignment created"); }, dueInputToIso(due.value));
       } }
     ]);
     refresh();
@@ -2486,7 +2919,7 @@
 
   // Add a new custom activity, or edit an existing one (built-in edits go to an override layer).
   function openActivityModal(id) {
-    var editing = id ? BY_ID[id] : null;
+    var editing = id ? cmsActivityById(id) : null;
     var f = {};
     function makeInput(key, attrs, isArea) {
       var node = isArea ? el("textarea", attrs || {}) : el("input", attrs || {});
@@ -2777,7 +3210,6 @@
         if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
       }
       if (state.tab === "manage") renderManage();
-      if (state.tab === "users") renderUsers();
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
@@ -2817,27 +3249,24 @@
     });
   }
 
+  // One "Team" surface for all staff management. An admin sees the Coaches section
+  // (they can create coaches); a super admin additionally sees the Admins and Super
+  // admins sections, so adding any kind of account happens in one obvious place.
   function renderManage() {
     var view = $("#view-manage");
     if (!view) return;
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "Coaches"),
-      el("p", {}, "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
+      el("h2", {}, "Team"),
+      el("p", {}, isSuperadmin()
+        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the global library and site appearance. Each person signs in with their email and a one-time passcode you send them, then sets their own password."
+        : "Create and manage coach accounts. Each coach signs in with their email and a one-time passcode you send them, then manages their own athletes.")
     ]));
-    view.appendChild(staffPanel("All coaches", "+ Add coach", "coach", state.coaches || []));
-  }
-
-  function renderUsers() {
-    var view = $("#view-users");
-    if (!view) return;
-    view.textContent = "";
-    view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "Admins & super admins"),
-      el("p", {}, "Admins can do everything a coach can plus manage coaches and the global content library. Super admins can do everything — including managing admins, other super admins, and the site's appearance.")
-    ]));
-    view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
-    view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+    view.appendChild(staffPanel("Coaches", "+ Add coach", "coach", state.coaches || []));
+    if (isSuperadmin()) {
+      view.appendChild(staffPanel("Admins", "+ Add admin", "admin", state.admins || []));
+      view.appendChild(staffPanel("Super admins", "+ Add super admin", "superadmin", state.superadmins || []));
+    }
   }
 
   // Create a coach (POST /coaches) or an admin/super admin (POST /users {tier}).
@@ -3373,9 +3802,6 @@
     fillSelect($("#f-type"), PRESENT.type, "All types"); $("#f-type").value = f.type;
     fillSelect($("#f-progression"), PRESENT.progression, "All progressions"); $("#f-progression").value = f.progression;
     fillSelect($("#f-frequency"), PRESENT.frequency, "All frequencies"); $("#f-frequency").value = f.frequency;
-    fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
-    syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
-    fillSelect($("#b-type"), PRESENT.type, "Any type");
   }
 
   function renderCatalogCount() {
@@ -3389,12 +3815,12 @@
     if (!isAdminView()) return;
     var nav = $("#cms-subnav");
     if (!nav) return;
-    // Scope switch (admin & super admin only): curate the shared Global library that
-    // every coach/athlete sees, or your own private content. Plain coaches only ever
+    // Scope switch (super admin only): curate the shared Global library that every
+    // coach/athlete sees, or your own private content. Coaches and admins only ever
     // edit their private content, so the switch stays hidden for them.
     var scopeWrap = $("#cms-scope");
     if (scopeWrap) {
-      if (isAtLeastAdmin()) {
+      if (isSuperadmin()) {
         if (state.cmsScope !== "global") state.cmsScope = "private";
         scopeWrap.hidden = false;
         scopeWrap.textContent = "";
@@ -3409,7 +3835,14 @@
         state.cmsScope = "private";
       }
     }
-    currentCmsTarget = (isAtLeastAdmin() && state.cmsScope === "global") ? "global" : "private";
+    currentCmsTarget = (isSuperadmin() && state.cmsScope === "global") ? "global" : "private";
+    // Global scope edits the shared library only — fetch a global-only snapshot so the
+    // lists below never include the editor's own private items (which would otherwise be
+    // written back into the shared library when saving/renaming).
+    if (cmsGlobal() && state.globalTracking == null) {
+      state.globalTracking = { loading: true, customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+      loadGlobalTracking().then(function () { if (state.tab === "content") renderContent(); });
+    }
     var sub = state.cmsTab === "taxonomy" ? "taxonomy" : "activities";
     nav.textContent = "";
     [["activities", "Activities"], ["taxonomy", "Topics & types"]].forEach(function (pair) {
@@ -3425,6 +3858,11 @@
     });
     $("#cms-activities").hidden = sub !== "activities";
     $("#cms-taxonomy").hidden = sub !== "taxonomy";
+    if (cmsGlobal() && state.globalTracking && state.globalTracking.loading) {
+      var pane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
+      pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the global library…"));
+      return;
+    }
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
   }
 
@@ -3450,14 +3888,14 @@
     function draw() {
       var q = norm(search.value || "").trim();
       tableWrap.textContent = "";
-      var rows = (state.cmsShowHidden ? ALL : DATA).slice();
+      var rows = cmsActivityRows(state.cmsShowHidden);
       if (q) rows = rows.filter(function (a) { return smartSearchScore(a, q) > 0; });
       rows.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
       tableWrap.appendChild(el("div", { class: "cms-count" }, rows.length + " activit" + (rows.length === 1 ? "y" : "ies")));
       if (!rows.length) { tableWrap.appendChild(el("p", { class: "no-link" }, "No activities match.")); return; }
       var table = el("div", { class: "cms-table" });
       rows.forEach(function (a) {
-        var hid = isHidden(a.id);
+        var hid = cmsHidden(a.id);
         var tags = [];
         if (isCustom(a.id)) tags.push(el("span", { class: "chip chip--accent" }, "Custom"));
         if (hid) tags.push(el("span", { class: "chip" }, "Hidden"));
@@ -3483,17 +3921,6 @@
     draw();
   }
 
-  // Count how many activities reference each value of a taxonomy kind.
-  function taxUsageCounts(kind) {
-    var counts = {};
-    var field = kind === "type" ? "type" : (kind === "topic" ? "topic" : "subtopics");
-    ALL.forEach(function (a) {
-      if (field === "subtopics") (a.subtopics || []).forEach(function (s) { counts[lc(s)] = (counts[lc(s)] || 0) + 1; });
-      else if (a[field] != null) counts[lc(a[field])] = (counts[lc(a[field])] || 0) + 1;
-    });
-    return counts;
-  }
-
   function renderCmsTaxonomy() {
     var wrap = $("#cms-taxonomy");
     wrap.textContent = "";
@@ -3507,8 +3934,8 @@
   }
   function singular(label) { return label.toLowerCase().replace(/s$/, ""); }
   function renderTaxGroup(kind, label) {
-    var values = taxList(kind);
-    var usage = taxUsageCounts(kind);
+    var values = cmsTaxList(kind);
+    var usage = cmsTaxUsage(kind);
     var group = el("div", { class: "cms-tax-group" });
     group.appendChild(el("div", { class: "detail-label" }, label + " (" + values.length + ")"));
     var list = el("div", { class: "cms-tax-list" });
@@ -3571,14 +3998,14 @@
     renderStudentPicker();
     renderRepo();
     if (isAdminView()) {
-      renderWorkout();
       renderStudents();
       renderContent();
       if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
-      if (state.tab === "users" && isSuperadmin()) renderUsers();
       if (state.tab === "appearance" && isSuperadmin()) renderAppearance();
     } else {
       renderWorkoutsTab();
+      renderCheckinTab();
+      renderMessagesTab();
       renderProgressTab();
     }
   }
@@ -3624,31 +4051,6 @@
       this.setAttribute("aria-expanded", collapsed ? "false" : "true");
     });
 
-    // Builder
-    fillSelect($("#b-topic"), PRESENT.topic, "Any topic");
-    fillSelect($("#b-subtopic"), PRESENT.subtopic, "Any subtopic");
-    fillSelect($("#b-type"), PRESENT.type, "Any type");
-    // Mirror the repository behaviour: once a topic is chosen, only offer
-    // subtopics that actually appear under it.
-    $("#b-topic").addEventListener("change", function () {
-      syncSubtopicSelect($("#b-topic"), $("#b-subtopic"), "Any subtopic");
-    });
-    var bMonth = $("#b-month"); bMonth.textContent = "";
-    TAX.months.forEach(function (m) { bMonth.appendChild(option(m.value, m.label)); });
-    var bWeek = $("#b-week"); bWeek.textContent = "";
-    TAX.progressions.filter(function (p) { return /week/i.test(p); }).forEach(function (p) {
-      bWeek.appendChild(option(p.replace(/\D+/g, ""), p));
-    });
-    $all("input[name=scope]").forEach(function (r) {
-      r.addEventListener("change", function () {
-        var v = $("input[name=scope]:checked").value;
-        $("#month-field").hidden = v !== "month";
-        $("#week-field").hidden = v !== "week";
-      });
-    });
-    $("#builder-form").addEventListener("submit", function (e) { e.preventDefault(); generateWorkout(); });
-    $("#regenerate-btn").addEventListener("click", generateWorkout);
-
     // Students
     $("#student-select").addEventListener("change", function (e) { setActiveStudent(e.target.value); renderAll(); });
     $("#add-student-form").addEventListener("submit", function (e) {
@@ -3661,6 +4063,8 @@
     $("#export-btn").addEventListener("click", exportTracking);
     var rosterBtn = $("#export-roster-btn");
     if (rosterBtn) rosterBtn.addEventListener("click", exportRosterCSV);
+    var bulkBtn = $("#bulk-assign-btn");
+    if (bulkBtn) bulkBtn.addEventListener("click", openBulkAssignModal);
     $("#import-merge-btn").addEventListener("click", function () { triggerImport("merge"); });
     $("#import-replace-btn").addEventListener("click", function () { triggerImport("replace"); });
     $("#import-file").addEventListener("change", function (e) {

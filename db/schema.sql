@@ -165,3 +165,58 @@ CREATE TABLE IF NOT EXISTS pages (
   published  INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET
   updated_at INTEGER NOT NULL
 );
+
+-- Mental-performance check-ins + journaling (migration 0008). Athletes self-report a
+-- daily mood/energy/stress (each 1-5) + optional note (one row per athlete per local
+-- day), and free-form journal entries; their coach reads both read-only.
+CREATE TABLE IF NOT EXISTS checkins (
+  athlete_id TEXT NOT NULL REFERENCES users(id),
+  day        TEXT NOT NULL,                 -- 'YYYY-MM-DD' in the athlete's local time
+  mood       INTEGER,                       -- 1..5 (nullable)
+  energy     INTEGER,                       -- 1..5
+  stress     INTEGER,                       -- 1..5 (higher = more stress)
+  note       TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (athlete_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_checkins_athlete ON checkins(athlete_id);
+
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id         TEXT PRIMARY KEY,
+  athlete_id TEXT NOT NULL REFERENCES users(id),
+  body       TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_journal_athlete ON journal_entries(athlete_id);
+
+-- In-app two-way messaging (migration 0009): a coach<->athlete thread keyed by athlete,
+-- plus a single coach-private note per athlete (never shown to the athlete). All in-app;
+-- no email is sent. sender is server-trusted (the session role), never the request body.
+CREATE TABLE IF NOT EXISTS messages (
+  id         TEXT PRIMARY KEY,
+  athlete_id TEXT NOT NULL REFERENCES users(id),
+  coach_id   TEXT NOT NULL REFERENCES users(id),
+  sender     TEXT NOT NULL CHECK (sender IN ('coach','athlete')),
+  body       TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  read_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_messages_athlete ON messages(athlete_id);
+
+CREATE TABLE IF NOT EXISTS athlete_notes (
+  athlete_id TEXT PRIMARY KEY REFERENCES users(id),
+  note       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+-- Reusable assignment templates (migration 0010): a coach saves a titled set of
+-- activities once and reuses it to start an assignment or bulk-assign to many athletes.
+CREATE TABLE IF NOT EXISTS assignment_templates (
+  id         TEXT PRIMARY KEY,
+  coach_id   TEXT NOT NULL REFERENCES users(id),
+  title      TEXT NOT NULL,
+  note       TEXT,
+  items      TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_templates_coach ON assignment_templates(coach_id);
