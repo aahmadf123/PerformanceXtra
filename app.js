@@ -308,10 +308,28 @@
     });
   }
   // Re-pull server state, then refresh dependent dropdowns. Callers re-render after.
-  function refreshFromServer() {
+  function refreshFromServer(quiet) {
     state.allStudents = null;   // roster may have changed; re-fetch the org directory on next view
     return loadServerSnapshot().then(function () { refreshSelects(); })
-      .catch(function () { toast("Couldn't refresh from the server"); });
+      .catch(function () { if (!quiet) toast("Couldn't refresh from the server"); });
+  }
+
+  // Background roster sync for staff (coach/admin/super admin). The app has no live push, so a
+  // coach who gets an athlete reassigned to them would otherwise only see it after a manual
+  // reload. This quietly re-pulls bootstrap on tab focus/visibility and on a slow interval, and
+  // only re-renders when the roster membership actually changed — so it never disrupts a coach
+  // mid-task (guarded against open modals, focused inputs, and rapid repeats).
+  var lastAutoRefresh = 0;
+  function autoRefreshRoster() {
+    if (!SERVER || !isAdminView()) return;
+    if (document.visibilityState === "hidden") return;
+    var mr = $("#modal-root"); if (mr && !mr.hidden) return;
+    var ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
+    var t = Date.now(); if (t - lastAutoRefresh < 8000) return; lastAutoRefresh = t;
+    var before = Object.keys(students()).sort().join(",");
+    refreshFromServer(true).then(function () {
+      if (Object.keys(students()).sort().join(",") !== before) renderAll();
+    });
   }
 
   /* ----------------------------- Store / localStorage -----------------------------
@@ -3031,6 +3049,7 @@
   // the current view + auth state.
   function applyRole() {
     document.body.setAttribute("data-role", isAdminView() ? "admin" : "student");
+    var addBtn = $("#add-student-form button"); if (addBtn) addBtn.textContent = SERVER ? "Add athlete" : "Add student";
     var badge = $("#role-badge");
     badge.hidden = false;
     var picker = $(".student-picker");
@@ -4920,6 +4939,11 @@
       var id = addStudent(input.value);
       if (id) { input.value = ""; renderAll(); toast("Student added"); }
     });
+    // Keep a staff member's roster current without a manual reload (e.g. an athlete reassigned
+    // to them by an admin). Guarded + throttled inside autoRefreshRoster so it's non-disruptive.
+    document.addEventListener("visibilitychange", autoRefreshRoster);
+    window.addEventListener("focus", autoRefreshRoster);
+    setInterval(autoRefreshRoster, 60000);
     var allStudentsSearch = $("#all-students-search");
     if (allStudentsSearch) {
       var allStudentsTimer;
