@@ -546,6 +546,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "DELETE" && seg.length === 2) return handleDeleteAthlete(session, env, seg[1]);
     if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
     if (method === "POST" && seg.length === 3 && seg[2] === "links") return handleSetStudentLink(session, request, env, seg[1]);
+    if (method === "POST" && seg.length === 3 && seg[2] === "reassign") return handleReassignAthlete(session, request, env, seg[1]);
   }
   if (head === "custom-activities") {
     if (method === "GET" && seg.length === 1) return handleListCustom(session, env);
@@ -830,6 +831,34 @@ async function handleDeleteAthlete(session, env, athleteId) {
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(athleteId)
   ]);
   return json({ ok: true });
+}
+
+// Admin/super-admin only: move an athlete to a different coach, or unassign them entirely
+// (coachId null/empty -> coach_id = NULL). This is the non-destructive alternative to deleting
+// an athlete just so their coach can be removed: once a coach's roster reaches zero, the
+// HAS_STUDENTS guard in handleDeleteUser stops firing. Only coach_id changes — the athlete's
+// assignments, messages and the previous coach's private notes are intentionally left in place
+// (messages are re-scoped to the new coach automatically by assembleAthlete).
+async function handleReassignAthlete(session, request, env, athleteId) {
+  if (!atLeast(session, "admin")) return err(403, "Admins only");
+  const athlete = await env.DB.prepare("SELECT id,name,coach_id FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
+  if (!athlete) return err(404, "Athlete not found");
+  const b = await readBody(request);
+  const raw = b.coachId;
+  const targetId = (raw == null || String(raw).trim() === "") ? null : String(raw).trim();
+  let coachName = null;
+  if (targetId) {
+    // Only a pure coach is a valid target (mirrors listCoaches) — never an admin/super admin
+    // or the global-library sentinel.
+    const coach = await env.DB.prepare(
+      "SELECT id,name FROM users WHERE id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ?"
+    ).bind(targetId, GLOBAL_OWNER_ID).first();
+    if (!coach) return err(404, "Coach not found");
+    if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
+    coachName = coach.name;
+  }
+  await env.DB.prepare("UPDATE users SET coach_id = ? WHERE id = ? AND role='athlete'").bind(targetId, athleteId).run();
+  return json({ athlete: { id: athleteId, name: athlete.name, coachId: targetId, coachName: coachName } });
 }
 
 /* ------------------- staff management (coaches / admins / super admins) -------------------

@@ -1818,11 +1818,37 @@
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
       if (isAtLeastAdmin()) {
         row.appendChild(el("div", { class: "student-row-actions" }, [
+          el("button", { class: "btn btn--sm btn--ghost", title: "Move this athlete to a different coach, or unassign them", "aria-label": "Move " + s.name, onclick: function () { openReassignStudent(s); } }, "Move…"),
           el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAllStudent(s); } }, "✕ Delete")
         ]));
       }
       listBox.appendChild(row);
     });
+  }
+
+  // Move/unassign an athlete from the All-students directory (admin+). This is the only place
+  // an athlete who currently has no coach is visible, so it's how they get re-homed. The select
+  // defaults to the student's current coach; picking "No coach" unassigns them.
+  function openReassignStudent(s) {
+    var sel = coachSelectNode(s.coachId || "", null);
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "Move " + s.name + " to a different coach, or choose “No coach” to unassign them."),
+      el("div", { class: "field" }, [el("label", {}, "Coach"), sel])
+    ]);
+    function submit() {
+      api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: sel.value || null } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't move")); return; }
+        closeModal();
+        toast(sel.value ? "Moved " + s.name : "Unassigned " + s.name);
+        state.allStudents = null;
+        refreshFromServer().then(function () { renderAll(); });
+        refreshStaff();
+      }).catch(function () { toast("Couldn't reach the server"); });
+    }
+    openModal("Move " + s.name, body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Move", primary: true, onClick: submit }
+    ]);
   }
 
   // Delete an athlete from the All-students directory (admin+). Invalidates the cache and
@@ -3159,6 +3185,19 @@
     return sel;
   }
 
+  // A coach picker for admins reassigning a student. The first option ("") unassigns; the rest
+  // are pure coaches from state.coaches. excludeId drops one coach (e.g. the student's current
+  // one). selectedId pre-selects a coach ("" leaves it on unassign).
+  function coachSelectNode(selectedId, excludeId) {
+    var sel = el("select", {});
+    sel.appendChild(option("", "— No coach (unassign) —"));
+    var coaches = (state.coaches || []).slice().filter(function (c) { return c.id !== excludeId; });
+    coaches.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    coaches.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
+    sel.value = (selectedId != null ? selectedId : "");
+    return sel;
+  }
+
   // Assign a fixed set of activities (a generated workout, or one card) to a student.
   function openAssignModal(activityIds, defaultTitle) {
     activityIds = (activityIds || []).filter(function (id) { return BY_ID[id]; });
@@ -4071,7 +4110,7 @@
   function openCoachStudentsModal(c, tier) {
     var listBox = el("div", { class: "student-list" });
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "Students belonging to " + c.name + ". Delete them here to free up this " + tier + " for removal."),
+      el("p", { class: "field-hint" }, "Students belonging to " + c.name + ". Move them to another coach, unassign them, or delete them to free up this " + tier + " for removal."),
       listBox
     ]);
     function load() {
@@ -4084,7 +4123,17 @@
           var nameKids = [el("span", { class: "name" }, s.name)];
           if (s.email) nameKids.push(el("span", { class: "student-email" }, s.email));
           var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+          // Reassign to another coach (or "No coach" to unassign), then Move — the cheap,
+          // non-destructive way to empty this coach's roster so they can be deleted.
+          var moveSel = coachSelectNode("", c.id);
+          var moveBtn = el("button", { class: "btn btn--sm btn--ghost", title: "Move " + s.name + " to the selected coach (or unassign)", onclick: function () {
+            api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: moveSel.value || null } }).then(function (r) {
+              if (!r.ok) { toast(apiError(r, "Couldn't move")); return; }
+              toast(moveSel.value ? "Moved " + s.name : "Unassigned " + s.name); load(); refreshStaff();
+            }).catch(function () { toast("Couldn't reach the server"); });
+          } }, "Move");
           row.appendChild(el("div", { class: "student-row-actions" }, [
+            moveSel, moveBtn,
             el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () {
               if (!confirm("Permanently delete " + s.name + " and ALL their data? This can't be undone.")) return;
               api("/athletes/" + encodeURIComponent(s.id), { method: "DELETE" }).then(function (r) {
