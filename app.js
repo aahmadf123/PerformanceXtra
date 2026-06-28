@@ -3426,6 +3426,23 @@
       ])
     ]);
   }
+  // Floating light/dark switch for the signed-out gate. The header toggle is hidden
+  // pre-auth, so this gives visitors a way to flip themes on the landing page itself.
+  function buildAuthThemeToggle() {
+    var btn = el("button", {
+      class: "auth-theme-toggle",
+      type: "button",
+      title: "Switch between light and dark",
+      "aria-label": "Switch between light and dark theme"
+    });
+    function sync() {
+      var cur = document.body.getAttribute("data-theme") || detectTheme();
+      btn.textContent = cur === "dark" ? "\u2600\uFE0E Light" : "\u263E\uFE0E Dark";
+    }
+    btn.addEventListener("click", function () { toggleTheme(); sync(); });
+    sync();
+    return btn;
+  }
   // Full-screen, non-dismissable gate shown when the backend is reachable but the
   // visitor has no session. Routes to an invite-accept form if ?invite= is present.
   function showAuthGate(offline) {
@@ -3438,6 +3455,7 @@
     var preview = buildSignedOutPreview();
     var stack = el("div", { class: "auth-stack auth-stack--hybrid" }, [top, preview]);
     var root = el("div", { class: "auth-gate", id: "auth-gate", role: "dialog", "aria-modal": "true", "aria-label": "Sign in" }, stack);
+    root.appendChild(buildAuthThemeToggle());
     document.body.appendChild(root);
     var invite = getQueryParam("invite");
     if (invite) { renderAcceptForm(card, invite); return; }
