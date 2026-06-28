@@ -176,7 +176,7 @@ function isoOrEpochToEpoch(v) {
   return isNaN(t) ? null : Math.floor(t / 1000);
 }
 function randToken(nBytes) { return bytesToB64url(crypto.getRandomValues(new Uint8Array(nBytes || 24))); }
-// Human-friendly passcode the coach emails to a student. Avoids ambiguous characters
+// Human-friendly passcode the coach shares with a student. Avoids ambiguous characters
 // (0/O, 1/I/l) and is grouped for readability, e.g. "k7mNP-q3rtv".
 function genPasscode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
@@ -796,7 +796,7 @@ async function handleCreateAthlete(session, request, env, url) {
   await env.DB.prepare(
     "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
   ).bind(id, email, name, "athlete", session.uid, hash, nowSec()).run();
-  // The plaintext passcode is returned exactly once so the coach can email it. Only the
+  // The plaintext passcode is returned exactly once so the coach can share it. Only the
   // PBKDF2 hash is stored; if the coach loses it they must reset to a new one.
   return json({ athlete: { id: id, name: name, email: email }, passcode: passcode, loginUrl: url.origin + "/" });
 }

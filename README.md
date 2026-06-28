@@ -67,9 +67,9 @@ their own role. **Reset passcode** on any row issues a fresh one if it's lost.
 ### Adding athletes
 
 A coach adds an athlete by **name + email**. The server **generates a random passcode**,
-stores only its hash, and returns the passcode to the coach **once** — with a one-click
-“Email them” button (prefilled `mailto:`) and a copy button. The coach sends the athlete
-their **email + passcode**; the athlete signs in with those and lands on **My Workouts**.
+stores only its hash, and returns the passcode to the coach **once** — shown with a copy
+button. The coach shares the athlete's **email + passcode** with them (by whatever channel
+they like); the athlete signs in with those and lands on **My Workouts**.
 There's no shared passcode to leak and no link to set a password. If a passcode is lost,
 the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 
@@ -211,18 +211,22 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.
 
-### Notifications (in-app only — no email yet)
+### Notifications (in-app only — nothing email-related is shown to users)
 
 Everything that "notifies" — unread message counts, the wellbeing panel, and the
-scheduling/overdue cues — is **surfaced inside the app**; the project sends **no email or SMS**.
-That's deliberate: it keeps the app dependency-free (no domain, no Resend/SMTP key, no DKIM/SPF
-setup). When you're ready to add real notifications, the data is already shaped for it:
+scheduling/overdue cues — is **surfaced inside the app**. The UI never offers to email anyone
+and the app sends **no email or SMS**. That's deliberate: it keeps the app dependency-free (no
+domain, no Resend/SMTP key, no DKIM/SPF setup).
+
+That said, the **backend data is already shaped** for a future developer to add email without a
+schema change:
 
 - **Unread messages** are rows in `messages` with `read_at IS NULL` — query them per athlete/coach.
 - **Overdue work** is any `assignments.due_at` in the past without completions for the athlete.
 
-A future developer can add a scheduled Worker (Cron Trigger) that reads those and calls an email
-provider — no schema change required. Nothing in the current code path makes an outbound email call.
+A future developer could add a scheduled Worker (Cron Trigger) that reads those and calls an email
+provider — no schema change required. Nothing in the current code path makes an outbound email
+call, and no email-sending UI is exposed anywhere.
 
 ### Security model
 

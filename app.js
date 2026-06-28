@@ -1673,7 +1673,7 @@
         onclick: function () { setActiveStudent(s.id); renderAll(); }
       }, active ? "Working here" : "Open workspace"));
       if (SERVER) {
-        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code to email this athlete", "aria-label": "Reset sign-in code for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset sign-in code"));
+        rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code to share with this athlete", "aria-label": "Reset sign-in code for " + s.name, onclick: function () { resetPasscode(s); } }, "↻ Reset sign-in code"));
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAthleteServer(s); } }, "✕ Delete"));
       } else {
         rowActions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Rename", "aria-label": "Rename " + s.name, onclick: function () {
@@ -3822,7 +3822,7 @@
     emailInput.addEventListener("input", function () { schedule(emailInput); });
   }
 
-  // Coach: add an athlete. The server generates a one-time passcode the coach emails them.
+  // Coach: add an athlete. The server generates a one-time passcode the coach shares with them.
   function openAddAthleteModal(prefillName) {
     var name = el("input", { type: "text", value: prefillName || "", placeholder: "Athlete's name" });
     var email = el("input", { type: "email", placeholder: "their@email.com", autocomplete: "off" });
@@ -3831,7 +3831,7 @@
     var dupCheck = el("input", { type: "checkbox" });
     var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the athlete and generate a one-time sign-in code. Send them their email address and that code. They can use it right away to enter the shared workspace."),
+      el("p", { class: "field-hint" }, "We'll create the athlete and generate a one-time sign-in code. Share the email and code with them — they can use it right away to enter the shared workspace."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       matchesPanel,
@@ -3861,7 +3861,7 @@
     ]);
     setTimeout(function () { name.focus(); }, 30);
   }
-  // Show the one-time login credentials (email + sign-in code) the coach emails to a student.
+  // Show the one-time login credentials (email + sign-in code) the coach shares with a student.
   function showCredentialsModal(data) {
     var athlete = (data && (data.athlete || data.coach || data.user)) || {};
     var who = athlete.name || "this person";
@@ -3874,19 +3874,10 @@
     var passField = el("input", { type: "text", value: passcode, readonly: true, style: "font-family:monospace; letter-spacing:0.5px" });
     [emailField, passField].forEach(function (i) { i.addEventListener("focus", function () { this.select(); }); });
 
-    var subject = encodeURIComponent("Your PerformanceXtra login");
-    var bodyText = encodeURIComponent(
-      "Hi " + who + ",\n\nYou've been set up on PerformanceXtra. Sign in with:\n\n" +
-      "Email: " + email + "\nSign-in code: " + passcode + "\n\nSign in here: " + loginUrl +
-      "\n\nYou can keep using this sign-in code until it is reset.\n"
-    );
-    var mailto = "mailto:" + encodeURIComponent(email) + "?subject=" + subject + "&body=" + bodyText;
-
     var body = el("div", { class: "form-stack" }, [
-      el("p", {}, "Send these sign-in details to " + who + ". This sign-in code is shown once, so copy it now. If it is lost, use “Reset sign-in code” on their row to create a new one."),
+      el("p", {}, "Share these sign-in details with " + who + ". This sign-in code is shown once, so copy it now. If it is lost, use “Reset sign-in code” on their row to create a new one."),
       el("div", { class: "field" }, [el("label", {}, "Email"), emailField]),
-      el("div", { class: "field" }, [el("label", {}, "Sign-in code"), passField]),
-      el("a", { class: "btn btn--block", href: mailto }, "✉ Email " + who)
+      el("div", { class: "field" }, [el("label", {}, "Sign-in code"), passField])
     ]);
     openModal("Sign-in details", body, [
       { label: "Copy details", primary: true, onClick: function () { copyText(creds).then(function (ok) { toast(ok ? "Login details copied" : "Couldn't copy — select them manually"); }); } },
@@ -3992,8 +3983,8 @@
     view.appendChild(el("div", { class: "view-intro" }, [
       el("h2", {}, "Team"),
       el("p", {}, isSuperadmin()
-        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the shared library and site appearance. Each person signs in with their email and a one-time sign-in code you send them, then sets their own password."
-        : "Create and manage coach accounts. Each coach signs in with their email and a one-time sign-in code you send them, then manages their own athletes.")
+        ? "Manage everyone who runs the program. Coaches manage their own athletes; admins also create coaches; super admins can do everything, including the shared library and site appearance. Each person signs in with their email and a one-time sign-in code you share with them, then sets their own password."
+        : "Create and manage coach accounts. Each coach signs in with their email and a one-time sign-in code you share with them, then manages their own athletes.")
     ]));
     var stack = el("div", { class: "team-stack" + (isSuperadmin() ? " team-stack--superadmin" : "") });
     stack.appendChild(staffPanel("Coaches", "+ Add coach", "coach", state.coaches || [], "The people assigning work, checking progress, and staying in touch with athletes."));
@@ -4017,7 +4008,7 @@
     var dupCheck = el("input", { type: "checkbox" });
     var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time sign-in code. Send them their email and that code. They sign in with those details and can set their own password afterward."),
+      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time sign-in code. Share the email and code with them. They sign in with those details and can set their own password afterward."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       matchesPanel,
