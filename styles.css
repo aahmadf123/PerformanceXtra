@@ -1358,6 +1358,7 @@
   .scope-banner { margin: 2px 0 14px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--bg-2); color: var(--ink); font-size: .88rem; line-height: 1.5; }
   .scope-banner strong { font-weight: 700; }
   .scope-banner--global { border-color: var(--accent); background: var(--accent-dim); }
+  .scope-banner--private { border-color: var(--line); background: var(--bg-2); }
 
   .wk-done-sets { margin-top: 40px; }
   .wk-done-sets .wk { gap: 32px; padding: 4px 2px; }

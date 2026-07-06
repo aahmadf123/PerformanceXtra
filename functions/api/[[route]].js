@@ -650,7 +650,11 @@ async function clearLoginFailures(env, scope) {
   try { await env.DB.prepare("DELETE FROM login_attempts WHERE scope = ?").bind(scope).run(); } catch (e) {}
 }
 function tooManyAttempts(state, whose) {
-  return err(429, "Too many " + whose + ". Try again in about " + Math.max(1, Math.ceil(state.retryAfter / 60)) + " min.", { retryAfter: state.retryAfter });
+  return json(
+    { error: "Too many " + whose + ". Try again in about " + Math.max(1, Math.ceil(state.retryAfter / 60)) + " min.", retryAfter: state.retryAfter },
+    429,
+    { "Retry-After": String(Math.ceil(state.retryAfter)) }
+  );
 }
 
 async function handleLogin(request, env, secure) {
@@ -672,7 +676,6 @@ async function handleLogin(request, env, secure) {
     return err(401, "Invalid email or password");
   }
   await clearLoginFailures(env, emailScope);
-  await clearLoginFailures(env, ipScope);
   const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user) };
   return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
 }
@@ -691,7 +694,6 @@ async function handleAccept(request, env, secure) {
   const hash = await hashPassword(password);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?")
     .bind(hash, user.id).run();
-  await clearLoginFailures(env, ipScope);
   const out = { id: user.id, name: user.name, role: user.role };
   return json(out, 200, await issueSessionHeader(user, env, secure));
 }
@@ -1249,13 +1251,13 @@ async function handleBulkAssign(session, request, env) {
   const dueEpoch = (b.due_at != null || b.dueAt != null) ? isoOrEpochToEpoch(b.due_at != null ? b.due_at : b.dueAt) : null;
   if (!athleteIds.length) return err(400, "Pick at least one athlete");
   if (!items.length) return err(400, "At least one activity is required");
-  // Authorize every athlete up front; skip any that aren't this coach's.
+  // Authorize every athlete up front; skip any that are not manageable by the caller.
   const owned = [];
   for (const aid of athleteIds) {
     const ok = await canManageAthlete(session, aid, env);
     if (ok) owned.push(aid);
   }
-  if (!owned.length) return err(403, "None of those are your athletes");
+  if (!owned.length) return err(403, "None of the provided athlete IDs are valid or accessible");
   let created = 0;
   for (const aid of owned) {
     const asgId = crypto.randomUUID();
