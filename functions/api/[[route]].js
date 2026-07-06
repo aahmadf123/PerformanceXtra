@@ -23,6 +23,15 @@ function atLeast(session, role) { return !!session && rank(session.role) >= rank
 const SESSION_TTL = 60 * 60 * 24 * 30;        // 30 days
 const INVITE_TTL = 60 * 60 * 24 * 14;         // 14 days
 const PBKDF2_ITER = 100000;
+// Login/invite throttling: after N failures within LOGIN_WINDOW for a given scope, that
+// scope is locked out for LOGIN_LOCK. Backed by the login_attempts table (migration 0012);
+// if that table isn't present the checks fail open. The per-account (email) limit is strict;
+// the per-IP limit is looser so a whole team onboarding from one shared NAT/school Wi-Fi
+// isn't collectively locked out by a few fat-fingered passcodes.
+const LOGIN_MAX_FAILS = 8;                    // per-account (email) failures before lockout
+const LOGIN_IP_MAX_FAILS = 30;                // per-IP failures before lockout
+const LOGIN_WINDOW = 15 * 60;                 // rolling window (seconds)
+const LOGIN_LOCK = 15 * 60;                   // lockout once the window limit is hit (seconds)
 // Fallback used only when SESSION_SECRET isn't configured. Set SESSION_SECRET in
 // the Worker's environment variables for production so sessions are signed with
 // your own secret.
@@ -545,6 +554,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "POST" && seg.length === 1) return handleCreateAthlete(session, request, env, url);
     if (method === "DELETE" && seg.length === 2) return handleDeleteAthlete(session, env, seg[1]);
     if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
+    if (method === "GET" && seg.length === 3 && seg[2] === "detail") return handleGetAthleteDetail(session, env, seg[1]);
     if (method === "POST" && seg.length === 3 && seg[2] === "links") return handleSetStudentLink(session, request, env, seg[1]);
     if (method === "POST" && seg.length === 3 && seg[2] === "reassign") return handleReassignAthlete(session, request, env, seg[1]);
   }
@@ -602,15 +612,67 @@ async function handleSetup(request, env, secure) {
   return json(user, 200, await issueSessionHeader(user, env, secure));
 }
 
+// Best-effort client IP for throttling. Cloudflare sets CF-Connecting-IP; fall back to
+// the first X-Forwarded-For hop. Unknown IPs share one bucket (still email-scoped too).
+function clientIp(request) {
+  return (request.headers.get("CF-Connecting-IP")
+    || (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim()
+    || "unknown");
+}
+// Is this scope (an "ip:…" or "email:…" bucket) currently locked out? Fails OPEN if the
+// login_attempts table isn't migrated, so auth never breaks on an un-migrated database.
+async function loginRateState(env, scope) {
+  try {
+    const row = await env.DB.prepare("SELECT locked_until FROM login_attempts WHERE scope = ?").bind(scope).first();
+    if (row && row.locked_until && row.locked_until > nowSec()) return { limited: true, retryAfter: row.locked_until - nowSec() };
+  } catch (e) { /* table not migrated — no throttling */ }
+  return { limited: false };
+}
+// Record one failed attempt for a scope; lock the scope once it crosses its window limit.
+async function recordLoginFailure(env, scope, maxFails) {
+  try {
+    const limit = maxFails || LOGIN_MAX_FAILS;
+    const now = nowSec();
+    const row = await env.DB.prepare("SELECT window_start, count FROM login_attempts WHERE scope = ?").bind(scope).first();
+    let windowStart = now, count = 1;
+    if (row && row.window_start && (now - row.window_start) < LOGIN_WINDOW) {
+      windowStart = row.window_start;
+      count = (row.count || 0) + 1;
+    }
+    const lockedUntil = count >= limit ? (now + LOGIN_LOCK) : null;
+    await env.DB.prepare(
+      "INSERT INTO login_attempts (scope, window_start, count, locked_until) VALUES (?,?,?,?) " +
+      "ON CONFLICT(scope) DO UPDATE SET window_start = excluded.window_start, count = excluded.count, locked_until = excluded.locked_until"
+    ).bind(scope, windowStart, count, lockedUntil).run();
+  } catch (e) { /* table not migrated — skip */ }
+}
+async function clearLoginFailures(env, scope) {
+  try { await env.DB.prepare("DELETE FROM login_attempts WHERE scope = ?").bind(scope).run(); } catch (e) {}
+}
+function tooManyAttempts(state, whose) {
+  return err(429, "Too many " + whose + ". Try again in about " + Math.max(1, Math.ceil(state.retryAfter / 60)) + " min.", { retryAfter: state.retryAfter });
+}
+
 async function handleLogin(request, env, secure) {
   const b = await readBody(request);
   const email = String(b.email || "").trim().toLowerCase();
   const password = String(b.password || "");
   if (!email || !password) return err(400, "Email and password are required");
+  const ipScope = "ip:" + clientIp(request);
+  const emailScope = "email:" + email;
+  // Throttle brute force: reject while this IP or account is locked out.
+  const ipState = await loginRateState(env, ipScope);
+  if (ipState.limited) return tooManyAttempts(ipState, "attempts");
+  const emailState = await loginRateState(env, emailScope);
+  if (emailState.limited) return tooManyAttempts(emailState, "attempts for this account");
   const user = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   if (!user || !user.password_hash || !(await verifyPassword(password, user.password_hash))) {
+    await recordLoginFailure(env, ipScope, LOGIN_IP_MAX_FAILS);
+    await recordLoginFailure(env, emailScope, LOGIN_MAX_FAILS);
     return err(401, "Invalid email or password");
   }
+  await clearLoginFailures(env, emailScope);
+  await clearLoginFailures(env, ipScope);
   const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user) };
   return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
 }
@@ -620,12 +682,16 @@ async function handleAccept(request, env, secure) {
   const token = String(b.token || "").trim();
   const password = String(b.password || "");
   if (!token || password.length < 8) return err(400, "Invite link and an 8+ character password are required");
+  const ipScope = "accept-ip:" + clientIp(request);
+  const st = await loginRateState(env, ipScope);
+  if (st.limited) return tooManyAttempts(st, "attempts");
   const user = await env.DB.prepare("SELECT * FROM users WHERE invite_token = ?").bind(token).first();
-  if (!user) return err(400, "This invite is invalid or has already been used");
+  if (!user) { await recordLoginFailure(env, ipScope, LOGIN_IP_MAX_FAILS); return err(400, "This invite is invalid or has already been used"); }
   if (user.invite_expires && nowSec() > user.invite_expires) return err(400, "This invite has expired — ask your coach for a new one");
   const hash = await hashPassword(password);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?")
     .bind(hash, user.id).run();
+  await clearLoginFailures(env, ipScope);
   const out = { id: user.id, name: user.name, role: user.role };
   return json(out, 200, await issueSessionHeader(user, env, secure));
 }
@@ -1000,7 +1066,7 @@ async function handleDeleteUser(session, env, userId, scope) {
 // Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)
 // so it applies to every assignment of that activity for this student.
 async function handleSetStudentLink(session, request, env, athleteId) {
-  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  const owns = await canManageAthlete(session, athleteId, env);
   if (!owns) return err(404, "Athlete not found");
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
@@ -1022,12 +1088,41 @@ async function handleSetStudentLink(session, request, env, athleteId) {
   return json({ ok: true, activity_id: activityId, url: url });
 }
 
+// Ownership gate for acting ON an athlete's data (assignments, links, completions,
+// detail). A coach may manage only their own athletes (coach_id = session.uid); an
+// admin or super admin may manage ANY athlete in the org. Returns the athlete row
+// { id, coach_id } when allowed, or null (the caller returns 403/404). Never matches
+// a non-athlete row.
+async function canManageAthlete(session, athleteId, env) {
+  if (!atLeast(session, "coach") || !athleteId) return null;
+  const row = await env.DB.prepare(
+    "SELECT id, coach_id FROM users WHERE id = ? AND role='athlete'"
+  ).bind(athleteId).first();
+  if (!row) return null;
+  if (atLeast(session, "admin")) return row;            // admin/super admin: any athlete
+  return row.coach_id === session.uid ? row : null;     // coach: own athlete only
+}
+
+// Full detail for a single athlete (assignments, links, reflections, wellbeing, thread).
+// A coach may fetch their own athlete; an admin/super admin may fetch ANY athlete — this
+// backs the All-students "open & assign" flow for staff who don't directly coach them.
+async function handleGetAthleteDetail(session, env, athleteId) {
+  if (!(await canManageAthlete(session, athleteId, env))) return err(403, "Not your athlete");
+  const row = await env.DB.prepare(
+    "SELECT id,name,email,coach_id,created_at,(password_hash IS NOT NULL) AS has_password FROM users WHERE id = ?"
+  ).bind(athleteId).first();
+  if (!row) return err(404, "Athlete not found");
+  const a = await assembleAthlete(env, row, { includeCoachNote: true, coachId: row.coach_id || null });
+  a.hasPassword = !!row.has_password;
+  return json({ athlete: a });
+}
+
 async function handleListAssignments(session, env, url) {
   let athleteId = url.searchParams.get("athlete_id");
   if (session.role === "athlete") athleteId = session.uid;     // athletes: self only
   if (!athleteId) return err(400, "athlete_id is required");
-  if (session.role !== "athlete") {                            // coach/admin/super admin: own athletes only
-    const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ?").bind(athleteId, session.uid).first();
+  if (session.role !== "athlete") {                            // coach: own athletes; admin/super admin: any
+    const owns = await canManageAthlete(session, athleteId, env);
     if (!owns) return err(403, "Not your athlete");
   }
   const row = await env.DB.prepare("SELECT id,name,email,created_at FROM users WHERE id = ?").bind(athleteId).first();
@@ -1075,7 +1170,7 @@ async function handleCreateAssignment(session, request, env) {
   const items = Array.isArray(b.activity_ids) ? b.activity_ids : (Array.isArray(b.items) ? b.items : []);
   const dueEpoch = (b.due_at != null || b.dueAt != null) ? isoOrEpochToEpoch(b.due_at != null ? b.due_at : b.dueAt) : null;
   if (!athleteId) return err(400, "athlete_id is required");
-  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ?").bind(athleteId, session.uid).first();
+  const owns = await canManageAthlete(session, athleteId, env);
   if (!owns) return err(403, "Not your athlete");
   const clean = [];
   const seen = {};
@@ -1157,7 +1252,7 @@ async function handleBulkAssign(session, request, env) {
   // Authorize every athlete up front; skip any that aren't this coach's.
   const owned = [];
   for (const aid of athleteIds) {
-    const ok = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(aid, session.uid).first();
+    const ok = await canManageAthlete(session, aid, env);
     if (ok) owned.push(aid);
   }
   if (!owned.length) return err(403, "None of those are your athletes");
@@ -1187,9 +1282,7 @@ async function handleCompletions(session, request, env) {
   if (session.role !== "athlete") {     // coach/admin/super admin: mark for an athlete they own
     athleteId = athleteIdInput;
     if (!athleteId) return err(400, "athlete_id is required for coach updates");
-    const ownsAthlete = await env.DB.prepare(
-      "SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'"
-    ).bind(athleteId, session.uid).first();
+    const ownsAthlete = await canManageAthlete(session, athleteId, env);
     if (!ownsAthlete) return err(403, "Not your athlete");
   }
 
