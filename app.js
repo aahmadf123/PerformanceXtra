@@ -314,11 +314,30 @@
       .catch(function () { if (!quiet) toast("Couldn't refresh from the server"); });
   }
 
-  // Background roster sync for staff (coach/admin/super admin). The app has no live push, so a
-  // coach who gets an athlete reassigned to them would otherwise only see it after a manual
-  // reload. This quietly re-pulls bootstrap on tab focus/visibility and on a slow interval, and
-  // only re-renders when the roster membership actually changed — so it never disrupts a coach
-  // mid-task (guarded against open modals, focused inputs, and rapid repeats).
+  // A stable, order-independent fingerprint of the content a coach sees: their merged
+  // custom activities, per-activity overrides, hidden flags, and taxonomy. When a super
+  // admin edits the SHARED library, those changes land in this coach's merged content on
+  // the next bootstrap, so a change here means "the repository/content view is now stale."
+  function contentSig() {
+    var t = state.tracking || {};
+    function keys(o) { return Object.keys(o || {}).sort(); }
+    var ca = (t.customActivities || []).map(function (a) { return a && a.id; }).sort();
+    var ov = t.overrides || {};
+    var tax = t.taxonomy || {};
+    return [
+      "c:" + ca.join(","),
+      "o:" + keys(ov).map(function (k) { try { return k + "=" + JSON.stringify(ov[k]); } catch (e) { return k; } }).join("|"),
+      "h:" + keys(t.hidden).join(","),
+      "t:" + ["topic", "subtopic", "type"].map(function (k) { return (tax[k] || []).join(","); }).join(";")
+    ].join("§");
+  }
+
+  // Background sync for staff (coach/admin/super admin). The app has no live push, so a coach
+  // who gets an athlete reassigned — or whose shared content library a super admin just edited —
+  // would otherwise only see it after a manual reload. This quietly re-pulls bootstrap on tab
+  // focus/visibility and on a slow interval, and re-renders when the roster membership OR the
+  // merged content actually changed — so it never disrupts a coach mid-task (guarded against
+  // open modals, focused inputs, and rapid repeats).
   var lastAutoRefresh = 0;
   function autoRefreshRoster() {
     if (!SERVER || !isAdminView()) return;
@@ -327,8 +346,9 @@
     var ae = document.activeElement; if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) return;
     var t = Date.now(); if (t - lastAutoRefresh < 8000) return; lastAutoRefresh = t;
     var before = Object.keys(students()).sort().join(",");
+    var beforeContent = contentSig();
     refreshFromServer(true).then(function () {
-      if (Object.keys(students()).sort().join(",") !== before) renderAll();
+      if (Object.keys(students()).sort().join(",") !== before || contentSig() !== beforeContent) renderAll();
     });
   }
 
@@ -924,7 +944,7 @@
       var a = BY_ID[aid];
       if (!a) return;
       if (a.topic) byTopic[a.topic] = (byTopic[a.topic] || 0) + 1;
-      var wk = a.week ? "Week " + a.week : "Extra Activities";
+      var wk = a.week ? "Week " + a.week : "Advanced";
       byWeek[wk] = (byWeek[wk] || 0) + 1;
     });
     return { total: ids.length, byTopic: byTopic, byWeek: byWeek };
@@ -1836,12 +1856,35 @@
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
       if (isAtLeastAdmin()) {
         row.appendChild(el("div", { class: "student-row-actions" }, [
+          el("button", { class: "btn btn--sm btn--ghost", title: "Assign work to this athlete", "aria-label": "Assign work to " + s.name, onclick: function () { openAssignForAnyStudent(s); } }, "Assign…"),
           el("button", { class: "btn btn--sm btn--ghost", title: "Move this athlete to a different coach, or unassign them", "aria-label": "Move " + s.name, onclick: function () { openReassignStudent(s); } }, "Move…"),
           el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAllStudent(s); } }, "✕ Delete")
         ]));
       }
       listBox.appendChild(row);
     });
+  }
+
+  // Assign work to a student who isn't on your own roster (admin+). Coaches assign from their
+  // own panel; admins/super admins can assign to ANY athlete. Loads the athlete's detail on
+  // demand (GET /athletes/:id/detail — server allows admin+ to fetch any athlete), injects it
+  // into the local store so the shared assign builder can use it, then opens that builder.
+  // Modal-scoped, so the background roster sync stays paused while the dialog is open.
+  function openAssignForAnyStudent(s) {
+    api("/athletes/" + encodeURIComponent(s.id) + "/detail").then(function (res) {
+      if (!res.ok || !res.data || !res.data.athlete) { toast(apiError(res, "Couldn't load this student")); return; }
+      var a = res.data.athlete;
+      if (!a.completed || typeof a.completed !== "object") a.completed = {};
+      if (!Array.isArray(a.assignments)) a.assignments = [];
+      if (!a.reflections || typeof a.reflections !== "object") a.reflections = {};
+      if (!Array.isArray(a.checkins)) a.checkins = [];
+      if (!Array.isArray(a.journal)) a.journal = [];
+      if (!Array.isArray(a.messages)) a.messages = [];
+      if (typeof a.coachNote !== "string") a.coachNote = "";
+      state.tracking.students[s.id] = a;
+      state.allStudents = null;   // assignment count will change; re-fetch the directory on next view
+      openAssignBuilderModal(s.id);
+    }).catch(function () { toast("Couldn't reach the server"); });
   }
 
   // Move/unassign an athlete from the All-students directory (admin+). This is the only place
@@ -2079,6 +2122,17 @@
           if (a.reflection) det.appendChild(detailBlock("Reflection prompt", a.reflection));
           item.appendChild(det);
         }
+        // Coach read-only view of the athlete's per-activity reflection / observation.
+        if (opts.admin) {
+          var itemRefl = getReflectionEntry(s, asg.id, id);
+          if (itemRefl && itemRefl.text) {
+            item.appendChild(el("div", { class: "reflection-read", style: "width:100%; margin-top:6px;" }, [
+              el("div", { class: "detail-label" }, "Student reflection"),
+              el("div", { class: "detail-text" }, itemRefl.text),
+              itemRefl.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:4px" }, "Updated " + fmtDateTime(itemRefl.updatedAt)) : null
+            ]));
+          }
+        }
 
         card.appendChild(item);
       });
@@ -2241,6 +2295,42 @@
         if (a.reflection) det.appendChild(detailBlock("Reflection prompt", a.reflection));
         return det;
       }
+      // Per-activity reflection / observation field. The coach's prompt (if any) shows above
+      // it; the athlete's answer autosaves keyed to (assignment, activity) and the coach reads
+      // it back. The end-of-set "Close the loop" journal stays separate, below the whole set.
+      function reflectBox() {
+        var entry = getReflectionEntry(s, asg.id, id);
+        var ta = el("textarea", {
+          class: "wk-reflect-input wk-reflect-input--item",
+          placeholder: a.reflection ? "Answer the prompt, or jot an observation…" : "Notes or observations (optional)…",
+          "aria-label": "Your reflection for " + a.name
+        });
+        ta.value = entry && entry.text ? entry.text : "";
+        var status = el("div", { class: "wk-reflect-status" }, entry && entry.updatedAt
+          ? ("Saved " + fmtDateTime(entry.updatedAt))
+          : "Saves to your coach · only the two of you can see it");
+        ta.addEventListener("input", function () {
+          var k = [s.id, asg.id, id].join("::");
+          clearTimeout(state.reflectionTimers[k]);
+          status.textContent = "Saving…";
+          state.reflectionTimers[k] = setTimeout(function () {
+            saveReflectionFlow(s, asg.id, id, ta.value, function (ok, msg) {
+              if (ok) {
+                var latest = getReflectionEntry(s, asg.id, id);
+                status.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Saved";
+              } else {
+                status.textContent = msg || "Could not save";
+                toast(msg || "Couldn't save reflection");
+              }
+            });
+          }, 450);
+        });
+        return el("div", { class: "wk-reflect wk-reflect--item" }, [
+          el("div", { class: "wk-reflect-label" }, a.reflection ? "Your reflection" : "Your notes"),
+          a.reflection ? el("p", { class: "wk-reflect-prompt" }, a.reflection) : null,
+          ta, status
+        ]);
+      }
 
       if (stateName === "now") {
         body.appendChild(el("div", { class: "wk-eyebrow" }, "Up next"));
@@ -2248,11 +2338,7 @@
         body.appendChild(metaRow(a));
         if (a.instructions) body.appendChild(el("p", { class: "wk-blurb" }, a.instructions));
         body.appendChild(el("div", { class: "wk-actions" }, [markBtn(true), openBtn]));
-        if (a.reflection) {
-          var dt = el("details", { class: "detail wk-detail" }, el("summary", {}, "Reflection prompt"));
-          dt.appendChild(detailBlock("Reflection prompt", a.reflection));
-          body.appendChild(dt);
-        }
+        body.appendChild(reflectBox());
       } else if (stateName === "done") {
         body.appendChild(metaRow(a));
         body.appendChild(el("div", { class: "wk-name" }, a.name));
@@ -2261,6 +2347,7 @@
           openBtn,
           el("button", { class: "wk-undo", onclick: function () { setCompletion(s, id, false, asg.id); renderAll(); } }, "undo")
         ]));
+        body.appendChild(reflectBox());
       } else { // upcoming
         body.appendChild(metaRow(a));
         body.appendChild(el("div", { class: "wk-name" }, a.name));
@@ -3437,7 +3524,7 @@
       ]),
       field("Subtopics", "subtopics", { list: "dl-subtopics", placeholder: "Calmness, Focus" }, false, "Separate multiple with commas."),
       el("div", { class: "form-grid2" }, [
-        field("Progression", "progression", { list: "dl-progressions", placeholder: "Week 3 / Extra" }),
+        field("Progression", "progression", { list: "dl-progressions", placeholder: "Week 3 / Advanced" }),
         field("Frequency", "frequency", { list: "dl-frequencies" })
       ]),
       el("div", { class: "form-grid2" }, [
@@ -4687,7 +4774,12 @@
         [["private", "My library"], ["global", "Shared library"]].forEach(function (pair) {
           var input = el("input", { type: "radio", name: "cms-scope", value: pair[0] });
           if (state.cmsScope === pair[0]) input.checked = true;
-          input.addEventListener("change", function () { if (!input.checked) return; state.cmsScope = pair[0]; renderContent(); });
+          input.addEventListener("change", function () {
+            if (!input.checked) return;
+            state.cmsScope = pair[0];
+            toast(pair[0] === "global" ? "Now editing the Shared library — visible to every coach & athlete" : "Now editing your private library");
+            renderContent();
+          });
           scopeWrap.appendChild(el("label", {}, [input, el("span", {}, pair[1])]));
         });
       } else {
@@ -4726,9 +4818,27 @@
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
   }
 
+  // A persistent banner naming the library the super admin is editing, so a Shared-library
+  // edit is never mistaken for a private one (and vice-versa). Only super admins see the
+  // scope switch, so only they get the banner. Returns null for coaches/admins.
+  function scopeBanner() {
+    if (!isSuperadmin()) return null;
+    if (cmsGlobal()) {
+      return el("div", { class: "scope-banner scope-banner--global" }, [
+        el("strong", {}, "Shared library"),
+        " — changes here are visible to every coach and athlete. Switch to “My library” above to edit private content only."
+      ]);
+    }
+    return el("div", { class: "scope-banner scope-banner--private" }, [
+      el("strong", {}, "My library"),
+      " — private to you. Switch to “Shared library” above to change what every coach and athlete sees."
+    ]);
+  }
+
   function renderCmsActivities() {
     var wrap = $("#cms-activities");
     wrap.textContent = "";
+    var banner = scopeBanner(); if (banner) wrap.appendChild(banner);
     wrap.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, "Activity library"),
       el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")
@@ -4802,6 +4912,7 @@
   function renderCmsTaxonomy() {
     var wrap = $("#cms-taxonomy");
     wrap.textContent = "";
+    var banner = scopeBanner(); if (banner) wrap.appendChild(banner);
     wrap.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, "Topics, subtopics & content types"),
       el("span", { class: "cms-count" }, "Drive every filter, the builder and activity tags")

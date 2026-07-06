@@ -143,6 +143,18 @@ CREATE TABLE IF NOT EXISTS app_meta (
   value TEXT NOT NULL
 );
 
+-- Login/invite brute-force throttling (migration 0012). One row per scope — an "ip:…",
+-- "email:…", or "accept-ip:…" bucket — tracking failed attempts within a rolling window;
+-- once the window limit is crossed the scope is locked until locked_until. Rows are cleared
+-- on success and overwritten as windows roll, so the table stays tiny. The API fails OPEN
+-- when this table is absent, so throttling is inert until the migration is applied.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  scope        TEXT PRIMARY KEY,            -- 'ip:1.2.3.4' | 'email:foo@bar' | 'accept-ip:1.2.3.4'
+  window_start INTEGER NOT NULL,            -- epoch seconds the current window opened
+  count        INTEGER NOT NULL DEFAULT 0,  -- failures in the current window
+  locked_until INTEGER                      -- epoch seconds the lockout ends (nullable)
+);
+
 -- Super-admin "Appearance" CMS (migration 0007). Both tables are global, edited only
 -- by a super admin and applied site-wide; the GET endpoints are public so the
 -- signed-out login page themes too.

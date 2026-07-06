@@ -1348,6 +1348,17 @@
   .wk-reflect-input { width: 100%; min-height: 92px; resize: vertical; font: inherit; color: var(--ink); line-height: 1.6; background: var(--bg-2); border: 1px solid var(--line-strong); border-radius: 12px; padding: 14px 16px; transition: border-color .15s ease, box-shadow .15s ease; }
   .wk-reflect-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
   .wk-reflect-status { margin-top: 8px; font-size: .78rem; color: var(--muted); }
+  /* Per-activity reflection inside a spine rep — lighter and tighter than the end-of-set box,
+     and not bound to the set grid's second column. */
+  .wk-reflect--item { grid-column: auto; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  .wk-reflect--item .wk-reflect-prompt { font-size: .95rem; font-style: italic; margin: 4px 0 8px; }
+  .wk-reflect-input--item { min-height: 60px; padding: 10px 12px; font-size: .9rem; }
+
+  /* Content-tab scope banner: names the library (Shared vs My) a super admin is editing. */
+  .scope-banner { margin: 2px 0 14px; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--bg-2); color: var(--ink); font-size: .88rem; line-height: 1.5; }
+  .scope-banner strong { font-weight: 700; }
+  .scope-banner--global { border-color: var(--accent); background: var(--accent-dim); }
+  .scope-banner--private { border-color: var(--line); background: var(--bg-2); }
 
   .wk-done-sets { margin-top: 40px; }
   .wk-done-sets .wk { gap: 32px; padding: 4px 2px; }
