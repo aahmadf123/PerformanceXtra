@@ -675,7 +675,7 @@ async function handleLogin(request, env, secure) {
     await recordLoginFailure(env, emailScope, LOGIN_MAX_FAILS);
     return err(401, "Invalid email or password");
   }
-  await clearLoginFailures(env, emailScope);
+  await clearLoginFailures(env, emailScope); // IP scope intentionally not cleared: resetting it on success would let an attacker use one valid account to keep unlocking IP-based throttling for credential-stuffing.
   const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user) };
   return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
 }
