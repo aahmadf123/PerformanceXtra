@@ -1155,6 +1155,17 @@
   function renderRepo() {
     var results = applyFilters();
     var grid = $("#repo-grid");
+    var repoView = $("#view-repo");
+    var oldRepoTip = $("#repo-global-tip");
+    if (oldRepoTip && oldRepoTip.parentNode) oldRepoTip.parentNode.removeChild(oldRepoTip);
+    if (repoView && isSuperadmin()) {
+      var repoTip = el("div", { class: "note-banner", id: "repo-global-tip" }, [
+        el("strong", {}, "Super admin tip:"),
+        el("span", {}, " Repository edits here are private. To publish changes for all coaches and athletes, use Content and switch scope to Global library.")
+      ]);
+      var filtersToggle = $("#filters-toggle");
+      repoView.insertBefore(repoTip, filtersToggle || grid);
+    }
     grid.textContent = "";
     $("#result-count").innerHTML = "Showing <strong>" + results.length + "</strong> of " + (isAdminView() && state.showHidden ? ALL.length : DATA.length) + " activities";
 
@@ -2297,7 +2308,7 @@
       }
       // Per-activity reflection / observation field. The coach's prompt (if any) shows above
       // it; the athlete's answer autosaves keyed to (assignment, activity) and the coach reads
-      // it back. The end-of-set "Close the loop" journal stays separate, below the whole set.
+      // it back.
       function reflectBox() {
         var entry = getReflectionEntry(s, asg.id, id);
         var ta = el("textarea", {
@@ -2358,44 +2369,6 @@
       return rep;
     }
 
-    function buildReflection(asg) {
-      var KEY = "__assignment__";
-      var entry = getReflectionEntry(s, asg.id, KEY);
-      var ta = el("textarea", {
-        class: "wk-reflect-input",
-        placeholder: "A line or two is plenty. What worked, what was hard, what you noticed…",
-        "aria-label": "Your reflection for " + asg.title
-      });
-      ta.value = entry && entry.text ? entry.text : "";
-      var status = el("div", { class: "wk-reflect-status" }, entry && entry.updatedAt
-        ? ("Saved " + fmtDateTime(entry.updatedAt))
-        : "Saves to your coach · only the two of you can see it");
-      ta.addEventListener("input", function () {
-        var k = [s.id, asg.id, KEY].join("::");
-        clearTimeout(state.reflectionTimers[k]);
-        status.textContent = "Saving…";
-        state.reflectionTimers[k] = setTimeout(function () {
-          saveReflectionFlow(s, asg.id, KEY, ta.value, function (ok, msg) {
-            if (ok) {
-              var latest = getReflectionEntry(s, asg.id, KEY);
-              status.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Saved";
-            } else {
-              status.textContent = msg || "Could not save";
-              toast(msg || "Couldn't save reflection");
-            }
-          });
-        }, 450);
-      });
-      return el("div", { class: "wk-finish" }, [
-        el("div", { class: "wk-flag", "aria-hidden": "true" }),
-        el("div", { class: "wk-reflect" }, [
-          el("div", { class: "wk-reflect-label" }, "Close the loop"),
-          el("p", { class: "wk-reflect-prompt" }, "How did this set feel? There are no wrong answers."),
-          ta, status
-        ])
-      ]);
-    }
-
     function buildSet(asg) {
       var validIds = asg.items.filter(function (id) { return BY_ID[id]; });
       var firstUndone = validIds.findIndex(function (id) { return !s.completed[id]; });
@@ -2426,7 +2399,6 @@
         spine.appendChild(buildRep(asg, id, BY_ID[id], stateName));
       });
       set.appendChild(spine);
-      set.appendChild(buildReflection(asg));
       return set;
     }
 
@@ -3657,7 +3629,7 @@
     }
     return {
       label: "Evening review",
-      copy: "Close the loop on today's work, send reflections, and leave coaches a cleaner picture of progress."
+      copy: "Review today's work, send reflections, and leave coaches a cleaner picture of progress."
     };
   }
 

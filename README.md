@@ -76,7 +76,7 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
 ## What it does
 
 - **Repository** — browse all activities. Search by name/topic/subtopic and filter by Topic,
-  Subtopic, Content Type, Progression (Week 1–17 / Extra), and Frequency. The Topic, Subtopic
+  Subtopic, Content Type, Progression (Week 1–17 / Advanced), and Frequency. The Topic, Subtopic
   and Content Type lists are **alphabetical**, and picking a Topic narrows the Subtopic list to
   only those that exist under it (no dead-end searches). Each card shows its tags and time,
   links to the resource, and expands to show instructions and reflection prompts. Coaches also
