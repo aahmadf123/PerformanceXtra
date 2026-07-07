@@ -1,0 +1,15 @@
+-- Migration 0013: session revocation support.
+--
+-- Adds users.token_version, mirrored into each session JWT as `tv` and re-checked on
+-- every request ([[route]].js: getUserTokenVersion / bumpTokenVersion). Changing a
+-- password or resetting a passcode bumps the column, which invalidates every
+-- previously-issued session for that account — before this, a stolen 30-day session
+-- cookie survived a password change.
+--
+-- NOT re-runnable: SQLite has no "ADD COLUMN IF NOT EXISTS", so applying this twice
+-- fails with "duplicate column name: token_version" — which is harmless and simply
+-- means it was already applied. (Same convention as 0006.)
+--
+-- Apply to the live DB:
+--   wrangler d1 execute performancextra --file db/migrations/0013_security.sql --remote
+ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;

@@ -36,6 +36,13 @@ const LOGIN_LOCK = 15 * 60;                   // lockout once the window limit i
 // the Worker's environment variables for production so sessions are signed with
 // your own secret.
 const FALLBACK_SESSION_SECRET = "performancextra-fallback-session-secret-change-me";
+// Password hashes whose plaintext has been published (e.g. the original seed password
+// committed in an early version of db/migrations/0004_seed_superadmin.sql). An account
+// still using one of these can authenticate ONLY by supplying a replacement password in
+// the same login request — no session is ever issued against a published credential.
+const COMPROMISED_HASHES = [
+  "pbkdf2$100000$FN_j-Namr6u_tSJ-exgQLQ$b5guofTADU4YNoywGA20xYmqoVJ75nvg9FTHriAF3Jk"
+];
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -138,8 +145,36 @@ async function getSession(request, env) {
 }
 async function issueSessionHeader(user, env, secure) {
   const now = Math.floor(Date.now() / 1000);
-  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, iat: now, exp: now + SESSION_TTL }, await sessionSecret(env, secure));
+  // `tv` mirrors users.token_version at issue time. Every request re-checks it against
+  // the row (see route()), so bumping the column revokes all previously-issued sessions.
+  const token = await signJWT({ uid: user.id, role: user.role, name: user.name, tv: user.token_version || 0, iat: now, exp: now + SESSION_TTL }, await sessionSecret(env, secure));
   return { "Set-Cookie": sessionCookie(token, SESSION_TTL, secure) };
+}
+
+// Current token_version for a user: 0 on a pre-0013 database (column missing, so
+// revocation simply isn't available yet), null when the user row no longer exists
+// (a deleted account's outstanding sessions must die immediately).
+async function getUserTokenVersion(env, uid) {
+  try {
+    const row = await env.DB.prepare("SELECT token_version FROM users WHERE id = ?").bind(uid).first();
+    return row ? (row.token_version || 0) : null;
+  } catch (e) {
+    if (!isMissingColumnError(e, "token_version")) throw e;
+    const row = await env.DB.prepare("SELECT id FROM users WHERE id = ?").bind(uid).first();
+    return row ? 0 : null;
+  }
+}
+// Invalidate every outstanding session for a user (password change, passcode reset).
+// Returns the new version so the caller can re-issue the current user's own cookie.
+async function bumpTokenVersion(env, uid) {
+  try {
+    await env.DB.prepare("UPDATE users SET token_version = COALESCE(token_version,0) + 1 WHERE id = ?").bind(uid).run();
+    const row = await env.DB.prepare("SELECT token_version FROM users WHERE id = ?").bind(uid).first();
+    return (row && row.token_version) || 0;
+  } catch (e) {
+    if (isMissingColumnError(e, "token_version")) return 0;   // pre-0013 DB — no revocation yet
+    throw e;
+  }
 }
 
 // Resolve the secret used to sign/verify session JWTs.
@@ -189,9 +224,16 @@ function randToken(nBytes) { return bytesToB64url(crypto.getRandomValues(new Uin
 // (0/O, 1/I/l) and is grouped for readability, e.g. "k7mNP-q3rtv".
 function genPasscode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnpqrstuvwxyz";
-  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  // Rejection sampling: only accept bytes below the largest multiple of the alphabet
+  // size (4 * 54 = 216) so every character is exactly equally likely (no modulo bias).
+  const limit = 256 - (256 % alphabet.length);
   let out = "";
-  for (let i = 0; i < bytes.length; i++) out += alphabet[bytes[i] % alphabet.length];
+  while (out.length < 10) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    for (let i = 0; i < bytes.length && out.length < 10; i++) {
+      if (bytes[i] < limit) out += alphabet[bytes[i] % alphabet.length];
+    }
+  }
   return out.slice(0, 5) + "-" + out.slice(5);
 }
 function custId() {
@@ -225,11 +267,16 @@ function isPlausibleRealEmail(email) {
 // never reach the athlete's own bootstrap).
 async function assembleAthlete(env, row, opts) {
   opts = opts || {};
+  // Completed map keyed "assignmentId::activityId" ('' assignment = no context), the
+  // same key shape as reflections — so re-assigning an activity starts fresh. Works on
+  // a pre-0015 database too (NULL assignment_id coalesces to '').
   const completed = {};
   const comp = await env.DB.prepare(
-    "SELECT activity_id, MIN(completed_at) AS completed_at FROM completions WHERE athlete_id = ? GROUP BY activity_id"
+    "SELECT activity_id, COALESCE(assignment_id,'') AS assignment_id, completed_at FROM completions WHERE athlete_id = ?"
   ).bind(row.id).all();
-  (comp.results || []).forEach(function (c) { completed[c.activity_id] = epochToIso(c.completed_at); });
+  (comp.results || []).forEach(function (c) {
+    completed[String(c.assignment_id || "") + "::" + c.activity_id] = epochToIso(c.completed_at);
+  });
 
   // Student-level custom links (preferred). Falls back to the legacy per-assignment
   // custom_url column if migration 0005 hasn't been applied to this database yet.
@@ -385,6 +432,11 @@ async function loadCustomMerged(env, coachId) {
   let globalItems = [];
   try { globalItems = await loadCustom(env, GLOBAL_OWNER_ID); } catch (e) { globalItems = []; }
   const own = (coachId && coachId !== GLOBAL_OWNER_ID) ? await loadCustom(env, coachId) : [];
+  // Tag provenance so the client can label items honestly: a coach's own addition reads
+  // "Added by you", while a shared-library item shows no ownership chip at all (to a
+  // coach it IS library content, even though its id is CUST-).
+  own.forEach(function (a) { if (a) a.scope = "private"; });
+  globalItems.forEach(function (a) { if (a) a.scope = "global"; });
   // Distinct CUST- ids across owners, but de-dupe defensively (own wins on id clash).
   const seen = {};
   const out = [];
@@ -468,11 +520,18 @@ async function route(method, path, request, env, url, secure) {
   /* -------- session required below -------- */
   const session = await getSession(request, env);
   if (!session) return err(401, "Not signed in");
+  // Revocation check: the session's `tv` must match the user's current token_version.
+  // A password change / passcode reset bumps the column, killing every older session;
+  // a deleted account (null) dies immediately instead of riding out its 30-day JWT.
+  const liveTv = await getUserTokenVersion(env, session.uid);
+  if (liveTv === null || (session.tv || 0) !== liveTv) {
+    return json({ error: "Session expired — please sign in again" }, 401, { "Set-Cookie": clearCookie(secure) });
+  }
 
   if (method === "GET" && path === "/me") return json({ id: session.uid, name: session.name, role: session.role });
   if (method === "GET" && path === "/activities") return handleListBaseActivities(env);
   if (method === "GET" && path === "/bootstrap") return handleBootstrap(session, env);
-  if (method === "POST" && path === "/change-password") return handleChangePassword(session, request, env);
+  if (method === "POST" && path === "/change-password") return handleChangePassword(session, request, env, secure);
   if (method === "POST" && path === "/completions") return handleCompletions(session, request, env);
   if (method === "POST" && path === "/reflections") return handleReflections(session, request, env);
   if (method === "POST" && path === "/checkins") return handleSaveCheckin(session, request, env);
@@ -619,32 +678,57 @@ function clientIp(request) {
     || (request.headers.get("X-Forwarded-For") || "").split(",")[0].trim()
     || "unknown");
 }
-// Is this scope (an "ip:…" or "email:…" bucket) currently locked out? Fails OPEN if the
-// login_attempts table isn't migrated, so auth never breaks on an un-migrated database.
-async function loginRateState(env, scope) {
+// Self-heal: if the login_attempts table is missing (migration 0012 never applied to
+// this database), create it once so throttling turns itself on instead of silently
+// staying off forever. The module-level flag caps this at one attempt per isolate.
+let loginAttemptsHealAttempted = false;
+async function ensureLoginAttemptsTable(env) {
+  if (loginAttemptsHealAttempted) return;
+  loginAttemptsHealAttempted = true;
   try {
-    const row = await env.DB.prepare("SELECT locked_until FROM login_attempts WHERE scope = ?").bind(scope).first();
-    if (row && row.locked_until && row.locked_until > nowSec()) return { limited: true, retryAfter: row.locked_until - nowSec() };
-  } catch (e) { /* table not migrated — no throttling */ }
-  return { limited: false };
+    await env.DB.prepare(
+      "CREATE TABLE IF NOT EXISTS login_attempts (scope TEXT PRIMARY KEY, window_start INTEGER NOT NULL, count INTEGER NOT NULL DEFAULT 0, locked_until INTEGER)"
+    ).run();
+  } catch (e) { /* creation failed — callers stay degraded */ }
+}
+// Is this scope (an "ip:…" or "email:…" bucket) currently locked out? On a missing table
+// it self-heals (above) and retries once; if that also fails it reports degraded:true —
+// login treats that as fail-OPEN (never lock the whole org out on a DB fault) while
+// change-password treats it as fail-CLOSED (never allow unthrottled password guessing).
+async function loginRateState(env, scope) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const row = await env.DB.prepare("SELECT locked_until FROM login_attempts WHERE scope = ?").bind(scope).first();
+      if (row && row.locked_until && row.locked_until > nowSec()) return { limited: true, retryAfter: row.locked_until - nowSec() };
+      return { limited: false };
+    } catch (e) {
+      await ensureLoginAttemptsTable(env);
+    }
+  }
+  return { limited: false, degraded: true };
 }
 // Record one failed attempt for a scope; lock the scope once it crosses its window limit.
 async function recordLoginFailure(env, scope, maxFails) {
-  try {
-    const limit = maxFails || LOGIN_MAX_FAILS;
-    const now = nowSec();
-    const row = await env.DB.prepare("SELECT window_start, count FROM login_attempts WHERE scope = ?").bind(scope).first();
-    let windowStart = now, count = 1;
-    if (row && row.window_start && (now - row.window_start) < LOGIN_WINDOW) {
-      windowStart = row.window_start;
-      count = (row.count || 0) + 1;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const limit = maxFails || LOGIN_MAX_FAILS;
+      const now = nowSec();
+      const row = await env.DB.prepare("SELECT window_start, count FROM login_attempts WHERE scope = ?").bind(scope).first();
+      let windowStart = now, count = 1;
+      if (row && row.window_start && (now - row.window_start) < LOGIN_WINDOW) {
+        windowStart = row.window_start;
+        count = (row.count || 0) + 1;
+      }
+      const lockedUntil = count >= limit ? (now + LOGIN_LOCK) : null;
+      await env.DB.prepare(
+        "INSERT INTO login_attempts (scope, window_start, count, locked_until) VALUES (?,?,?,?) " +
+        "ON CONFLICT(scope) DO UPDATE SET window_start = excluded.window_start, count = excluded.count, locked_until = excluded.locked_until"
+      ).bind(scope, windowStart, count, lockedUntil).run();
+      return;
+    } catch (e) {
+      await ensureLoginAttemptsTable(env);
     }
-    const lockedUntil = count >= limit ? (now + LOGIN_LOCK) : null;
-    await env.DB.prepare(
-      "INSERT INTO login_attempts (scope, window_start, count, locked_until) VALUES (?,?,?,?) " +
-      "ON CONFLICT(scope) DO UPDATE SET window_start = excluded.window_start, count = excluded.count, locked_until = excluded.locked_until"
-    ).bind(scope, windowStart, count, lockedUntil).run();
-  } catch (e) { /* table not migrated — skip */ }
+  }
 }
 async function clearLoginFailures(env, scope) {
   try { await env.DB.prepare("DELETE FROM login_attempts WHERE scope = ?").bind(scope).run(); } catch (e) {}
@@ -676,7 +760,21 @@ async function handleLogin(request, env, secure) {
     return err(401, "Invalid email or password");
   }
   await clearLoginFailures(env, emailScope); // IP scope intentionally not cleared: resetting it on success would let an attacker use one valid account to keep unlocking IP-based throttling for credential-stuffing.
-  const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user) };
+  // A published credential (see COMPROMISED_HASHES) can never mint a session by itself:
+  // the caller must supply a replacement password in the same request, which rotates the
+  // hash and (via the token_version bump) revokes any session an attacker already holds.
+  if (user.password_hash && COMPROMISED_HASHES.indexOf(user.password_hash) !== -1) {
+    const newPassword = String(b.new_password || "");
+    if (!newPassword) {
+      return err(403, "For security, this account needs a new password before signing in — its original one was published in the project's setup files.", { code: "FORCE_PASSWORD_CHANGE" });
+    }
+    if (newPassword.length < 8) return err(400, "The new password needs at least 8 characters", { code: "FORCE_PASSWORD_CHANGE" });
+    if (newPassword === password) return err(400, "Choose a password different from the old one", { code: "FORCE_PASSWORD_CHANGE" });
+    const newHash = await hashPassword(newPassword);
+    await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id).run();
+    user.token_version = await bumpTokenVersion(env, user.id);
+  }
+  const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user), token_version: user.token_version || 0 };
   return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
 }
 
@@ -694,30 +792,47 @@ async function handleAccept(request, env, secure) {
   const hash = await hashPassword(password);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?")
     .bind(hash, user.id).run();
+  user.token_version = await bumpTokenVersion(env, user.id);   // revoke sessions from before the reset
   const out = { id: user.id, name: user.name, role: user.role };
   return json(out, 200, await issueSessionHeader(user, env, secure));
 }
 
-async function handleChangePassword(session, request, env) {
+async function handleChangePassword(session, request, env, secure) {
   const b = await readBody(request);
   const currentPassword = String(b.current_password || "");
   const newPassword = String(b.new_password || "");
   if (!currentPassword || newPassword.length < 8) return err(400, "Current password and a new 8+ character password are required");
-  
+
+  // Throttle current-password guesses with the same machinery as login. Unlike login
+  // this fails CLOSED: with a stolen session cookie this endpoint is an offline-free
+  // password oracle, so "throttling unavailable" must refuse rather than allow.
+  const scope = "pw:" + session.uid;
+  const st = await loginRateState(env, scope);
+  if (st.degraded) return err(503, "Password changes are temporarily unavailable — please try again in a minute");
+  if (st.limited) return tooManyAttempts(st, "password attempts");
+
   // Fetch the user's current password hash
   const user = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(session.uid).first();
   if (!user || !user.password_hash) return err(400, "User not found or has no password");
-  
+
   // Verify the current password
   const isValid = await verifyPassword(currentPassword, user.password_hash);
-  if (!isValid) return err(401, "Current password is incorrect");
-  
+  if (!isValid) {
+    await recordLoginFailure(env, scope, LOGIN_MAX_FAILS);
+    return err(401, "Current password is incorrect");
+  }
+  await clearLoginFailures(env, scope);
+
   // Hash and update the new password
   const newHash = await hashPassword(newPassword);
   await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
     .bind(newHash, session.uid).run();
-  
-  return json({ ok: true });
+
+  // Revoke every other outstanding session for this account, then re-issue THIS one so
+  // the person who changed the password stays signed in on the device they used.
+  const tv = await bumpTokenVersion(env, session.uid);
+  const sessionUser = { id: user.id, name: user.name, role: session.role, token_version: tv };
+  return json({ ok: true }, 200, await issueSessionHeader(sessionUser, env, secure));
 }
 
 /* ----------------------------- data handlers ----------------------------- */
@@ -876,6 +991,7 @@ async function handleResetPasscode(session, env, athleteId, url) {
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
+  await bumpTokenVersion(env, athleteId);   // revoke any session still using the old credential
   return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
@@ -901,12 +1017,13 @@ async function handleDeleteAthlete(session, env, athleteId) {
   return json({ ok: true });
 }
 
-// Admin/super-admin only: move an athlete to a different coach, or unassign them entirely
-// (coachId null/empty -> coach_id = NULL). This is the non-destructive alternative to deleting
-// an athlete just so their coach can be removed: once a coach's roster reaches zero, the
-// HAS_STUDENTS guard in handleDeleteUser stops firing. Only coach_id changes — the athlete's
-// assignments, messages and the previous coach's private notes are intentionally left in place
-// (messages are re-scoped to the new coach automatically by assembleAthlete).
+// Admin/super-admin only: move an athlete to a different coach. A target coach is
+// REQUIRED — an athlete whose coach_id is NULL matches no per-coach roster query and
+// silently vanishes from every workspace (the root of the "invisible student" bug),
+// so unassigning is rejected. To remove a coach, reassign their athletes to another
+// coach first. Only coach_id changes — the athlete's assignments, messages and the
+// previous coach's private notes are intentionally left in place (messages are
+// re-scoped to the new coach automatically by assembleAthlete).
 async function handleReassignAthlete(session, request, env, athleteId) {
   if (!atLeast(session, "admin")) return err(403, "Admins only");
   const athlete = await env.DB.prepare("SELECT id,name,coach_id FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
@@ -914,17 +1031,15 @@ async function handleReassignAthlete(session, request, env, athleteId) {
   const b = await readBody(request);
   const raw = b.coachId;
   const targetId = (raw == null || String(raw).trim() === "") ? null : String(raw).trim();
-  let coachName = null;
-  if (targetId) {
-    // Only a pure coach is a valid target (mirrors listCoaches) — never an admin/super admin
-    // or the global-library sentinel.
-    const coach = await env.DB.prepare(
-      "SELECT id,name FROM users WHERE id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ?"
-    ).bind(targetId, GLOBAL_OWNER_ID).first();
-    if (!coach) return err(404, "Coach not found");
-    if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
-    coachName = coach.name;
-  }
+  if (!targetId) return err(400, "Pick a coach — every student needs one so they always appear in a roster");
+  // Only a pure coach is a valid target (mirrors listCoaches) — never an admin/super admin
+  // or the global-library sentinel.
+  const coach = await env.DB.prepare(
+    "SELECT id,name FROM users WHERE id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ?"
+  ).bind(targetId, GLOBAL_OWNER_ID).first();
+  if (!coach) return err(404, "Coach not found");
+  if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
+  const coachName = coach.name;
   await env.DB.prepare("UPDATE users SET coach_id = ? WHERE id = ? AND role='athlete'").bind(targetId, athleteId).run();
   return json({ athlete: { id: athleteId, name: athlete.name, coachId: targetId, coachName: coachName } });
 }
@@ -1032,6 +1147,7 @@ async function handleResetUserPasscode(env, userId, url, scope) {
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, userId).run();
+  await bumpTokenVersion(env, userId);   // revoke any session still using the old credential
   const out = { id: row.id, name: row.name, email: row.email };
   return json({ user: out, coach: out, passcode: passcode, loginUrl: url.origin + "/" });
 }
@@ -1148,8 +1264,10 @@ async function handleUpdateAssignmentItem(session, request, env, asgId) {
   const activityId = String(b.activity_id || b.activityId || "").trim();
   if (!activityId) return err(400, "activity_id is required");
   const url = cleanUrl(b.custom_url != null ? b.custom_url : b.customUrl);
-  const owns = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND coach_id = ?").bind(asgId, session.uid).first();
-  if (!owns) return err(404, "Assignment not found");
+  // Authorize through the athlete, not the assignment's coach_id stamp: the athlete's
+  // coach AND any admin/super admin may edit, regardless of who created the assignment.
+  const asg = await env.DB.prepare("SELECT id, athlete_id FROM assignments WHERE id = ?").bind(asgId).first();
+  if (!asg || !(await canManageAthlete(session, asg.athlete_id, env))) return err(404, "Assignment not found");
   const hasItem = await env.DB.prepare("SELECT 1 AS ok FROM assignment_items WHERE assignment_id = ? AND activity_id = ?")
     .bind(asgId, activityId).first();
   if (!hasItem) return err(404, "Activity not found in assignment");
@@ -1179,19 +1297,29 @@ async function handleCreateAssignment(session, request, env) {
   items.forEach(function (x) { if (typeof x === "string" && x && !seen[x]) { seen[x] = true; clean.push(x); } });
   if (!clean.length) return err(400, "At least one activity is required");
   const id = crypto.randomUUID();
-  await env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
-    .bind(id, session.uid, athleteId, title, note || null, dueEpoch, nowSec()).run();
-  const stmts = clean.map(function (aid, i) {
-    return env.DB.prepare("INSERT INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(id, aid, i);
+  // Record the assignment under the athlete's OWN coach (not the actor) so work an
+  // admin/super admin assigns still shows up in — and can be managed from — that
+  // coach's workspace. Falls back to the actor for an unassigned athlete.
+  const ownerCoachId = owns.coach_id || session.uid;
+  // One atomic batch: the assignment row and its items commit together, so a mid-write
+  // failure can never leave an empty assignment behind.
+  const stmts = [
+    env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
+      .bind(id, ownerCoachId, athleteId, title, note || null, dueEpoch, nowSec())
+  ];
+  clean.forEach(function (aid, i) {
+    stmts.push(env.DB.prepare("INSERT INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(id, aid, i));
   });
-  if (stmts.length) await env.DB.batch(stmts);
+  await env.DB.batch(stmts);
   return json({ id: id });
 }
 
 async function handleDeleteAssignment(session, env, asgId) {
   if (!atLeast(session, "coach")) return err(403, "Coaches only");
-  const row = await env.DB.prepare("SELECT id FROM assignments WHERE id = ? AND coach_id = ?").bind(asgId, session.uid).first();
-  if (!row) return err(404, "Assignment not found");
+  // Authorize through the athlete (same rule as create/edit): the athlete's coach and
+  // any admin/super admin may delete, regardless of who created the assignment.
+  const row = await env.DB.prepare("SELECT id, athlete_id FROM assignments WHERE id = ?").bind(asgId).first();
+  if (!row || !(await canManageAthlete(session, row.athlete_id, env))) return err(404, "Assignment not found");
   await env.DB.batch([
     env.DB.prepare("DELETE FROM completions WHERE assignment_id = ?").bind(asgId),
     env.DB.prepare("DELETE FROM reflections WHERE assignment_id = ?").bind(asgId),
@@ -1255,18 +1383,23 @@ async function handleBulkAssign(session, request, env) {
   const owned = [];
   for (const aid of athleteIds) {
     const ok = await canManageAthlete(session, aid, env);
-    if (ok) owned.push(aid);
+    if (ok) owned.push(ok);   // the athlete row {id, coach_id}
   }
   if (!owned.length) return err(403, "None of the provided athlete IDs are valid or accessible");
   let created = 0;
-  for (const aid of owned) {
+  for (const athlete of owned) {
     const asgId = crypto.randomUUID();
-    await env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
-      .bind(asgId, session.uid, aid, title, note || null, dueEpoch, nowSec()).run();
-    const stmts = items.map(function (actId, i) {
-      return env.DB.prepare("INSERT INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(asgId, actId, i);
+    // Same ownership + atomicity rules as handleCreateAssignment: stamp the athlete's
+    // real coach, and commit the assignment row with its items in one batch so a
+    // mid-loop failure leaves whole assignments, never half of one.
+    const stmts = [
+      env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
+        .bind(asgId, athlete.coach_id || session.uid, athlete.id, title, note || null, dueEpoch, nowSec())
+    ];
+    items.forEach(function (actId, i) {
+      stmts.push(env.DB.prepare("INSERT INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(asgId, actId, i));
     });
-    if (stmts.length) await env.DB.batch(stmts);
+    await env.DB.batch(stmts);
     created++;
   }
   return json({ ok: true, created: created });
@@ -1293,15 +1426,23 @@ async function handleCompletions(session, request, env) {
     if (!owns) return err(403, "Assignment not found for this athlete");
   }
   if (done) {
-    if (assignmentId) {
+    // Post-0015 the PK is (athlete, activity, assignment) with '' = no context. On a
+    // pre-0015 database '' violates the old FK on assignment_id, so fall back to NULL
+    // there (the old PK ignores the column either way).
+    try {
       await env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)")
-        .bind(athleteId, activityId, assignmentId, nowSec()).run();
-    } else {
+        .bind(athleteId, activityId, assignmentId || "", nowSec()).run();
+    } catch (e) {
+      if (assignmentId) throw e;
       const ex = await env.DB.prepare("SELECT 1 AS x FROM completions WHERE athlete_id = ? AND activity_id = ? AND assignment_id IS NULL").bind(athleteId, activityId).first();
       if (!ex) await env.DB.prepare("INSERT INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, activityId, null, nowSec()).run();
     }
   } else {
-    await env.DB.prepare("DELETE FROM completions WHERE athlete_id = ? AND activity_id = ?").bind(athleteId, activityId).run();
+    // Un-mark only THIS assignment's completion (or the no-context one) — never wipe
+    // the same activity's history from other assignments. COALESCE matches pre-0015
+    // NULL rows too.
+    await env.DB.prepare("DELETE FROM completions WHERE athlete_id = ? AND activity_id = ? AND COALESCE(assignment_id,'') = ?")
+      .bind(athleteId, activityId, assignmentId || "").run();
   }
   return json({ ok: true, done: done, athlete_id: athleteId });
 }
@@ -1311,7 +1452,7 @@ async function handleReflections(session, request, env) {
   const b = await readBody(request);
   const activityId = String(b.activity_id || b.activityId || "").trim();
   const assignmentId = String(b.assignment_id || b.assignmentId || "").trim();
-  const text = String(b.text || "").trim();
+  const text = String(b.text || "").trim().slice(0, 8000);   // same cap as journal entries
   if (!activityId) return err(400, "activity_id is required");
 
   if (assignmentId) {
@@ -1380,19 +1521,20 @@ async function handleDeleteJournal(session, env, id) {
 
 // In-app messaging + coach-private notes (Phase 4). All in-app — no email is sent.
 // Resolve the (athlete, coach) pair for a thread action and authorize it: an athlete
-// acts on their own thread (with their coach); a coach/admin/super admin acts on a
-// thread for an athlete they own.
+// acts on their own thread (with their coach); a coach acts on their own athletes'
+// threads; an admin/super admin may act on ANY athlete's thread (mirroring the
+// assignment rules — before this they could assign work but not message about it).
+// The thread stays keyed to the athlete's CURRENT coach so everyone reads and writes
+// the same conversation; a staff message shows as "coach" to the athlete either way.
 async function resolveThread(session, env, athleteIdInput) {
   if (session.role === "athlete") {
     const me = await env.DB.prepare("SELECT coach_id FROM users WHERE id = ?").bind(session.uid).first();
     if (!me || !me.coach_id) return null;
     return { athleteId: session.uid, coachId: me.coach_id };
   }
-  const athleteId = String(athleteIdInput || "").trim();
-  if (!athleteId) return null;
-  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
-  if (!owns) return null;
-  return { athleteId: athleteId, coachId: session.uid };
+  const row = await canManageAthlete(session, String(athleteIdInput || "").trim(), env);
+  if (!row) return null;
+  return { athleteId: row.id, coachId: row.coach_id || session.uid };
 }
 async function handleSendMessage(session, request, env) {
   const b = await readBody(request);
@@ -1426,7 +1568,8 @@ async function handleSaveAthleteNote(session, request, env) {
   if (session.role === "athlete") return err(403, "Coaches only");
   const b = await readBody(request);
   const athleteId = String(b.athlete_id || b.athleteId || "").trim();
-  const owns = await env.DB.prepare("SELECT id FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  // Same rule as assignments/messages: the athlete's coach or any admin/super admin.
+  const owns = await canManageAthlete(session, athleteId, env);
   if (!owns) return err(403, "Not your athlete");
   const note = String(b.note || "").trim().slice(0, 4000);
   try {
@@ -1457,6 +1600,10 @@ async function handleSaveCustom(session, request, env, targetCoachId) {
   if (!id || !/^CUST-/.test(id)) id = custId();
   const store = Object.assign({}, payload);
   delete store.id;
+  delete store.scope;   // transient provenance tag added by loadCustomMerged — never stored
+  // Size cap: a legitimate activity (name, instructions, reflection prompts, link) is a
+  // few KB; anything bigger is either an accident or abuse.
+  if (JSON.stringify(store).length > 32000) return err(400, "That activity is too large to save — please shorten its text");
   const existing = await env.DB.prepare("SELECT id FROM custom_activities WHERE id = ? AND coach_id = ?").bind(id, owner).first();
   if (existing) {
     await env.DB.prepare("UPDATE custom_activities SET payload = ? WHERE id = ? AND coach_id = ?").bind(JSON.stringify(store), id, owner).run();
@@ -1485,6 +1632,7 @@ async function handleSaveOverride(session, request, env, targetCoachId) {
   if (!activityId) return err(400, "activity_id is required");
   const hidden = b.hidden ? 1 : 0;
   const payload = (b.payload === null || b.payload === undefined) ? null : JSON.stringify(b.payload);
+  if (payload !== null && payload.length > 32000) return err(400, "That edit is too large to save — please shorten its text");
   if (payload === null && hidden === 0) {
     await env.DB.prepare("DELETE FROM activity_overrides WHERE coach_id = ? AND activity_id = ?").bind(owner, activityId).run();
     return json({ ok: true, cleared: true });
@@ -1510,8 +1658,9 @@ async function handleSaveTaxonomy(session, request, env, targetCoachId) {
   if (!TAX_FIELD[kind]) return err(400, "Invalid kind");
   const action = String(b.action || "").trim();
   const values = Array.isArray(b.values)
-    ? b.values.map(function (v) { return String(v == null ? "" : v).trim(); }).filter(Boolean)
+    ? b.values.map(function (v) { return String(v == null ? "" : v).trim().slice(0, 120); }).filter(Boolean)
     : [];
+  if (values.length > 500) return err(400, "Too many values for one vocabulary");
   const coachId = targetCoachId || session.uid;
 
   // Replace the stored vocabulary for this kind in one atomic batch.
@@ -1549,7 +1698,8 @@ async function handleSaveTaxonomy(session, request, env, targetCoachId) {
     try {
       await env.DB.batch(cascade.slice(i, i + 50));
     } catch (e) {
-      return err(500, "Couldn't update the activities for this change — your vocabulary was left unchanged, please try again. (" + (e && e.message ? e.message : "db error") + ")");
+      console.error("taxonomy cascade failed:", e);
+      return err(500, "Couldn't update the activities for this change — your vocabulary was left unchanged, please try again.");
     }
   }
 
@@ -1813,10 +1963,16 @@ async function handleImport(session, request, env) {
         .bind(athleteId, email, name, "athlete", session.uid, randToken(24), nowSec() + INVITE_TTL, nowSec()).run();
       summary.athletes++;
     }
+    const asgIdMap = {};   // exported assignment id -> the new server-side id
     for (const asg of (Array.isArray(s.assignments) ? s.assignments : [])) {
       const newId = crypto.randomUUID();
-      await env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
-        .bind(newId, session.uid, athleteId, String(asg.title || "Workout"), asg.note || null, null, asg.createdAt ? isoOrEpochToEpoch(asg.createdAt) : nowSec()).run();
+      if (asg && asg.id) asgIdMap[asg.id] = newId;
+      // The assignment row rides in the SAME batch as its items (batches are atomic in
+      // D1), so a mid-import failure can never leave an empty assignment behind. If the
+      // first attempt fails only because custom_url isn't migrated, the whole batch
+      // rolled back — the fallback batch re-inserts the assignment row too.
+      const asgStmt = () => env.DB.prepare("INSERT INTO assignments (id,coach_id,athlete_id,title,note,due_at,created_at) VALUES (?,?,?,?,?,?,?)")
+        .bind(newId, session.uid, athleteId, String(asg.title || "Workout"), asg.note || null, null, asg.createdAt ? isoOrEpochToEpoch(asg.createdAt) : nowSec());
       summary.assignments++;
       const items = Array.isArray(asg.items) ? asg.items : [];
       const seen = {};
@@ -1832,22 +1988,35 @@ async function handleImport(session, request, env) {
           itemStmtsFallback.push(env.DB.prepare("INSERT OR IGNORE INTO assignment_items (assignment_id,activity_id,position) VALUES (?,?,?)").bind(newId, aid, p));
         }
       });
-      if (itemStmts.length) {
-        try {
-          await env.DB.batch(itemStmts);
-        } catch (e) {
-          if (!isMissingColumnError(e, "custom_url")) throw e;
-          await env.DB.batch(itemStmtsFallback);
-        }
+      try {
+        await env.DB.batch([asgStmt()].concat(itemStmts));
+      } catch (e) {
+        if (!isMissingColumnError(e, "custom_url")) throw e;
+        await env.DB.batch([asgStmt()].concat(itemStmtsFallback));
       }
     }
+    // Imported completion keys may be legacy activity-only ("ACT-1") or composite
+    // ("asgId::ACT-1"); store whatever assignment context they carry ('' when none).
+    // The NULL fallback covers a pre-0015 database, where '' violates the old FK.
     const completed = s.completed || {};
     const compStmts = [];
-    Object.keys(completed).forEach(function (aid) {
-      compStmts.push(env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, aid, null, isoOrEpochToEpoch(completed[aid]) || nowSec()));
+    const compStmtsFallback = [];
+    Object.keys(completed).forEach(function (k) {
+      const sep = k.indexOf("::");
+      // Translate the exported assignment id to the freshly-created one; a completion
+      // whose assignment didn't survive the import degrades to "no context" ('').
+      const asgId = sep === -1 ? "" : (asgIdMap[k.slice(0, sep)] || "");
+      const aid = sep === -1 ? k : k.slice(sep + 2);
+      if (!aid) return;
+      const ts = isoOrEpochToEpoch(completed[k]) || nowSec();
+      compStmts.push(env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, aid, asgId, ts));
+      compStmtsFallback.push(env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, aid, asgId || null, ts));
       summary.completions++;
     });
-    if (compStmts.length) await env.DB.batch(compStmts);
+    if (compStmts.length) {
+      try { await env.DB.batch(compStmts); }
+      catch (e) { await env.DB.batch(compStmtsFallback); }
+    }
 
     const reflections = (s.reflections && typeof s.reflections === "object") ? s.reflections : {};
     const reflStmts = [];
@@ -1856,7 +2025,9 @@ async function handleImport(session, request, env) {
       const txt = (entry && typeof entry === "object") ? String(entry.text || "").trim() : String(entry || "").trim();
       if (!txt) return;
       const parts = k.split("::");
-      const asgId = parts[0] || "";
+      // Same id translation as completions: reflections must point at the NEW
+      // assignment id created above, not the exported one.
+      const asgId = asgIdMap[parts[0]] || "";
       const aid = parts.slice(1).join("::");
       if (!aid) return;
       const ts = (entry && typeof entry === "object" && entry.updatedAt) ? isoOrEpochToEpoch(entry.updatedAt) : nowSec();
