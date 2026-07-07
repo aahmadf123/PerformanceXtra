@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
   coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches/admins/super admin
   invite_token   TEXT,                        -- one-time token for athlete first login
   invite_expires INTEGER,                     -- epoch seconds
+  token_version  INTEGER NOT NULL DEFAULT 0,  -- bumped on password/passcode change to revoke old sessions [migration 0013]
   created_at     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_coach ON users(coach_id);
@@ -99,17 +100,19 @@ CREATE TABLE IF NOT EXISTS student_activity_links (
 );
 CREATE INDEX IF NOT EXISTS idx_student_links_athlete ON student_activity_links(athlete_id);
 
--- Completions: which athlete finished which activity (optionally within an assignment).
--- assignment_id is intentionally excluded from the PRIMARY KEY because it is nullable
--- (SQLite PRIMARY KEY columns are implicitly NOT NULL). This means each athlete can
--- complete a given activity once globally, regardless of which assignment it belongs to.
+-- Completions: which athlete finished which activity WITHIN which assignment
+-- (mirrors reflections: assignment_id '' = no assignment context). Keyed per
+-- assignment (migration 0015) so re-assigning the same activity later starts fresh.
+-- No FK on assignment_id ('' has no parent row); deleting an assignment/athlete
+-- removes its completions explicitly in code.
 CREATE TABLE IF NOT EXISTS completions (
   athlete_id    TEXT NOT NULL REFERENCES users(id),
   activity_id   TEXT NOT NULL,
-  assignment_id TEXT REFERENCES assignments(id) ON DELETE CASCADE,
+  assignment_id TEXT NOT NULL DEFAULT '',
   completed_at  INTEGER NOT NULL,
-  PRIMARY KEY (athlete_id, activity_id)
+  PRIMARY KEY (athlete_id, activity_id, assignment_id)
 );
+CREATE INDEX IF NOT EXISTS idx_completions_assignment ON completions(assignment_id);
 
 -- Reflections: athlete text responses to assignment reflection prompts.
 -- assignment_id uses empty string when no assignment context exists.
@@ -232,3 +235,17 @@ CREATE TABLE IF NOT EXISTS assignment_templates (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_templates_coach ON assignment_templates(coach_id);
+
+-- Seed the non-login sentinel row that owns the shared global content library
+-- (mirrors migration 0006; INSERT OR IGNORE so re-running is a no-op). Without this
+-- row every /global/* write fails its coach_id foreign key on a fresh database.
+INSERT OR IGNORE INTO users (id,email,name,role,is_admin,is_superadmin,created_at)
+VALUES (
+  'usr_global_library',
+  'global-library@performancextra.internal',
+  'Global Library',
+  'coach',
+  0,
+  0,
+  strftime('%s','now')
+);

@@ -140,8 +140,9 @@ authenticate — it just displays a “server unavailable” notice.
 ### First-run setup
 
 The production **super-admin** account is created by applying the seed migration
-(`db/migrations/0004_seed_superadmin.sql`) — see Deploy. Sign in with those credentials and
-**change the password immediately** in Settings. The super admin then creates coach accounts,
+(`db/migrations/0004_seed_superadmin.sql`) — generate your own password hash with
+`node build/hash_password.mjs "your-password"`, paste it into the migration, apply it, and
+never commit the real hash or password. The super admin then creates coach accounts,
 and each coach adds their own athletes (email + one-time passcode).
 
 If the seed was never applied and **no super admin exists**, the sign-in screen shows a
@@ -188,16 +189,30 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0008_checkins_journal.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0009_messages.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0010_assignment_templates.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0011_rename_progression_advanced.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0012_login_attempts.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0013_security.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0014_promote_global_content.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0015_completions_per_assignment.sql --remote
+   wrangler d1 execute performancextra --file db/migrations/0016_taxonomy_typo.sql --remote
    ```
 
-   `0003` adds the super-admin role, `0004` seeds the super-admin login (email
-   `firas.azfar@gmail.com`, password `PXtra-SuperAdmin-2026!` — **change it after first
-   sign-in**; edit the migration first if you want different credentials), `0005` moves
+   `0003` adds the super-admin role, `0004` seeds the super-admin login (generate a password
+   hash with `node build/hash_password.mjs "your-password"` and paste it into the migration
+   before applying — **never commit the real hash or password**; the credential committed in
+   an early version of that file is treated as compromised, and any account still using it is
+   forced to choose a new password at sign-in), `0005` moves
    custom links to the student level, `0006` adds the **admin** tier plus the global-library
    owner row, `0007` adds the **Appearance** CMS tables (`site_settings`, `pages`), `0008`
    adds the **check-in** + **journal** tables (`checkins`, `journal_entries`), `0009` adds the
-   **messaging** tables (`messages`, `athlete_notes`), and `0010` adds the **assignment_templates**
-   table.
+   **messaging** tables (`messages`, `athlete_notes`), `0010` adds the **assignment_templates**
+   table, `0011` renames the "Extra Activities" progression to "Advanced", `0012` adds the
+   login-throttling table (the API also self-creates it if missing), `0013` adds session
+   revocation (`users.token_version` — password/passcode changes sign out every other device),
+   `0014` is a one-time repair that publishes super-admin content stranded in a private scope
+   into the shared global library, `0015` rebuilds `completions` so the same activity can be
+   completed once **per assignment** (re-assigned drills start fresh), and `0016` fixes the
+   "Competitve Mindset" subtopic typo in stored activity data.
    Validate the role migrations against a local copy (`--local`) first.
 3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**

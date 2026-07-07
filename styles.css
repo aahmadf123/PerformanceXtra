@@ -37,7 +37,7 @@
     /* text */
     --ink: #f1f4f8;
     --ink-soft: #aeb6c6;
-    --muted: #8b95a8;
+    --muted: #97a1b4;   /* ≥5:1 on --surface, headroom for the .7rem mono labels */
 
     /* lines */
     --line: rgba(255,255,255,.08);
@@ -73,9 +73,7 @@
 
     /* signed-out / auth-gate surfaces — every value here is re-declared in the
        light theme block so the landing page flips cleanly. Dark = default. */
-    --so-glow-1: rgba(201,242,78,.16);
-    --so-glow-2: rgba(56,189,248,.10);
-    --so-glow-3: rgba(255,106,61,.10);
+    --so-glow-1: rgba(201,242,78,.09);   /* single sign-in wash; companions removed with the glow field */
     --so-hero-bg: linear-gradient(180deg, rgba(20,23,31,.88), rgba(12,15,21,.92));
     --so-hero-border: rgba(255,255,255,.08);
     --so-hero-shadow: 0 28px 70px -30px rgba(0,0,0,.82), inset 0 1px 0 rgba(255,255,255,.05);
@@ -134,9 +132,7 @@
     /* signed-out / auth-gate surfaces — light theme.
        Panels become luminous white over a cool paper backdrop; shadows go
        blue-grey and airy instead of heavy black. */
-    --so-glow-1: rgba(141,182,31,.20);
-    --so-glow-2: rgba(15,126,168,.12);
-    --so-glow-3: rgba(228,87,46,.12);
+    --so-glow-1: rgba(141,182,31,.09);
     --so-hero-bg: linear-gradient(180deg, #ffffff, #eef4fb);
     --so-hero-border: rgba(20,29,44,.10);
     --so-hero-shadow: 0 28px 70px -34px rgba(23,42,77,.22), inset 0 1px 0 rgba(255,255,255,.9);
@@ -174,30 +170,19 @@
     overflow-x: hidden;
   }
 
-  /* Atmosphere: a faint gradient mesh + fine grain, pinned behind everything */
+  /* Atmosphere: one whisper-quiet brand-hue vignette behind everything. Deliberately
+     restrained — PRODUCT.md rules out decorative gradient meshes/noise, so this is a
+     single top-edge wash rather than a multi-color bloom. */
   body::before {
     content: "";
     position: fixed; inset: 0; z-index: -2; pointer-events: none;
     background:
-      radial-gradient(900px 560px at 8% -8%, rgba(201,242,78,.10), transparent 58%),
-      radial-gradient(820px 620px at 102% -4%, rgba(56,189,248,.075), transparent 55%),
-      radial-gradient(760px 540px at 50% 116%, rgba(255,106,61,.07), transparent 60%),
+      radial-gradient(1100px 520px at 50% -14%, rgba(201,242,78,.05), transparent 62%),
       var(--bg);
   }
-  body::after {
-    content: "";
-    position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .035;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-    mix-blend-mode: soft-light;
-  }
-  body[data-theme="light"]::after { opacity: .02; mix-blend-mode: multiply; }
-  /* On the near-white light bg the dark-tuned color blooms read as smudges; pitch them
-     to the light brand hues at much lower strength so the atmosphere stays a whisper. */
   body[data-theme="light"]::before {
     background:
-      radial-gradient(900px 560px at 8% -8%, rgba(141,182,31,.07), transparent 58%),
-      radial-gradient(820px 620px at 102% -4%, rgba(56,189,248,.05), transparent 55%),
-      radial-gradient(760px 540px at 50% 116%, rgba(228,87,46,.04), transparent 60%),
+      radial-gradient(1100px 520px at 50% -14%, rgba(141,182,31,.04), transparent 62%),
       var(--bg);
   }
 
@@ -220,8 +205,8 @@
   body[data-theme="light"] .app-header { background: rgba(255,255,255,.82); }
   .app-header::before {
     content: ""; position: absolute; left: 0; right: 0; top: 0; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent) 25%, var(--ember) 75%, transparent);
-    opacity: .8;
+    background: var(--accent);
+    opacity: .55;
   }
   .header-top { display: flex; align-items: center; gap: 18px; padding: 14px 0; flex-wrap: wrap; }
   .brand { display: flex; align-items: center; gap: 13px; margin-right: auto; }
@@ -376,7 +361,7 @@
   .card.is-done::before { opacity: .9; background: linear-gradient(90deg, rgba(201,242,78,.9), rgba(201,242,78,.45)); }
   .card-head { display: flex; align-items: flex-start; gap: 10px; }
   .card-title { font-family: var(--display); font-size: 1.08rem; font-weight: 700; letter-spacing: -.02em; line-height: 1.2; }
-  .card-id { font-family: var(--mono); font-size: .68rem; color: var(--muted); font-weight: 500; margin-top: 4px; letter-spacing: .02em; }
+  .card-id { font-family: var(--mono); font-size: .72rem; color: var(--muted); font-weight: 500; margin-top: 4px; letter-spacing: .02em; }
   .chips { display: flex; flex-wrap: wrap; gap: 7px; }
   .chip {
     font-size: .72rem; font-weight: 600; padding: 4px 10px; border-radius: 999px;
@@ -387,7 +372,7 @@
   .chip--meta { background: transparent; color: var(--muted); border: 1px solid var(--line-strong); }
   .badge {
     font-family: var(--mono);
-    font-size: .64rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+    font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
     padding: 4px 9px; border-radius: 7px; white-space: nowrap; flex: none; border: 1px solid transparent;
   }
   .badge[data-type="Video"]      { background:rgba(255,93,108,.14); color:#ff8a93; border-color:rgba(255,93,108,.25); }
@@ -421,7 +406,7 @@
   details.detail > summary::before { content: "+ "; font-family: var(--mono); }
   details.detail[open] > summary::before { content: "− "; }
   .detail-block { margin-top: 12px; }
-  .detail-label { font-family: var(--mono); font-size: .64rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .detail-label { font-family: var(--mono); font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
   .detail-text { white-space: pre-wrap; font-size: .9rem; color: var(--ink-soft); margin-top: 5px; line-height: 1.6; }
   .done-btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
 
@@ -487,6 +472,7 @@
   .student-row.is-active { border-color: rgba(201,242,78,.45); background: linear-gradient(180deg, rgba(201,242,78,.12), rgba(201,242,78,.06)); }
   .student-row .name { font-weight: 600; font-size: 1rem; min-width: 0; overflow-wrap: anywhere; }
   .student-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+  .roster-refresh-row { display: flex; justify-content: flex-end; margin-bottom: 8px; }
   .add-student { display: flex; gap: 8px; }
   .progress-stat { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
   .progress-stat .big { font-family: var(--display); font-size: 2.6rem; font-weight: 800; color: var(--accent); letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; }
@@ -698,13 +684,13 @@
     display: none !important;
   }
 
-  /* ---------- Auth gate (sign-in) ---------- */
+  /* ---------- Auth gate (sign-in) ----------
+     One restrained brand-hue wash, matching the in-app atmosphere — no multi-color
+     glow field (PRODUCT.md rules out decorative gradient polish). */
   .auth-gate {
     position: fixed; inset: 0; z-index: 300; overflow: auto;
     background:
-      radial-gradient(1000px 600px at 12% -10%, var(--so-glow-1), transparent 55%),
-      radial-gradient(900px 700px at 100% 0%, var(--so-glow-2), transparent 50%),
-      radial-gradient(800px 600px at 50% 120%, var(--so-glow-3), transparent 58%),
+      radial-gradient(1100px 520px at 50% -14%, var(--so-glow-1), transparent 62%),
       var(--bg);
     display: flex; align-items: center; justify-content: center; padding: 7vh 16px 24px;
   }
@@ -1095,7 +1081,7 @@
   .cms-tax-row:first-child { border-top: none; }
   .cms-tax-row:hover { background: var(--surface-2); }
   .cms-tax-name { flex: 1 1 auto; font-weight: 600; min-width: 0; word-break: break-word; }
-  .cms-tax-usage { font-family: var(--mono); font-size: .66rem; color: var(--muted); white-space: nowrap; }
+  .cms-tax-usage { font-family: var(--mono); font-size: .72rem; color: var(--muted); white-space: nowrap; }
   .cms-tax-add { display: flex; gap: 8px; align-items: center; }
   .cms-tax-add input { flex: 1 1 auto; max-width: 320px; }
 
@@ -1209,6 +1195,9 @@
   }
   .checkin-dot:hover { border-color: var(--line-strong); }
   .checkin-dot.is-on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  /* The high end of the Stress scale is the tough end — a calm warm amber, never the
+     celebratory lime the good ends get (and never an alarming red). */
+  .checkin-dot--warm.is-on { background: var(--warn); border-color: var(--warn); color: #241b04; }
   .checkin-note { width: 100%; min-height: 72px; resize: vertical; }
   .checkin-streak { color: var(--ember); font-weight: 600; font-size: .85rem; }
   .checkin-history-row { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-top: 1px solid var(--line); }

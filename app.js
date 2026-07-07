@@ -301,7 +301,13 @@
       if (d.me.role === "athlete") {
         state.tracking.activeStudentId = d.me.id;
       } else if (!state.tracking.activeStudentId || !state.tracking.students[state.tracking.activeStudentId]) {
-        state.tracking.activeStudentId = Object.keys(state.tracking.students)[0] || null;
+        // Restore the coach's pinned workspace athlete (persisted by setActiveStudent);
+        // fall back to the first athlete only when nothing valid is pinned.
+        var pinned = null;
+        try { pinned = localStorage.getItem(activeStudentStorageKey()); } catch (e) {}
+        state.tracking.activeStudentId = (pinned && state.tracking.students[pinned])
+          ? pinned
+          : (Object.keys(state.tracking.students)[0] || null);
       }
       rebuildData();
       return d;
@@ -413,6 +419,15 @@
     Object.keys(s.students).forEach(function (id) {
       var st = s.students[id];
       if (!st.completed || typeof st.completed !== "object") st.completed = {};
+      // The completed map is keyed "assignmentId::activityId" (like reflections; ''
+      // assignment = no context). Migrate legacy activity-only keys forward so old
+      // localStorage stores keep working.
+      Object.keys(st.completed).forEach(function (k) {
+        if (k.indexOf("::") === -1) {
+          st.completed["::" + k] = st.completed[k];
+          delete st.completed[k];
+        }
+      });
       if (!Array.isArray(st.assignments)) st.assignments = [];
       if (!st.reflections || typeof st.reflections !== "object") st.reflections = {};
       if (!Array.isArray(st.checkins)) st.checkins = [];
@@ -488,9 +503,40 @@
     var id = state.tracking.activeStudentId;
     return id && students()[id] ? students()[id] : null;
   }
-  function completedMap() {
-    var s = activeStudent();
-    return s ? s.completed : {};
+  /* Completions are keyed "assignmentId::activityId" — the same shape as reflections
+   * ('' assignment = completed with no assignment context) — so the SAME activity
+   * re-assigned in a new set starts fresh instead of showing as already done. */
+  function completionKey(assignmentId, activityId) {
+    return String(assignmentId || "") + "::" + String(activityId || "");
+  }
+  // The completion timestamp for an activity WITHIN an assignment. A completion
+  // recorded with no assignment context counts everywhere (legacy data, repo marks).
+  function completionAt(student, assignmentId, activityId) {
+    var m = (student && student.completed) || {};
+    return m[completionKey(assignmentId, activityId)] || m[completionKey("", activityId)] || null;
+  }
+  // Any completion of this activity in any context (repository cards, topic rollups).
+  function completionAny(student, activityId) {
+    var m = (student && student.completed) || {};
+    var bare = m[completionKey("", activityId)];
+    if (bare) return bare;
+    var suffix = "::" + activityId;
+    var keys = Object.keys(m);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].length >= suffix.length && keys[i].slice(-suffix.length) === suffix) return m[keys[i]];
+    }
+    return null;
+  }
+  // Distinct activity ids the student has completed at least once (for rollups).
+  function completedActivityIds(student) {
+    var m = (student && student.completed) || {};
+    var out = {};
+    Object.keys(m).forEach(function (k) {
+      var i = k.indexOf("::");
+      var aid = i === -1 ? k : k.slice(i + 2);
+      if (aid) out[aid] = true;
+    });
+    return Object.keys(out);
   }
 
   // Mark/unmark an activity done for a student. Optimistically updates the in-memory
@@ -498,14 +544,22 @@
   // SERVER mode, or to localStorage in LOCAL mode.
   function setCompletion(student, activityId, done, assignmentId) {
     if (!student) return;
-    if (done) student.completed[activityId] = new Date().toISOString();
-    else delete student.completed[activityId];
+    var key = completionKey(assignmentId, activityId);
+    var effectiveAsg = assignmentId || null;
+    // Un-marking when the visible "done" actually comes from a no-context completion
+    // (legacy/repo mark): clear THAT record instead, mirroring the server's delete.
+    if (!done && !student.completed[key] && student.completed[completionKey("", activityId)]) {
+      key = completionKey("", activityId);
+      effectiveAsg = null;
+    }
+    if (done) student.completed[key] = new Date().toISOString();
+    else delete student.completed[key];
     if (SERVER) {
       api("/completions", {
         method: "POST",
         body: {
           activity_id: activityId,
-          assignment_id: assignmentId || null,
+          assignment_id: effectiveAsg,
           athlete_id: (state.session && state.session.role !== "athlete") ? student.id : null,
           done: done
         }
@@ -625,7 +679,7 @@
   }
   function assignmentProgress(s, asg) {
     var done = 0;
-    asg.items.forEach(function (id) { if (s.completed[id]) done++; });
+    asg.items.forEach(function (id) { if (completionAt(s, asg.id, id)) done++; });
     return { done: done, total: asg.items.length };
   }
 
@@ -790,6 +844,9 @@
   function saveActivityEdit(id, form) {
     var fields = normalizeActivity(form, id);
     if (SERVER) {
+      // Publishing mode composes with the CURRENT shared-library state (cmsHidden);
+      // writing before the snapshot has loaded could clobber an existing shared edit.
+      if (!globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
       var body, path;
       if (isCustom(id)) {
         var payload = Object.assign({}, fields); delete payload.id;
@@ -826,7 +883,9 @@
   function setHidden(id, on) {
     if (SERVER) {
       // Preserve any existing edit payload while flipping the hidden flag (scope-aware:
-      // in Global scope read the global override, not the merged/private one).
+      // in Global scope read the global override, not the merged/private one). Requires
+      // the loaded snapshot — an empty in-flight/failed one would erase that payload.
+      if (!globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
       var payload = (cmsGlobal() ? (cmsTrack().overrides || {}) : state.tracking.overrides)[id] || null;
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't update")); return; }
@@ -871,6 +930,7 @@
   // Apply a taxonomy edit: persist the new vocabulary and cascade the value
   // change onto existing activities. Routes to the server in SERVER mode.
   function taxonomyFlow(kind, action, args, onDone) {
+    if (SERVER && !globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
     var values = nextTaxValues(kind, action, args);
     if (SERVER) {
       api(cmsRoute("/taxonomy"), { method: "POST", body: {
@@ -932,8 +992,13 @@
     }
     saveTracking();
   }
+  // The chosen workspace athlete survives reloads: in SERVER mode the bootstrap doesn't
+  // carry it (saveTracking is a no-op there), so it's pinned per-user in localStorage
+  // and restored by loadServerSnapshot.
+  function activeStudentStorageKey() { return "px.activeStudent." + ((state.session && state.session.id) || "local"); }
   function setActiveStudent(id) {
     state.tracking.activeStudentId = id || null;
+    try { if (SERVER && id) localStorage.setItem(activeStudentStorageKey(), id); } catch (e) {}
     saveTracking();
   }
 
@@ -983,13 +1048,34 @@
   function isSuperadmin() { return SERVER && sessionRole() === "superadmin"; }
 
   // Which content library the CMS flows write to. "private" -> the caller's own content
-  // (/custom-activities, /overrides, /taxonomy); "global" -> the shared library an
-  // admin/super admin curates (/global/*). Set by the Content tab's scope switch and
-  // reset to "private" whenever we leave the Content tab, so Repository edits never
-  // accidentally hit the global library.
-  var currentCmsTarget = "private";
-  function cmsRoute(p) { return currentCmsTarget === "global" ? ("/global" + p) : p; }
-  function cmsGlobal() { return currentCmsTarget === "global"; }
+  // (/custom-activities, /overrides, /taxonomy); "global" -> the shared library a
+  // super admin curates (/global/*). For a SUPER ADMIN the default is the SHARED library
+  // — publishing is what a super admin almost always means (their early edits silently
+  // landed in a private scope no coach could see; migration 0014 repaired that) — with
+  // an explicit, persisted "Only me" opt-out. Coaches/admins always write private.
+  // The choice applies on every tab (Repository edits included) and survives reloads.
+  function cmsScopeStorageKey() { return "px.cmsScope." + ((state.session && state.session.id) || "anon"); }
+  function cmsScope() {
+    if (!isSuperadmin()) return "private";
+    if (state.cmsScope !== "global" && state.cmsScope !== "private") {
+      var saved = null;
+      try { saved = localStorage.getItem(cmsScopeStorageKey()); } catch (e) {}
+      state.cmsScope = (saved === "private") ? "private" : "global";   // default: publish
+    }
+    return state.cmsScope;
+  }
+  function setCmsScope(scope, quiet) {
+    state.cmsScope = scope === "global" ? "global" : "private";
+    try { localStorage.setItem(cmsScopeStorageKey(), state.cmsScope); } catch (e) {}
+    if (state.cmsScope === "global" && state.globalTracking == null && SERVER) loadGlobalTracking();
+    if (!quiet) {
+      toast(state.cmsScope === "global"
+        ? "Publishing — edits now go to the shared library every coach & athlete sees"
+        : "Private — edits now stay in your own library only");
+    }
+  }
+  function cmsGlobal() { return isSuperadmin() && cmsScope() === "global"; }
+  function cmsRoute(p) { return cmsGlobal() ? ("/global" + p) : p; }
 
   // Lazily fetch the global-library-ONLY content for the super-admin Content "Global"
   // scope, kept separate from state.tracking (which is the merged catalog every coach
@@ -1001,18 +1087,28 @@
       api("/global/overrides"),
       api("/global/taxonomy")
     ]).then(function (rs) {
-      var ca = (rs[0] && rs[0].ok && rs[0].data && rs[0].data.customActivities) || [];
-      var ov = (rs[1] && rs[1].ok && rs[1].data) || {};
-      var tx = (rs[2] && rs[2].ok && rs[2].data && rs[2].data.taxonomy) || {};
+      // All three must have answered OK: a partial/failed snapshot must never
+      // masquerade as "the shared library is empty" — a later edit/hide would then
+      // POST a null/base payload and erase an existing shared-library edit.
+      if (!(rs[0] && rs[0].ok && rs[1] && rs[1].ok && rs[2] && rs[2].ok)) throw new Error("global snapshot incomplete");
+      var ca = (rs[0].data && rs[0].data.customActivities) || [];
+      var ov = rs[1].data || {};
+      var tx = (rs[2].data && rs[2].data.taxonomy) || {};
       state.globalTracking = {
+        loaded: true,
         customActivities: ca,
         overrides: ov.overrides || {},
         hidden: ov.hidden || {},
         taxonomy: { topic: tx.topic || [], subtopic: tx.subtopic || [], type: tx.type || [] }
       };
     }).catch(function () {
-      state.globalTracking = { customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+      state.globalTracking = { failed: true, customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
     });
+  }
+  // Shared-library writes may only proceed once the global snapshot actually loaded —
+  // never while it's still in flight, and never off the empty failure placeholder.
+  function globalSnapshotReady() {
+    return !cmsGlobal() || !!(state.globalTracking && state.globalTracking.loaded);
   }
   function cmsTrack() { return cmsGlobal() ? (state.globalTracking || { customActivities: [], overrides: {}, hidden: {}, taxonomy: {} }) : state.tracking; }
   // Scope-aware reads for the CMS table. In Global scope they come from the global-only
@@ -1046,11 +1142,12 @@
     if (!cmsGlobal()) return BY_ID[id];
     return cmsActivityRows(true).filter(function (a) { return a.id === id; })[0] || BY_ID[id];
   }
-  // After a CMS write, refresh the merged catalog; in Global scope also invalidate the
-  // global-only snapshot so the next render re-fetches it (keeping the table truthful).
+  // After a CMS write, refresh the merged catalog; in Global scope also re-pull the
+  // global-only snapshot right away (Repository-tab flows read it too — e.g. setHidden
+  // preserves the existing global edit payload — so it can't be left stale or null).
   function afterCmsWrite(cb) {
     return refreshFromServer().then(function () {
-      if (cmsGlobal()) state.globalTracking = null;
+      if (cmsGlobal()) return loadGlobalTracking().then(function () { if (cb) cb(); });
       if (cb) cb();
     });
   }
@@ -1104,7 +1201,12 @@
     ]));
 
     var chips = el("div", { class: "chips" });
-    if (isCustom(a.id)) chips.appendChild(el("span", { class: "tag-custom" }, "Custom"));
+    // Ownership chip: only a coach's OWN addition is called out ("Added by you").
+    // Items published to the shared library (scope 'global') get no chip — to everyone
+    // browsing, shared content IS library content, even though its id starts CUST-.
+    if (isCustom(a.id) && a.scope !== "global" && isAdminView()) {
+      chips.appendChild(el("span", { class: "tag-custom" }, "Added by you"));
+    }
     if (hidden) chips.appendChild(el("span", { class: "tag-hidden" }, "Hidden"));
     if (a.topic) chips.appendChild(el("span", { class: "chip chip--topic" }, a.topic));
     (a.subtopics || []).forEach(function (s) { chips.appendChild(el("span", { class: "chip chip--sub" }, s)); });
@@ -1159,9 +1261,21 @@
     var oldRepoTip = $("#repo-global-tip");
     if (oldRepoTip && oldRepoTip.parentNode) oldRepoTip.parentNode.removeChild(oldRepoTip);
     if (repoView && isSuperadmin()) {
+      // Live scope indicator: says exactly where an edit made on this tab will land,
+      // with a one-click switch. (Replaces the old passive "tip" that still let super
+      // admin edits strand in a private scope nobody else could see.)
+      var isGlobalNow = cmsGlobal();
+      var switchLink = el("a", { href: "#", onclick: function (e) {
+        e.preventDefault();
+        setCmsScope(isGlobalNow ? "private" : "global");
+        renderRepo();
+      } }, isGlobalNow ? "Switch to private editing" : "Switch to publishing");
       var repoTip = el("div", { class: "note-banner", id: "repo-global-tip" }, [
-        el("strong", {}, "Super admin tip:"),
-        el("span", {}, " Repository edits here are private. To publish changes for all coaches and athletes, use Content and switch scope to Global library.")
+        el("strong", {}, isGlobalNow ? "Publishing: " : "Private edits: "),
+        el("span", {}, isGlobalNow
+          ? "edits you make here go to the shared library — every coach and athlete sees them. "
+          : "edits you make here stay in your own library — coaches will NOT see them. "),
+        switchLink
       ]);
       var filtersToggle = $("#filters-toggle");
       repoView.insertBefore(repoTip, filtersToggle || grid);
@@ -1245,8 +1359,8 @@
     if (c.subtopic) pool = pool.filter(function (a) { return a.subtopics.indexOf(c.subtopic) !== -1; });
     if (c.type) pool = pool.filter(function (a) { return a.type === c.type; });
     if (c.excludeCompleted) {
-      var done = completedMap();
-      pool = pool.filter(function (a) { return !done[a.id]; });
+      var s = activeStudent();
+      pool = pool.filter(function (a) { return !completionAny(s, a.id); });
     }
     return pool;
   }
@@ -1319,7 +1433,7 @@
       if (!a) return;
       var meta = [a.type || "—", a.time || ""].filter(Boolean).join(", ");
       lines.push((idx + 1) + ". " + a.name + " [" + meta + "]");
-      lines.push("   Status: " + (student.completed[id] ? "Completed" : "Pending"));
+      lines.push("   Status: " + (completionAt(student, asg.id, id) ? "Completed" : "Pending"));
       lines.push("   Link: " + (itemLink(asg, id) || "No link (on-court)"));
       if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
       if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
@@ -1409,8 +1523,9 @@
       if (!a) return;
 
       var prompt = a.reflection || "Write your reflection for this activity.";
-      var done = !!student.completed[id];
-      var doneText = done ? ("Completed on " + fmtDate(student.completed[id])) : "Not marked completed";
+      var doneAt = completionAt(student, asg.id, id);
+      var done = !!doneAt;
+      var doneText = done ? ("Completed on " + fmtDate(doneAt)) : "Not marked completed";
       var itemTitle = (idx + 1) + ". " + a.name;
       var meta = [
         a.type || "Activity",
@@ -1633,7 +1748,7 @@
       var a = BY_ID[id];
       if (!a) return;
       var li = el("li", {});
-      li.appendChild(el("div", { class: "pa-name" }, a.name + (a.time ? " (" + a.time + ")" : "") + (student.completed[id] ? "  ✓ done" : "")));
+      li.appendChild(el("div", { class: "pa-name" }, a.name + (a.time ? " (" + a.time + ")" : "") + (completionAt(student, asg.id, id) ? "  ✓ done" : "")));
       var meta = [a.type, a.topic, a.progression, a.frequency].filter(Boolean).join(" · ");
       if (meta) li.appendChild(el("div", { class: "pa-meta" }, meta));
       var paLink = itemLink(asg, id);
@@ -1693,6 +1808,18 @@
     var list = $("#student-list");
     list.textContent = "";
     var all = studentList();
+    // Manual refresh: the background sync deliberately skips while an input is focused
+    // or a modal is open, so give staff an explicit way to pull the latest roster and
+    // shared-library changes on demand.
+    if (SERVER) {
+      var refreshBtn = el("button", { class: "btn btn--sm btn--ghost roster-refresh", title: "Pull the latest students, assignments and library changes from the server", onclick: function () {
+        refreshBtn.disabled = true; refreshBtn.textContent = "Refreshing…";
+        refreshFromServer().then(function () { renderAll(); toast("Up to date"); })
+          .catch(function () {})
+          .then(function () { refreshBtn.disabled = false; refreshBtn.textContent = "↻ Refresh"; });
+      } }, "↻ Refresh");
+      list.appendChild(el("div", { class: "roster-refresh-row" }, refreshBtn));
+    }
     if (!all.length) {
       list.appendChild(el("p", { class: "no-link" }, "No students yet. Add one below to start tracking."));
     }
@@ -1706,7 +1833,7 @@
       }
       // At-a-glance dashboard stat: completion across all assigned work + check-in streak.
       var totalI = 0, doneI = 0;
-      (s.assignments || []).forEach(function (a) { (a.items || []).forEach(function (id) { totalI++; if (s.completed[id]) doneI++; }); });
+      (s.assignments || []).forEach(function (a) { (a.items || []).forEach(function (id) { totalI++; if (completionAt(s, a.id, id)) doneI++; }); });
       var statBits = [];
       if (totalI) statBits.push(Math.round(doneI / totalI * 100) + "% done");
       var stk = checkinStreak(s.checkins);
@@ -1717,7 +1844,8 @@
       ]);
       var rowActions = el("div", { class: "student-row-actions" });
       rowActions.appendChild(el("button", {
-        class: "btn btn--sm btn--ghost", title: "Set active",
+        class: "btn btn--sm btn--ghost",
+        title: active ? "This athlete's workspace is open (it stays selected next time you sign in)" : "Open this athlete's workspace — assignments, progress and messages all point at them",
         "aria-pressed": active ? "true" : "false",
         onclick: function () { setActiveStudent(s.id); renderAll(); }
       }, active ? "Working here" : "Open workspace"));
@@ -1898,20 +2026,21 @@
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
-  // Move/unassign an athlete from the All-students directory (admin+). This is the only place
-  // an athlete who currently has no coach is visible, so it's how they get re-homed. The select
-  // defaults to the student's current coach; picking "No coach" unassigns them.
+  // Move an athlete to a different coach from the All-students directory (admin+). This
+  // is also how an athlete who somehow lost their coach (legacy data) gets re-homed.
+  // A target coach is required — the server rejects unassigning.
   function openReassignStudent(s) {
     var sel = coachSelectNode(s.coachId || "", null);
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "Move " + s.name + " to a different coach, or choose “No coach” to unassign them."),
+      el("p", { class: "field-hint" }, "Move " + s.name + " to a different coach. Every student needs a coach so they always show up in a roster."),
       el("div", { class: "field" }, [el("label", {}, "Coach"), sel])
     ]);
     function submit() {
-      api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: sel.value || null } }).then(function (res) {
+      if (!sel.value) { toast("Pick a coach first"); return; }
+      api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: sel.value } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't move")); return; }
         closeModal();
-        toast(sel.value ? "Moved " + s.name : "Unassigned " + s.name);
+        toast("Moved " + s.name);
         state.allStudents = null;
         refreshFromServer().then(function () { renderAll(); });
         refreshStaff();
@@ -2000,11 +2129,17 @@
 
     // Progress is always measured against what has actually been assigned to
     // this athlete (not the whole ~188-activity catalogue), for the coach and
-    // athlete views alike.
-    var p = computeProgress({ completed: Object.keys(s.completed).reduce(function (acc, id) {
-      if (assignedMap[id]) acc[id] = s.completed[id];
-      return acc;
-    }, {}) });
+    // athlete views alike. Completion keys are "assignmentId::activityId"; collapse
+    // them to distinct assigned activities (latest timestamp wins) for the rollups.
+    var doneByActivity = {};
+    Object.keys(s.completed || {}).forEach(function (k) {
+      var sep = k.indexOf("::");
+      var aid = sep === -1 ? k : k.slice(sep + 2);
+      if (!aid || !assignedMap[aid]) return;
+      var ts = s.completed[k];
+      if (!doneByActivity[aid] || String(ts || "") > String(doneByActivity[aid] || "")) doneByActivity[aid] = ts;
+    });
+    var p = computeProgress({ completed: doneByActivity });
 
     var denom = assigned.length;
     if (!denom) {
@@ -2032,16 +2167,18 @@
       if (!showCondensedAdmin) {
         container.appendChild(el("div", { class: "detail-label", style: "margin-bottom:8px" }, "Completed activities"));
         var cl = el("div", { class: "completed-list" });
-        Object.keys(s.completed)
-          .filter(function (aid) { return assignedMap[aid]; })
-          .sort(function (a, b) { return (s.completed[b] || "").localeCompare(s.completed[a] || ""); })
+        Object.keys(doneByActivity)
+          .sort(function (a, b) { return String(doneByActivity[b] || "").localeCompare(String(doneByActivity[a] || "")); })
           .forEach(function (aid) {
             var a = BY_ID[aid];
             if (!a) return;
+            // Undo here only for a no-context completion; assignment-scoped ones are
+            // undone from the workout itself (so the right assignment is cleared).
+            var undoable = canUndo && !!s.completed[completionKey("", aid)];
             cl.appendChild(el("div", { class: "completed-row" }, [
               el("span", { class: "badge", "data-type": a.type || "" }, a.type || "—"),
               el("span", { class: "c-name" }, a.name),
-              canUndo ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
+              undoable ? el("button", { class: "btn btn--sm btn--ghost", title: "Un-complete", onclick: function () {
                 setCompletion(s, aid, false, null); renderAll();
               } }, "Undo") : null
             ]));
@@ -2053,8 +2190,9 @@
     }
   }
 
-  // Render a student's assignments. opts.admin adds a delete control; opts.actionable
-  // adds per-item "Mark done" buttons (used in the student's My Workouts tab).
+  // Render a student's assignments for the COACH view (opts.admin adds the delete /
+  // template / link / mark-done controls and read-only reflection views). The athlete's
+  // own actionable view is the workout spine (appendWorkoutSpine), not this list.
   function appendAssignmentList(container, s, opts) {
     opts = opts || {};
     var list = studentAssignments(s);
@@ -2083,7 +2221,7 @@
       var metaParts = ["Assigned " + fmtDate(asg.createdAt)];
       if (asg.dueAt) metaParts.push("Due " + fmtDate(asg.dueAt));
       if (complete) {
-        var times = asg.items.map(function (id) { return s.completed[id]; }).filter(Boolean).sort();
+        var times = asg.items.map(function (id) { return completionAt(s, asg.id, id); }).filter(Boolean).sort();
         if (times.length) metaParts.push("Completed " + fmtDate(times[times.length - 1]));
       }
       var dueState = assignmentDueState(s, asg);
@@ -2104,7 +2242,7 @@
       asg.items.forEach(function (id) {
         var a = BY_ID[id];
         if (!a) return;
-        var done = !!s.completed[id];
+        var done = !!completionAt(s, asg.id, id);
         var item = el("div", { class: "assign-item" + (done ? " is-done" : "") });
         item.appendChild(el("span", { class: "ai-name" }, [
           el("strong", {}, a.name), a.time ? (" · " + a.time) : "", a.type ? (" · " + a.type) : ""
@@ -2117,11 +2255,11 @@
             openItemLinkModal(s.id, asg, id);
           } }, hasCustom ? "🔗 Edit link" : "🔗 Custom link"));
         }
-        if (opts.actionable || opts.admin) {
+        if (opts.admin) {
           var btn = el("button", { class: "btn btn--sm done-btn", "aria-pressed": done ? "true" : "false", onclick: function () {
-            setCompletion(s, id, !s.completed[id], asg.id);
+            setCompletion(s, id, !completionAt(s, asg.id, id), asg.id);
             renderAll();
-          } }, done ? "✓ Done" : (opts.admin ? "Mark done" : "Mark done"));
+          } }, done ? "✓ Done" : "Mark done");
           item.appendChild(btn);
         }
         // Show the activity's instructions & reflection inline so the athlete (and
@@ -2148,48 +2286,19 @@
         card.appendChild(item);
       });
 
-      // Assignment-level reflection textbox (student) or read-only view (coach).
+      // Legacy assignment-level reflection (the old end-of-set textbox, replaced by the
+      // per-activity fields above). Shown read-only to the coach ONLY when an athlete
+      // actually wrote one back then \u2014 no empty "not submitted" noise on new work.
       var ASSIGN_REFL_KEY = "__assignment__";
-      if (opts.actionable) {
-        var asgRefl = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
-        var asgTa = el("textarea", {
-          class: "reflection-input",
-          placeholder: "Write your overall reflection for this assignment here\u2026",
-          "aria-label": "Assignment reflection for " + asg.title
-        });
-        asgTa.value = asgRefl && asgRefl.text ? asgRefl.text : "";
-        var asgStatus = el("div", { class: "reflection-status" }, asgRefl && asgRefl.updatedAt
-          ? ("Saved " + fmtDateTime(asgRefl.updatedAt))
-          : "Not submitted yet");
-        asgTa.addEventListener("input", function () {
-          var timerKey = [s.id, asg.id, ASSIGN_REFL_KEY].join("::");
-          clearTimeout(state.reflectionTimers[timerKey]);
-          asgStatus.textContent = "Saving...";
-          state.reflectionTimers[timerKey] = setTimeout(function () {
-            saveReflectionFlow(s, asg.id, ASSIGN_REFL_KEY, asgTa.value, function (ok, msg) {
-              if (ok) {
-                var latest = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
-                asgStatus.textContent = latest && latest.updatedAt ? ("Saved " + fmtDateTime(latest.updatedAt)) : "Not submitted yet";
-              } else {
-                asgStatus.textContent = msg || "Could not save";
-                toast(msg || "Couldn't save reflection");
-              }
-            });
-          }, 450);
-        });
-        card.appendChild(el("div", { class: "reflection-box assignment-reflection" }, [
-          el("div", { class: "detail-label" }, "Your reflection for this assignment"),
-          asgTa,
-          asgStatus
-        ]));
-      }
       if (opts.admin) {
         var asgReflAdmin = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
-        card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
-          el("div", { class: "detail-label" }, "Student reflection"),
-          el("div", { class: "detail-text" }, asgReflAdmin && asgReflAdmin.text ? asgReflAdmin.text : "No reflection submitted yet."),
-          asgReflAdmin && asgReflAdmin.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(asgReflAdmin.updatedAt)) : null
-        ]));
+        if (asgReflAdmin && asgReflAdmin.text) {
+          card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
+            el("div", { class: "detail-label" }, "Student reflection (whole set)"),
+            el("div", { class: "detail-text" }, asgReflAdmin.text),
+            asgReflAdmin.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(asgReflAdmin.updatedAt)) : null
+          ]));
+        }
       }
       return card;
     }
@@ -2212,7 +2321,7 @@
       if (doneAsgs.length) {
         var doneTimes = [];
         doneAsgs.forEach(function (asg) {
-          (asg.items || []).forEach(function (id) { if (s.completed[id]) doneTimes.push(s.completed[id]); });
+          (asg.items || []).forEach(function (id) { var t = completionAt(s, asg.id, id); if (t) doneTimes.push(t); });
         });
         doneTimes.sort();
         var lastDone = doneTimes.length ? doneTimes[doneTimes.length - 1] : null;
@@ -2260,7 +2369,7 @@
       asg.items.forEach(function (id) {
         if (!BY_ID[id]) return;
         totItems++;
-        if (s.completed[id]) { totDone++; return; }
+        if (completionAt(s, asg.id, id)) { totDone++; return; }
         var m = BY_ID[id].timeMinutes;
         if (m != null && m !== "" && !isNaN(+m)) { minsLeft += +m; haveMins = true; }
       });
@@ -2296,7 +2405,7 @@
 
       function markBtn(primary) {
         return el("button", { class: "btn btn--sm wk-mark" + (primary ? " btn--accent" : ""), onclick: function () {
-          setCompletion(s, id, !s.completed[id], asg.id); renderAll();
+          setCompletion(s, id, !completionAt(s, asg.id, id), asg.id); renderAll();
         } }, "Mark done");
       }
       function instrDetail() {
@@ -2364,6 +2473,9 @@
         body.appendChild(el("div", { class: "wk-name" }, a.name));
         if (a.instructions) body.appendChild(el("p", { class: "wk-blurb" }, a.instructions));
         body.appendChild(el("div", { class: "wk-actions" }, [markBtn(false), openBtn, instrDetail()]));
+        // The answer field is available on every item, not just the current/done ones —
+        // athletes work ahead, revisit prompts, or jot observations before marking done.
+        body.appendChild(reflectBox());
       }
       rep.appendChild(body);
       return rep;
@@ -2371,7 +2483,7 @@
 
     function buildSet(asg) {
       var validIds = asg.items.filter(function (id) { return BY_ID[id]; });
-      var firstUndone = validIds.findIndex(function (id) { return !s.completed[id]; });
+      var firstUndone = validIds.findIndex(function (id) { return !completionAt(s, asg.id, id); });
       var complete = isComplete(asg);
       var set = el("section", { class: "wk-set" });
 
@@ -2395,7 +2507,7 @@
         spine.appendChild(el("p", { class: "no-link", style: "margin-left:56px" }, "This set has no activities yet."));
       }
       validIds.forEach(function (id, i) {
-        var stateName = s.completed[id] ? "done" : (i === firstUndone ? "now" : "upcoming");
+        var stateName = completionAt(s, asg.id, id) ? "done" : (i === firstUndone ? "now" : "upcoming");
         spine.appendChild(buildRep(asg, id, BY_ID[id], stateName));
       });
       set.appendChild(spine);
@@ -2573,7 +2685,10 @@
     CHECKIN_DIMS.forEach(function (dim) {
       var scale = el("div", { class: "checkin-scale" });
       [1, 2, 3, 4, 5].forEach(function (n) {
-        var btn = el("button", { type: "button", class: "checkin-dot" + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
+        // The high end of the Stress scale is the tough end — selecting it shouldn't
+        // light up in the same celebratory lime as Mood 5. It gets a warm, calm tone.
+        var warm = dim.key === "stress" && n >= 4 ? " checkin-dot--warm" : "";
+        var btn = el("button", { type: "button", class: "checkin-dot" + warm + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
           picked[dim.key] = (picked[dim.key] === n ? null : n);
           $all(".checkin-dot", scale).forEach(function (b, i) { var on = picked[dim.key] === (i + 1); b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
         } }, String(n));
@@ -3047,7 +3162,7 @@
       // Always report progress out of what's assigned to this athlete, not the
       // whole catalogue — matches the progress bars in the detail views.
       var assigned = assignedActivityIds(s);
-      var doneAssigned = assigned.filter(function (id) { return !!s.completed[id]; }).length;
+      var doneAssigned = assigned.filter(function (id) { return !!completionAny(s, id); }).length;
       c.textContent = assigned.length
         ? (doneAssigned + " / " + assigned.length + " assigned done")
         : "Nothing assigned yet";
@@ -3089,9 +3204,6 @@
     var ids = currentTabs().map(function (t) { return t.id; });
     if (ids.indexOf(tab) === -1) tab = ids[0];
     state.tab = tab;
-    // Global-library editing is scoped to the Content tab; leaving it returns the
-    // CMS flows to private so Repository/other-tab edits never hit the global library.
-    if (tab !== "content") currentCmsTarget = "private";
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
     else if (tab === "appearance" && isSuperadmin()) renderAppearance();
@@ -3263,12 +3375,13 @@
     return sel;
   }
 
-  // A coach picker for admins reassigning a student. The first option ("") unassigns; the rest
-  // are pure coaches from state.coaches. excludeId drops one coach (e.g. the student's current
-  // one). selectedId pre-selects a coach ("" leaves it on unassign).
+  // A coach picker for admins reassigning a student. Every athlete must have a coach —
+  // an unassigned athlete vanishes from every roster — so there is no "unassign" option;
+  // the placeholder ("") just means "not chosen yet" and the server rejects it.
+  // excludeId drops one coach (e.g. the student's current one); selectedId pre-selects.
   function coachSelectNode(selectedId, excludeId) {
     var sel = el("select", {});
-    sel.appendChild(option("", "— No coach (unassign) —"));
+    sel.appendChild(option("", "— Pick a coach —"));
     var coaches = (state.coaches || []).slice().filter(function (c) { return c.id !== excludeId; });
     coaches.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
     coaches.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
@@ -3758,14 +3871,37 @@
     card.textContent = "";
     var email = el("input", { type: "email", id: "auth-email", placeholder: "you@email.com", autocomplete: "username" });
     var pass = el("input", { type: "password", id: "auth-pass", placeholder: "Password", autocomplete: "current-password" });
+    var newPass = el("input", { type: "password", id: "auth-new-pass", placeholder: "New password (8+ characters)", autocomplete: "new-password" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
     var setupRow = el("p", { class: "field-hint", style: "text-align:center; margin-top:4px" });
+    // Revealed only when the server answers FORCE_PASSWORD_CHANGE: the account's
+    // original password was published, so a replacement must be chosen to sign in.
+    var newPassField = el("div", { class: "field" }, [
+      el("label", { for: "auth-new-pass" }, "Choose a new password"),
+      newPass,
+      el("p", { class: "field-hint" }, "For security, pick a new password before continuing — the original one for this account needs to be retired.")
+    ]);
+    newPassField.hidden = true;
     function submit() {
       errBox.hidden = true;
       var em = email.value.trim(), pw = pass.value;
       if (!em || !pw) { errBox.textContent = "Enter your email and password."; errBox.hidden = false; return; }
-      api("/login", { method: "POST", body: { email: em, password: pw } }).then(function (res) {
-        if (!res.ok) { errBox.textContent = apiError(res, "Invalid email or password."); errBox.hidden = false; pass.value = ""; pass.focus(); return; }
+      var body = { email: em, password: pw };
+      if (!newPassField.hidden) {
+        var np = newPass.value;
+        if (np.length < 8) { errBox.textContent = "The new password needs at least 8 characters."; errBox.hidden = false; newPass.focus(); return; }
+        body.new_password = np;
+      }
+      api("/login", { method: "POST", body: body }).then(function (res) {
+        if (!res.ok) {
+          if (res.data && res.data.code === "FORCE_PASSWORD_CHANGE") {
+            if (newPassField.hidden) { newPassField.hidden = false; setTimeout(function () { newPass.focus(); }, 30); }
+            errBox.textContent = apiError(res, "Pick a new password to continue.");
+            errBox.hidden = false;
+            return;
+          }
+          errBox.textContent = apiError(res, "Invalid email or password."); errBox.hidden = false; pass.value = ""; pass.focus(); return;
+        }
         location.reload();
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
@@ -3779,11 +3915,12 @@
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", { for: "auth-email" }, "Email"), email]),
       el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password / sign-in code"), pass]),
+      newPassField,
       errBox,
       el("button", { class: "btn btn--primary btn--block", onclick: submit }, "Sign in"),
       setupRow
     ]));
-    [email, pass].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } }); });
+    [email, pass, newPass].forEach(function (i) { i.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); submit(); } }); });
     setTimeout(function () { email.focus(); }, 30);
     if (offline) return;
     api("/setup-status").then(function (res) {
@@ -4201,13 +4338,14 @@
           var nameKids = [el("span", { class: "name" }, s.name)];
           if (s.email) nameKids.push(el("span", { class: "student-email" }, s.email));
           var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
-          // Reassign to another coach (or "No coach" to unassign), then Move — the cheap,
-          // non-destructive way to empty this coach's roster so they can be deleted.
+          // Reassign to another coach, then Move — the non-destructive way to empty
+          // this coach's roster so they can be deleted. A target coach is required.
           var moveSel = coachSelectNode("", c.id);
-          var moveBtn = el("button", { class: "btn btn--sm btn--ghost", title: "Move " + s.name + " to the selected coach (or unassign)", onclick: function () {
-            api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: moveSel.value || null } }).then(function (r) {
+          var moveBtn = el("button", { class: "btn btn--sm btn--ghost", title: "Move " + s.name + " to the selected coach", onclick: function () {
+            if (!moveSel.value) { toast("Pick a coach first"); return; }
+            api("/athletes/" + encodeURIComponent(s.id) + "/reassign", { method: "POST", body: { coachId: moveSel.value } }).then(function (r) {
               if (!r.ok) { toast(apiError(r, "Couldn't move")); return; }
-              toast(moveSel.value ? "Moved " + s.name : "Unassigned " + s.name); load(); refreshStaff();
+              toast("Moved " + s.name); load(); refreshStaff();
             }).catch(function () { toast("Couldn't reach the server"); });
           } }, "Move");
           row.appendChild(el("div", { class: "student-row-actions" }, [
@@ -4740,16 +4878,15 @@
     var scopeWrap = $("#cms-scope");
     if (scopeWrap) {
       if (isSuperadmin()) {
-        if (state.cmsScope !== "global") state.cmsScope = "private";
+        cmsScope();   // normalize from the persisted choice (default: shared/publish)
         scopeWrap.hidden = false;
         scopeWrap.textContent = "";
-        [["private", "My library"], ["global", "Shared library"]].forEach(function (pair) {
+        [["global", "Shared library — everyone"], ["private", "Only me — private"]].forEach(function (pair) {
           var input = el("input", { type: "radio", name: "cms-scope", value: pair[0] });
           if (state.cmsScope === pair[0]) input.checked = true;
           input.addEventListener("change", function () {
             if (!input.checked) return;
-            state.cmsScope = pair[0];
-            toast(pair[0] === "global" ? "Now editing the Shared library — visible to every coach & athlete" : "Now editing your private library");
+            setCmsScope(pair[0]);
             renderContent();
           });
           scopeWrap.appendChild(el("label", {}, [input, el("span", {}, pair[1])]));
@@ -4759,7 +4896,6 @@
         state.cmsScope = "private";
       }
     }
-    currentCmsTarget = (isSuperadmin() && state.cmsScope === "global") ? "global" : "private";
     // Global scope edits the shared library only — fetch a global-only snapshot so the
     // lists below never include the editor's own private items (which would otherwise be
     // written back into the shared library when saving/renaming).
@@ -4785,6 +4921,13 @@
     if (cmsGlobal() && state.globalTracking && state.globalTracking.loading) {
       var pane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
       pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the shared library…"));
+      return;
+    }
+    if (cmsGlobal() && state.globalTracking && state.globalTracking.failed) {
+      var failPane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
+      failPane.textContent = "";
+      failPane.appendChild(el("p", { class: "no-link" }, "Couldn't load the shared library — editing is paused so nothing gets overwritten. "));
+      failPane.appendChild(el("button", { class: "btn btn--sm", onclick: function () { state.globalTracking = null; renderContent(); } }, "Try again"));
       return;
     }
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();
@@ -4852,7 +4995,11 @@
       visibleRows.forEach(function (a) {
         var hid = cmsHidden(a.id);
         var tags = [];
-        if (isCustom(a.id)) tags.push(el("span", { class: "chip chip--accent" }, "Custom"));
+        // In the CMS: shared-library items say "Shared" (visible to everyone); the
+        // editor's own private additions say "Added by you".
+        if (isCustom(a.id)) {
+          tags.push(el("span", { class: "chip chip--accent" }, (cmsGlobal() || a.scope === "global") ? "Shared" : "Added by you"));
+        }
         if (hid) tags.push(el("span", { class: "chip" }, "Hidden"));
         table.appendChild(el("div", { class: "cms-row" + (hid ? " is-hidden" : "") }, [
           el("div", { class: "cms-cell cms-cell--name" }, [
@@ -5151,6 +5298,10 @@
           // rank. Only athletes get the student view.
           var staff = state.session.role !== "athlete";
           state.view = staff ? "admin" : "student";
+          // A super admin defaults to publishing scope, and Repository-tab flows read
+          // the global-only snapshot (e.g. to preserve edit payloads when hiding) — so
+          // load it up front rather than lazily on first Content-tab visit.
+          if (isSuperadmin() && cmsGlobal()) loadGlobalTracking();
           if (!location.hash) {
             state.tab = state.session.role === "superadmin" ? "appearance"
               : (state.session.role === "admin" ? "manage" : (staff ? "students" : "workouts"));

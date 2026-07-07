@@ -3417,7 +3417,7 @@ window.PX_DATA =
     "topic": "Resilience",
     "subtopics": [
       "Perspective",
-      "Competitve Mindset"
+      "Competitive Mindset"
     ],
     "type": "Article",
     "week": null,
