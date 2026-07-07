@@ -844,6 +844,9 @@
   function saveActivityEdit(id, form) {
     var fields = normalizeActivity(form, id);
     if (SERVER) {
+      // Publishing mode composes with the CURRENT shared-library state (cmsHidden);
+      // writing before the snapshot has loaded could clobber an existing shared edit.
+      if (!globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
       var body, path;
       if (isCustom(id)) {
         var payload = Object.assign({}, fields); delete payload.id;
@@ -880,7 +883,9 @@
   function setHidden(id, on) {
     if (SERVER) {
       // Preserve any existing edit payload while flipping the hidden flag (scope-aware:
-      // in Global scope read the global override, not the merged/private one).
+      // in Global scope read the global override, not the merged/private one). Requires
+      // the loaded snapshot — an empty in-flight/failed one would erase that payload.
+      if (!globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
       var payload = (cmsGlobal() ? (cmsTrack().overrides || {}) : state.tracking.overrides)[id] || null;
       api(cmsRoute("/overrides"), { method: "POST", body: { activity_id: id, payload: payload, hidden: !!on } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't update")); return; }
@@ -925,6 +930,7 @@
   // Apply a taxonomy edit: persist the new vocabulary and cascade the value
   // change onto existing activities. Routes to the server in SERVER mode.
   function taxonomyFlow(kind, action, args, onDone) {
+    if (SERVER && !globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
     var values = nextTaxValues(kind, action, args);
     if (SERVER) {
       api(cmsRoute("/taxonomy"), { method: "POST", body: {
@@ -1081,18 +1087,28 @@
       api("/global/overrides"),
       api("/global/taxonomy")
     ]).then(function (rs) {
-      var ca = (rs[0] && rs[0].ok && rs[0].data && rs[0].data.customActivities) || [];
-      var ov = (rs[1] && rs[1].ok && rs[1].data) || {};
-      var tx = (rs[2] && rs[2].ok && rs[2].data && rs[2].data.taxonomy) || {};
+      // All three must have answered OK: a partial/failed snapshot must never
+      // masquerade as "the shared library is empty" — a later edit/hide would then
+      // POST a null/base payload and erase an existing shared-library edit.
+      if (!(rs[0] && rs[0].ok && rs[1] && rs[1].ok && rs[2] && rs[2].ok)) throw new Error("global snapshot incomplete");
+      var ca = (rs[0].data && rs[0].data.customActivities) || [];
+      var ov = rs[1].data || {};
+      var tx = (rs[2].data && rs[2].data.taxonomy) || {};
       state.globalTracking = {
+        loaded: true,
         customActivities: ca,
         overrides: ov.overrides || {},
         hidden: ov.hidden || {},
         taxonomy: { topic: tx.topic || [], subtopic: tx.subtopic || [], type: tx.type || [] }
       };
     }).catch(function () {
-      state.globalTracking = { customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
+      state.globalTracking = { failed: true, customActivities: [], overrides: {}, hidden: {}, taxonomy: { topic: [], subtopic: [], type: [] } };
     });
+  }
+  // Shared-library writes may only proceed once the global snapshot actually loaded —
+  // never while it's still in flight, and never off the empty failure placeholder.
+  function globalSnapshotReady() {
+    return !cmsGlobal() || !!(state.globalTracking && state.globalTracking.loaded);
   }
   function cmsTrack() { return cmsGlobal() ? (state.globalTracking || { customActivities: [], overrides: {}, hidden: {}, taxonomy: {} }) : state.tracking; }
   // Scope-aware reads for the CMS table. In Global scope they come from the global-only
@@ -4905,6 +4921,13 @@
     if (cmsGlobal() && state.globalTracking && state.globalTracking.loading) {
       var pane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
       pane.textContent = ""; pane.appendChild(el("p", { class: "no-link" }, "Loading the shared library…"));
+      return;
+    }
+    if (cmsGlobal() && state.globalTracking && state.globalTracking.failed) {
+      var failPane = sub === "activities" ? $("#cms-activities") : $("#cms-taxonomy");
+      failPane.textContent = "";
+      failPane.appendChild(el("p", { class: "no-link" }, "Couldn't load the shared library — editing is paused so nothing gets overwritten. "));
+      failPane.appendChild(el("button", { class: "btn btn--sm", onclick: function () { state.globalTracking = null; renderContent(); } }, "Try again"));
       return;
     }
     if (sub === "activities") renderCmsActivities(); else renderCmsTaxonomy();

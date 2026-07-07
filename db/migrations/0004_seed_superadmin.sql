@@ -20,8 +20,14 @@
 -- (The production row already exists, so re-running with the placeholder is harmless.)
 -- role stays 'coach' (satisfies the CHECK); is_superadmin=1 is what makes login grant
 -- the effective 'superadmin' session role.
+--
+-- The WHERE clause makes running this file with the placeholder still in place a
+-- NO-OP: seeding a row whose "hash" can never verify would otherwise hide the
+-- first-run "Create the admin account" bootstrap (which checks for any super admin)
+-- while leaving the instance with no way to sign in. Paste a real pbkdf2$ hash and
+-- the guard passes.
 INSERT OR IGNORE INTO users (id,email,name,role,is_superadmin,password_hash,created_at)
-VALUES (
+SELECT
   'usr_superadmin_0001',
   'firas.azfar@gmail.com',
   'Super Admin',
@@ -29,4 +35,4 @@ VALUES (
   1,
   '<REDACTED — generate with: node build/hash_password.mjs "your-password" — never commit the result>',
   strftime('%s','now')
-);
+WHERE '<REDACTED — generate with: node build/hash_password.mjs "your-password" — never commit the result>' LIKE 'pbkdf2$%';
