@@ -23,6 +23,10 @@ function atLeast(session, role) { return !!session && rank(session.role) >= rank
 const SESSION_TTL = 60 * 60 * 24 * 30;        // 30 days
 const INVITE_TTL = 60 * 60 * 24 * 14;         // 14 days
 const PBKDF2_ITER = 100000;
+// Longest password accepted anywhere. PBKDF2 first hashes inputs longer than the HMAC
+// block, but a multi-megabyte "password" still costs real CPU per attempt — cap it
+// before any key derivation runs. 200 chars is far beyond any passphrase manager's output.
+const MAX_PASSWORD_LEN = 200;
 // Login/invite throttling: after N failures within LOGIN_WINDOW for a given scope, that
 // scope is locked out for LOGIN_LOCK. Backed by the login_attempts table (migration 0012);
 // if that table isn't present the checks fail open. The per-account (email) limit is strict;
@@ -250,6 +254,12 @@ function isMissingColumnError(err, column) {
     msg.includes("no such column: " + col) ||
     msg.includes("has no column named " + col)
   ));
+}
+// A SQLite constraint rejection (FK / NOT NULL / CHECK) — the signature of writing
+// post-0015-shaped completion rows into a pre-0015 table. Used to decide when a
+// legacy-schema fallback is appropriate vs. a real failure that must propagate.
+function isConstraintError(err) {
+  return /constraint/i.test(String((err && err.message) || ""));
 }
 // Format check + rejects obviously-fake / reserved domains so production accounts use
 // real emails. Reserved TLDs per RFC 2606 / 6761 plus the old .demo placeholder.
@@ -662,6 +672,7 @@ async function handleSetup(request, env, secure) {
   const email = String(b.email || "").trim().toLowerCase();
   const password = String(b.password || "");
   if (!name || !email || password.length < 8) return err(400, "Name, email, and an 8+ character password are required");
+  if (password.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
   if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address");
   const id = crypto.randomUUID();
   const hash = await hashPassword(password);
@@ -746,6 +757,7 @@ async function handleLogin(request, env, secure) {
   const email = String(b.email || "").trim().toLowerCase();
   const password = String(b.password || "");
   if (!email || !password) return err(400, "Email and password are required");
+  if (password.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
   const ipScope = "ip:" + clientIp(request);
   const emailScope = "email:" + email;
   // Throttle brute force: reject while this IP or account is locked out.
@@ -769,6 +781,7 @@ async function handleLogin(request, env, secure) {
       return err(403, "For security, this account needs a new password before signing in — its original one was published in the project's setup files.", { code: "FORCE_PASSWORD_CHANGE" });
     }
     if (newPassword.length < 8) return err(400, "The new password needs at least 8 characters", { code: "FORCE_PASSWORD_CHANGE" });
+    if (newPassword.length > MAX_PASSWORD_LEN) return err(400, "The new password is too long", { code: "FORCE_PASSWORD_CHANGE" });
     if (newPassword === password) return err(400, "Choose a password different from the old one", { code: "FORCE_PASSWORD_CHANGE" });
     const newHash = await hashPassword(newPassword);
     await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id).run();
@@ -783,6 +796,7 @@ async function handleAccept(request, env, secure) {
   const token = String(b.token || "").trim();
   const password = String(b.password || "");
   if (!token || password.length < 8) return err(400, "Invite link and an 8+ character password are required");
+  if (password.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
   const ipScope = "accept-ip:" + clientIp(request);
   const st = await loginRateState(env, ipScope);
   if (st.limited) return tooManyAttempts(st, "attempts");
@@ -802,6 +816,7 @@ async function handleChangePassword(session, request, env, secure) {
   const currentPassword = String(b.current_password || "");
   const newPassword = String(b.new_password || "");
   if (!currentPassword || newPassword.length < 8) return err(400, "Current password and a new 8+ character password are required");
+  if (currentPassword.length > MAX_PASSWORD_LEN || newPassword.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
 
   // Throttle current-password guesses with the same machinery as login. Unlike login
   // this fails CLOSED: with a stolen session cookie this endpoint is an offline-free
@@ -1433,7 +1448,8 @@ async function handleCompletions(session, request, env) {
       await env.DB.prepare("INSERT OR IGNORE INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)")
         .bind(athleteId, activityId, assignmentId || "", nowSec()).run();
     } catch (e) {
-      if (assignmentId) throw e;
+      // Only the pre-0015 FK rejecting '' warrants the NULL fallback; real failures surface.
+      if (assignmentId || !isConstraintError(e)) throw e;
       const ex = await env.DB.prepare("SELECT 1 AS x FROM completions WHERE athlete_id = ? AND activity_id = ? AND assignment_id IS NULL").bind(athleteId, activityId).first();
       if (!ex) await env.DB.prepare("INSERT INTO completions (athlete_id,activity_id,assignment_id,completed_at) VALUES (?,?,?,?)").bind(athleteId, activityId, null, nowSec()).run();
     }
@@ -2015,7 +2031,12 @@ async function handleImport(session, request, env) {
     });
     if (compStmts.length) {
       try { await env.DB.batch(compStmts); }
-      catch (e) { await env.DB.batch(compStmtsFallback); }
+      catch (e) {
+        // Only the pre-0015 schema legitimately rejects '' (its FK on assignment_id);
+        // anything else is a real failure that must surface, not be masked.
+        if (!isConstraintError(e)) throw e;
+        await env.DB.batch(compStmtsFallback);
+      }
     }
 
     const reflections = (s.reflections && typeof s.reflections === "object") ? s.reflections : {};
