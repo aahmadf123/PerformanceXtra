@@ -2171,13 +2171,23 @@ async function handleSavePage(session, request, env, slug) {
       "nav_label = excluded.nav_label, nav_order = excluded.nav_order, draft_title = NULL, draft_blocks = NULL"
     ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
   } catch (e) {
-    // Self-heal for a DB that predates migration 0018: fall back to the legacy columns.
+    // Self-heal for partial migrations first (0018 without 0020), then for a DB that
+    // predates 0018 entirely.
     try {
       await env.DB.prepare(
+        "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, " +
+        "updated_at = excluded.updated_at, status = excluded.status, description = excluded.description, " +
+        "nav_label = excluded.nav_label, nav_order = excluded.nav_order"
+      ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
+    } catch (e1) {
+      try {
+        await env.DB.prepare(
         "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
         "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
-      ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
-    } catch (e2) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
+        ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
+      } catch (e2) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
+    }
   }
   const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
   return json(Object.assign({ ok: true }, pageMeta(row, true)));
@@ -2253,7 +2263,9 @@ async function handleUploadMedia(session, request, env, url) {
   const mime = String(request.headers.get("Content-Type") || "").toLowerCase().split(";")[0].trim();
   const ext = MEDIA_MIMES[mime];
   if (!ext) return err(400, "Only JPEG, PNG, WebP or GIF images can be uploaded");
-  const declared = parseInt(request.headers.get("Content-Length") || "0", 10);
+  const declaredHeader = request.headers.get("Content-Length");
+  const declared = parseInt(declaredHeader || "", 10);
+  if (!declaredHeader || isNaN(declared) || declared <= 0) return err(411, "Content-Length header required");
   if (declared > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
   const body = await request.arrayBuffer();
   if (!body || !body.byteLength) return err(400, "Empty upload");
@@ -2293,9 +2305,9 @@ async function handleDeleteMedia(env, id) {
   catch (e) { return err(500, "Couldn't delete the image"); }
   return json({ ok: true, id: id });
 }
-// Public: stream an R2 object for GET /media/<key>. Exported for worker.js, which
+// Public: stream an R2 object for GET/HEAD /media/<key>. Exported for worker.js, which
 // routes /media/* here before falling through to static assets.
-export async function serveMedia(url, env) {
+export async function serveMedia(request, url, env) {
   if (!env.MEDIA) return new Response("Not found", { status: 404 });
   const key = url.pathname.replace(/^\//, "");
   if (!/^media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(key)) return new Response("Not found", { status: 404 });
@@ -2306,7 +2318,11 @@ export async function serveMedia(url, env) {
   if (!headers.get("Content-Type")) headers.set("Content-Type", "application/octet-stream");
   headers.set("Cache-Control", "public, max-age=31536000, immutable");
   headers.set("etag", obj.httpEtag);
-  return new Response(obj.body, { headers: headers });
+  const ifNoneMatch = String(request.headers.get("If-None-Match") || "");
+  if (ifNoneMatch && ifNoneMatch.split(",").map(function (tag) { return tag.trim(); }).includes(obj.httpEtag)) {
+    return new Response(null, { status: 304, headers: headers });
+  }
+  return new Response(request.method === "HEAD" ? null : obj.body, { headers: headers });
 }
 
 /* One-time migration of a coach's exported localStorage store into D1. */

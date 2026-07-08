@@ -10,8 +10,8 @@ export default {
 
     // CMS media library objects (R2). Keys are content-addressed by a random id, so
     // responses are cached immutably; repeat views come from the browser/edge cache.
-    if (url.pathname.startsWith("/media/") && request.method === "GET") {
-      return serveMedia(url, env);
+    if (url.pathname.startsWith("/media/") && (request.method === "GET" || request.method === "HEAD")) {
+      return serveMedia(request, url, env);
     }
 
     return env.ASSETS.fetch(request);

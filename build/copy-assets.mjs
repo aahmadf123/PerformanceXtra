@@ -12,7 +12,8 @@ const files = ["index.html", "styles.css", "app.js", "data.js"];
 // CDN dependency; served as static assets they don't count against Worker request limits.
 const vendorFiles = [
   "editorjs.umd.js", "editorjs-header.umd.js", "editorjs-list.umd.js",
-  "editorjs-quote.umd.js", "editorjs-delimiter.umd.js", "dompurify.min.js"
+  "editorjs-quote.umd.js", "editorjs-delimiter.umd.js", "dompurify.min.js",
+  "editorjs.LICENSE.txt"
 ];
 
 // Copy each asset into public/, overwriting in place. We don't remove the directory

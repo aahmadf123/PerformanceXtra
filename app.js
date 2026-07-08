@@ -3359,12 +3359,15 @@
 
   /* ----------------------------- Modal ----------------------------- */
   var modalReturnFocus = null;
+  var modalOnClose = null;
   function modalFocusables(container) {
     return $all('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])', container)
       .filter(function (n) { return n.offsetWidth > 0 || n.offsetHeight > 0 || n === document.activeElement; });
   }
   function closeModal() {
     var root = $("#modal-root");
+    var onClose = modalOnClose; modalOnClose = null;
+    if (typeof onClose === "function") { try { onClose(); } catch (e) {} }
     root.hidden = true; root.setAttribute("aria-hidden", "true"); root.textContent = ""; root.onclick = null;
     document.removeEventListener("keydown", modalKeydown);
     // Return focus to whatever opened the modal (WCAG 2.4.3 / keyboard-first).
@@ -3386,9 +3389,10 @@
       e.preventDefault(); first.focus();
     }
   }
-  function openModal(title, bodyNode, actions) {
+  function openModal(title, bodyNode, actions, onClose) {
     var root = $("#modal-root");
     modalReturnFocus = document.activeElement;
+    modalOnClose = typeof onClose === "function" ? onClose : null;
     root.textContent = "";
     var modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": title });
     modal.appendChild(el("div", { class: "modal-head" }, [
@@ -5098,14 +5102,14 @@
     [["draft", "Draft (only you can see it)"], ["published", "Published (visible to visitors)"]].forEach(function (o) {
       var op = el("option", { value: o[0] }, o[1]); if (draft.status === o[0]) op.selected = true; statusSel.appendChild(op);
     });
-    statusSel.addEventListener("change", function () { draft.status = statusSel.value; markPageDirty(); });
+    statusSel.addEventListener("change", function () { draft.status = statusSel.value; markPageDirty("meta"); });
     var descInput = el("textarea", { rows: 2, placeholder: "Short description (used for search engines and page lists)" });
     descInput.value = draft.description || "";
-    descInput.addEventListener("input", function () { draft.description = descInput.value; markPageDirty(); });
+    descInput.addEventListener("input", function () { draft.description = descInput.value; markPageDirty("meta"); });
     var navInput = el("input", { type: "text", value: draft.navLabel || "", placeholder: "e.g. About" });
-    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; markPageDirty(); });
+    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; markPageDirty("meta"); });
     var navOrderInput = el("input", { type: "number", value: draft.navOrder || "", placeholder: "0" });
-    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; markPageDirty(); });
+    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; markPageDirty("meta"); });
     panel.appendChild(el("div", { class: "appearance-grid" }, [
       el("label", { class: "appearance-field" }, [el("span", {}, "Page title"), titleInput]),
       el("label", { class: "appearance-field" }, [el("span", {}, "Address"), slugInfo]),
@@ -5176,6 +5180,12 @@
     var p = Object.assign({}, b.props || {});
     var fields = el("div", { class: "form-stack" });
     var editorRef = { ed: null };   // Editor.js instance for richtext blocks
+    function destroyEditor() {
+      if (editorRef.ed) {
+        try { editorRef.ed.destroy(); } catch (e) {}
+        editorRef.ed = null;
+      }
+    }
     function textField(key, label, ta) {
       var input = ta ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
       input.value = p[key] != null ? p[key] : "";
@@ -5241,7 +5251,7 @@
     }
     openModal("Edit " + b.type, fields, [
       { label: "Cancel", onClick: function () {
-        if (editorRef.ed) { try { editorRef.ed.destroy(); } catch (e) {} }
+        destroyEditor();
         closeModal();
       } },
       { label: "Done", accent: true, onClick: function () {
@@ -5249,7 +5259,7 @@
           if (!editorRef.ed) { closeModal(); return; }
           editorRef.ed.save().then(function (data) {
             p.doc = { blocks: ((data && data.blocks) || []).map(function (x) { return { type: x.type, data: x.data }; }) };
-            try { editorRef.ed.destroy(); } catch (e) {}
+            destroyEditor();
             b.props = p; markPageDirty(); closeModal(); renderAppearance();
           }).catch(function () { toast("Couldn't read the editor content"); });
           return;
@@ -5257,7 +5267,7 @@
         if (b.type === "heading") p.level = parseInt(p.level, 10) || 2;
         b.props = p; markPageDirty(); closeModal(); renderAppearance();
       } }
-    ]);
+    ], destroyEditor);
   }
   function savePage() {
     var draft = state.pageDraft;
@@ -5290,11 +5300,14 @@
       status: page.status || (page.published ? "published" : "draft"),
       description: page.description || "", navLabel: page.navLabel || "",
       navOrder: page.navOrder == null ? "" : String(page.navOrder),
-      dirty: false, fromAutosave: hasAutosave, autosavedAt: null
+      dirty: false, metadataDirty: false, fromAutosave: hasAutosave, autosavedAt: null
     };
   }
-  function markPageDirty() {
-    if (state.pageDraft) { state.pageDraft.dirty = true; updateDirtyFlag(); }
+  function markPageDirty(kind) {
+    if (!state.pageDraft) return;
+    state.pageDraft.dirty = true;
+    if (kind === "meta") state.pageDraft.metadataDirty = true;
+    updateDirtyFlag();
   }
   function updateDirtyFlag() {
     var flag = $("#page-dirty-flag");
@@ -5313,7 +5326,7 @@
       mode: "autosave", title: draft.title, blocks: draft.blocks
     } }).then(function (res) {
       if (!res.ok || state.pageDraft !== draft) return;
-      draft.dirty = false;
+      draft.dirty = !!draft.metadataDirty;
       draft.autosavedAt = Date.now();
       updateDirtyFlag();
     }).catch(function () {});
