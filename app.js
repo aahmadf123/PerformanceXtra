@@ -2219,11 +2219,12 @@
     var canReview = !!opts.review || canManage;
     var list = studentAssignments(s);
     if (!list.length) {
-      container.appendChild(el("p", { class: "no-link" }, canManage
+      var emptyMsg = canManage
         ? "No assignments yet. Create one to give this student a focused set of activities."
         : (canReview
-        ? "No assignments yet for this student."
-        : "No workouts assigned yet. Ask your coach for your next set."));
+          ? "No assignments yet for this student."
+          : "No workouts assigned yet. Ask your coach for your next set.");
+      container.appendChild(el("p", { class: "no-link" }, emptyMsg));
       return;
     }
     function buildAssignmentCard(asg) {
