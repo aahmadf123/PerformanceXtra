@@ -599,8 +599,9 @@ async function route(method, path, request, env, url, secure) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     if (method === "GET" && seg.length === 1) return handleListPages(env);
     if (method === "GET" && seg.length === 3 && seg[2] === "full") return handleGetPageFull(env, seg[1]);
+    if (method === "GET" && seg.length === 3 && seg[2] === "revisions") return handleListRevisions(env, seg[1]);
     if (method === "POST" && seg.length === 3 && seg[2] === "duplicate") return handleDuplicatePage(env, seg[1]);
-    if (method === "POST" && seg.length === 2) return handleSavePage(request, env, seg[1]);
+    if (method === "POST" && seg.length === 2) return handleSavePage(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeletePage(env, seg[1]);
   }
 
@@ -2071,8 +2072,14 @@ function pageMeta(row, withBlocks) {
     navOrder: row.nav_order == null ? null : row.nav_order,
     updated_at: row.updated_at, created_at: row.created_at || row.updated_at
   };
-  if (withBlocks) out.blocks = blocks;
-  else out.blockCount = blocks.length;
+  if (withBlocks) {
+    out.blocks = blocks;
+    // Autosaved working copy (migration 0020) — only meaningful to the builder.
+    if (row.draft_blocks != null) {
+      try { out.draftBlocks = JSON.parse(row.draft_blocks) || null; } catch (e) {}
+      out.draftTitle = row.draft_title || null;
+    }
+  } else out.blockCount = blocks.length;
   return out;
 }
 // Public: one published page, rendered by visitors (signed-in or out).
@@ -2109,12 +2116,28 @@ async function handleListPages(env) {
     return json({ pages: pages });
   } catch (e) { return json({ pages: [] }); }
 }
-async function handleSavePage(request, env, slug) {
+async function handleSavePage(session, request, env, slug) {
   const id = String(slug || "").trim().toLowerCase();
   if (!/^[a-z0-9-]{1,40}$/.test(id)) return err(400, "Invalid page slug");
   const b = await readBody(request);
   const title = cleanText(b.title, 120) || id;
   const blocks = sanitizeBlocks(b.blocks);
+  // Autosave: store only the working copy so a published page never changes publicly
+  // until the editor explicitly saves. Creates the row (as a draft) if it's a new page.
+  if (b.mode === "autosave") {
+    try {
+      const existing = await env.DB.prepare("SELECT id FROM pages WHERE id = ?").bind(id).first();
+      if (existing) {
+        await env.DB.prepare("UPDATE pages SET draft_title = ?, draft_blocks = ? WHERE id = ?")
+          .bind(title, JSON.stringify(blocks), id).run();
+      } else {
+        await env.DB.prepare(
+          "INSERT INTO pages (id,title,blocks,published,updated_at,status,created_at,draft_title,draft_blocks) VALUES (?,?,?,0,?,?,?,?,?)"
+        ).bind(id, title, "[]", nowSec(), "draft", nowSec(), title, JSON.stringify(blocks)).run();
+      }
+    } catch (e) { return err(500, "Couldn't autosave (is the pages table migrated?)"); }
+    return json({ ok: true, id: id, autosaved: true, at: nowSec() });
+  }
   // status wins when provided; legacy callers that only send `published` still work.
   const status = b.status === "published" || (b.status == null && b.published) ? "published" : "draft";
   const published = status === "published" ? 1 : 0;
@@ -2125,12 +2148,27 @@ async function handleSavePage(request, env, slug) {
     const n = parseInt(b.navOrder, 10);
     if (!isNaN(n)) navOrder = Math.max(-999, Math.min(999, n));
   }
+  // Explicit save: snapshot the page's previous state first (append-only history,
+  // pruned to the latest 20 per page), then upsert and clear any autosaved copy.
+  try {
+    const prev = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+    if (prev) {
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO page_revisions (page_id,title,blocks,status,saved_at,saved_by) VALUES (?,?,?,?,?,?)")
+          .bind(id, prev.title, prev.blocks, pageStatus(prev), nowSec(), (session && session.uid) || null),
+        env.DB.prepare(
+          "DELETE FROM page_revisions WHERE page_id = ? AND id NOT IN " +
+          "(SELECT id FROM page_revisions WHERE page_id = ? ORDER BY id DESC LIMIT 20)"
+        ).bind(id, id)
+      ]);
+    }
+  } catch (e) { /* revisions table not migrated yet — saving still works */ }
   try {
     await env.DB.prepare(
-      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
+      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at,draft_title,draft_blocks) VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL) " +
       "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, " +
       "updated_at = excluded.updated_at, status = excluded.status, description = excluded.description, " +
-      "nav_label = excluded.nav_label, nav_order = excluded.nav_order"
+      "nav_label = excluded.nav_label, nav_order = excluded.nav_order, draft_title = NULL, draft_blocks = NULL"
     ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
   } catch (e) {
     // Self-heal for a DB that predates migration 0018: fall back to the legacy columns.
@@ -2144,12 +2182,29 @@ async function handleSavePage(request, env, slug) {
   const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
   return json(Object.assign({ ok: true }, pageMeta(row, true)));
 }
+// Super admin: a page's saved history, newest first, blocks included so the client
+// can restore a revision into the editor without another round trip.
+async function handleListRevisions(env, slug) {
+  const id = String(slug || "").trim().toLowerCase();
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT r.*, u.name AS saved_by_name FROM page_revisions r LEFT JOIN users u ON u.id = r.saved_by " +
+      "WHERE r.page_id = ? ORDER BY r.id DESC LIMIT 20"
+    ).bind(id).all();
+    const revisions = (rows.results || []).map(function (r) {
+      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
+      return { id: r.id, title: r.title, status: r.status, blocks: blocks, saved_at: r.saved_at, saved_by: r.saved_by_name || "" };
+    });
+    return json({ revisions: revisions });
+  } catch (e) { return json({ revisions: [] }); }
+}
 async function handleDeletePage(env, slug) {
   const id = String(slug || "").trim().toLowerCase();
   try {
     const res = await env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id).run();
     if (!res.meta || !res.meta.changes) return err(404, "Page not found");
   } catch (e) { return err(500, "Couldn't delete page"); }
+  try { await env.DB.prepare("DELETE FROM page_revisions WHERE page_id = ?").bind(id).run(); } catch (e) {}
   return json({ ok: true, id: id });
 }
 // Copy an existing page to '<slug>-copy[-N]' as an unpublished draft.

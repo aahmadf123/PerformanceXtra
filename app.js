@@ -4796,11 +4796,11 @@
     else if (type === "richtext") props = { doc: { blocks: [{ type: "paragraph", data: { text: "Write anything — bold, links, lists, quotes…" } }] } };
     return { id: id, type: type, props: props };
   }
-  function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); renderAppearance(); }
+  function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); markPageDirty(); renderAppearance(); }
   function moveBlock(i, dir) {
     var b = state.pageDraft.blocks, j = i + dir;
     if (j < 0 || j >= b.length) return;
-    var tmp = b[i]; b[i] = b[j]; b[j] = tmp; renderAppearance();
+    var tmp = b[i]; b[i] = b[j]; b[j] = tmp; markPageDirty(); renderAppearance();
   }
   function blockSummary(b) {
     var p = b.props || {};
@@ -5070,31 +5070,42 @@
   function renderPageEditor() {
     var draft = state.pageDraft;
     var panel = el("div", { class: "panel" });
+    var dirtyFlag = el("span", { id: "page-dirty-flag", class: "cms-count page-flag" },
+      draft.dirty ? "● Unsaved changes" : (draft.autosavedAt ? "Autosaved (not published)" : ""));
+    if (draft.dirty) dirtyFlag.className = "cms-count page-flag page-flag--dirty";
     panel.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, "Page: " + (draft.title || draft.id)),
+      dirtyFlag,
       el("span", { class: "section-head-actions" }, [
         el("button", { class: "btn btn--sm", onclick: function () { state.pageDraft = null; renderAppearance(); } }, "← All pages"),
+        el("button", { class: "btn btn--sm btn--ghost", onclick: openRevisionsModal }, "Revisions"),
         el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
           window.open(location.pathname + "#/p/" + draft.id, "_blank");
         } }, "Preview ↗")
       ])
     ]));
+    if (draft.fromAutosave) {
+      panel.appendChild(el("div", { class: "note-banner", style: "margin:0 0 12px" }, [
+        el("strong", {}, "Resumed autosaved changes. "),
+        "These aren't visible to visitors until you save the page. Use Revisions to go back to the last saved version."
+      ]));
+    }
 
     var titleInput = el("input", { type: "text", value: draft.title });
-    titleInput.addEventListener("input", function () { draft.title = titleInput.value; });
+    titleInput.addEventListener("input", function () { draft.title = titleInput.value; markPageDirty(); });
     var slugInfo = el("input", { type: "text", value: "#/p/" + draft.id, readonly: true });
     var statusSel = el("select", {});
     [["draft", "Draft (only you can see it)"], ["published", "Published (visible to visitors)"]].forEach(function (o) {
       var op = el("option", { value: o[0] }, o[1]); if (draft.status === o[0]) op.selected = true; statusSel.appendChild(op);
     });
-    statusSel.addEventListener("change", function () { draft.status = statusSel.value; });
+    statusSel.addEventListener("change", function () { draft.status = statusSel.value; markPageDirty(); });
     var descInput = el("textarea", { rows: 2, placeholder: "Short description (used for search engines and page lists)" });
     descInput.value = draft.description || "";
-    descInput.addEventListener("input", function () { draft.description = descInput.value; });
+    descInput.addEventListener("input", function () { draft.description = descInput.value; markPageDirty(); });
     var navInput = el("input", { type: "text", value: draft.navLabel || "", placeholder: "e.g. About" });
-    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; });
+    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; markPageDirty(); });
     var navOrderInput = el("input", { type: "number", value: draft.navOrder || "", placeholder: "0" });
-    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; });
+    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; markPageDirty(); });
     panel.appendChild(el("div", { class: "appearance-grid" }, [
       el("label", { class: "appearance-field" }, [el("span", {}, "Page title"), titleInput]),
       el("label", { class: "appearance-field" }, [el("span", {}, "Address"), slugInfo]),
@@ -5122,7 +5133,7 @@
           el("button", { class: "btn btn--sm", onclick: function () { openBlockModal(i); } }, "Edit"),
           el("button", { class: "btn btn--sm btn--ghost", disabled: i === 0, onclick: function () { moveBlock(i, -1); } }, "↑"),
           el("button", { class: "btn btn--sm btn--ghost", disabled: i === draft.blocks.length - 1, onclick: function () { moveBlock(i, 1); } }, "↓"),
-          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { draft.blocks.splice(i, 1); renderAppearance(); } }, "Delete")
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { draft.blocks.splice(i, 1); markPageDirty(); renderAppearance(); } }, "Delete")
         ])
       ]));
     });
@@ -5239,12 +5250,12 @@
           editorRef.ed.save().then(function (data) {
             p.doc = { blocks: ((data && data.blocks) || []).map(function (x) { return { type: x.type, data: x.data }; }) };
             try { editorRef.ed.destroy(); } catch (e) {}
-            b.props = p; closeModal(); renderAppearance();
+            b.props = p; markPageDirty(); closeModal(); renderAppearance();
           }).catch(function () { toast("Couldn't read the editor content"); });
           return;
         }
         if (b.type === "heading") p.level = parseInt(p.level, 10) || 2;
-        b.props = p; closeModal(); renderAppearance();
+        b.props = p; markPageDirty(); closeModal(); renderAppearance();
       } }
     ]);
   }
@@ -5267,14 +5278,77 @@
       renderAppearance(); toast("Page saved");
     }).catch(function () { toast("Couldn't reach the server"); });
   }
-  // Refresh the open draft from a server page row without re-rendering.
+  // Refresh the open draft from a server page row without re-rendering. If the row
+  // carries an autosaved working copy (draftBlocks), the editor resumes from it —
+  // the published version stays untouched until an explicit save.
   function openPageDraftState(page) {
+    var hasAutosave = Array.isArray(page.draftBlocks);
     state.pageDraft = {
-      id: page.id, title: page.title || page.id, blocks: (page.blocks || []).slice(),
+      id: page.id,
+      title: (hasAutosave && page.draftTitle) || page.title || page.id,
+      blocks: (hasAutosave ? page.draftBlocks : (page.blocks || [])).slice(),
       status: page.status || (page.published ? "published" : "draft"),
       description: page.description || "", navLabel: page.navLabel || "",
-      navOrder: page.navOrder == null ? "" : String(page.navOrder)
+      navOrder: page.navOrder == null ? "" : String(page.navOrder),
+      dirty: false, fromAutosave: hasAutosave, autosavedAt: null
     };
+  }
+  function markPageDirty() {
+    if (state.pageDraft) { state.pageDraft.dirty = true; updateDirtyFlag(); }
+  }
+  function updateDirtyFlag() {
+    var flag = $("#page-dirty-flag");
+    if (!flag || !state.pageDraft) return;
+    if (state.pageDraft.dirty) { flag.textContent = "● Unsaved changes"; flag.className = "cms-count page-flag page-flag--dirty"; }
+    else if (state.pageDraft.autosavedAt) { flag.textContent = "Autosaved (not published)"; flag.className = "cms-count page-flag"; }
+    else { flag.textContent = ""; flag.className = "cms-count page-flag"; }
+  }
+  // Every 20s, quietly park dirty edits in the page's working copy on the server.
+  // A crash or closed tab then loses at most 20 seconds of work; the public page
+  // only changes on an explicit "Save page".
+  function autosavePageDraft() {
+    var draft = state.pageDraft;
+    if (!draft || !draft.dirty || !SERVER || !isSuperadmin()) return;
+    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: {
+      mode: "autosave", title: draft.title, blocks: draft.blocks
+    } }).then(function (res) {
+      if (!res.ok || state.pageDraft !== draft) return;
+      draft.dirty = false;
+      draft.autosavedAt = Date.now();
+      updateDirtyFlag();
+    }).catch(function () {});
+  }
+  function openRevisionsModal() {
+    var draft = state.pageDraft;
+    if (!draft) return;
+    api("/pages/" + encodeURIComponent(draft.id) + "/revisions").then(function (res) {
+      var revs = (res.ok && res.data && res.data.revisions) || [];
+      var body = el("div", { class: "form-stack" });
+      if (!revs.length) body.appendChild(el("p", { class: "no-link" }, "No saved revisions yet. A revision is kept every time you save this page."));
+      revs.forEach(function (r) {
+        var when = new Date(r.saved_at * 1000).toLocaleString();
+        body.appendChild(el("div", { class: "builder-block" }, [
+          el("div", { class: "builder-block-head" }, [
+            el("span", { class: "chip" + (r.status === "published" ? " chip--accent" : "") }, r.status || "draft"),
+            el("span", { class: "builder-block-summary" }, [
+              el("strong", {}, r.title), " · " + r.blocks.length + " block" + (r.blocks.length === 1 ? "" : "s") +
+              " · " + when + (r.saved_by ? " · " + r.saved_by : "")
+            ])
+          ]),
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm", onclick: function () {
+              draft.title = r.title;
+              draft.blocks = (r.blocks || []).slice();
+              draft.dirty = true;
+              closeModal();
+              renderAppearance();
+              toast("Revision loaded into the editor — save to apply it");
+            } }, "Restore")
+          ])
+        ]));
+      });
+      openModal("Revisions — " + (draft.title || draft.id), body, [{ label: "Close", onClick: closeModal }]);
+    }).catch(function () { toast("Couldn't load revisions"); });
   }
   // Published pages that opted into the nav; public endpoint, tolerant of absence.
   function loadNavPages() {
@@ -6022,6 +6096,13 @@
     var initial = (location.hash || "").replace("#", "");
     if (initial.indexOf("/p/") === 0) state.tab = "page:" + initial.slice(3);
     else if (initial) state.tab = initial;
+
+    // Page-builder autosave: park dirty edits in the server-side working copy every
+    // 20s, and warn before closing a tab with unsaved changes.
+    setInterval(autosavePageDraft, 20000);
+    window.addEventListener("beforeunload", function (e) {
+      if (state.pageDraft && state.pageDraft.dirty) { e.preventDefault(); e.returnValue = ""; }
+    });
 
     // Builder-page links (#/p/<slug>) navigate without a reload, signed in or out.
     window.addEventListener("hashchange", function () {

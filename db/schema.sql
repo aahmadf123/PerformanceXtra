@@ -185,8 +185,23 @@ CREATE TABLE IF NOT EXISTS pages (
   description TEXT,                          -- meta/SEO description
   nav_label   TEXT,                          -- when set, page appears as a nav link
   nav_order   INTEGER,                       -- sort order among nav links (NULL = not in nav)
-  created_at  INTEGER
+  created_at  INTEGER,
+  draft_title  TEXT,                         -- autosaved working copy (migration 0020);
+  draft_blocks TEXT                          -- cleared on explicit save/publish
 );
+
+-- Page edit history (migration 0020): every explicit save snapshots the previous state;
+-- the API prunes each page to its latest 20 revisions.
+CREATE TABLE IF NOT EXISTS page_revisions (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  page_id  TEXT NOT NULL,
+  title    TEXT NOT NULL,
+  blocks   TEXT NOT NULL,     -- JSON array snapshot
+  status   TEXT,
+  saved_at INTEGER NOT NULL,
+  saved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_page_revisions_page ON page_revisions(page_id, id);
 
 -- Editable site copy overrides (migration 0017). Each previously hardcoded piece of
 -- user-facing text has a stable slot key; the original copy stays in the client as the

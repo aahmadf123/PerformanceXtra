@@ -1443,3 +1443,7 @@
   .media-card--pick:hover, .media-card--pick:focus-visible { border-color: var(--accent); }
   .media-card--pick .media-name { padding: 8px 10px; }
   .media-grid--picker { max-height: 50vh; overflow-y: auto; }
+
+  /* Page editor save-state flag */
+  .page-flag { font-size: .74rem; color: var(--muted); }
+  .page-flag--dirty { color: var(--warn); font-weight: 700; }
