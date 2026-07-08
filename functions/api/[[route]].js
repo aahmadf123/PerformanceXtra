@@ -2265,7 +2265,7 @@ async function handleUploadMedia(session, request, env, url) {
   if (!ext) return err(400, "Only JPEG, PNG, WebP or GIF images can be uploaded");
   const declaredHeader = request.headers.get("Content-Length");
   const declared = parseInt(declaredHeader || "", 10);
-  if (!declaredHeader || isNaN(declared) || declared <= 0) return err(411, "Content-Length header required");
+  if (!declaredHeader || isNaN(declared) || declared <= 0) return err(411, "Content-Length header required and must be a positive number");
   if (declared > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
   const body = await request.arrayBuffer();
   if (!body || !body.byteLength) return err(400, "Empty upload");
