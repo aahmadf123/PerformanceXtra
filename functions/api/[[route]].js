@@ -2252,6 +2252,28 @@ const MEDIA_MIMES = {
 };
 const MEDIA_MAX_BYTES = 10 * 1024 * 1024;
 
+async function readRequestBodyLimited(request, maxBytes) {
+  if (!request.body) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const part = await reader.read();
+    if (part.done) break;
+    const chunk = part.value instanceof Uint8Array ? part.value : new Uint8Array(part.value || 0);
+    total += chunk.byteLength;
+    if (total > maxBytes) return null;
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  chunks.forEach(function (chunk) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return out.buffer;
+}
+
 async function handleListMedia(env) {
   try {
     const rows = await env.DB.prepare("SELECT * FROM media ORDER BY created_at DESC LIMIT 500").all();
@@ -2267,9 +2289,9 @@ async function handleUploadMedia(session, request, env, url) {
   const declared = parseInt(declaredHeader || "", 10);
   if (!declaredHeader || isNaN(declared) || declared <= 0) return err(411, "Content-Length header required and must be a positive number");
   if (declared > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
-  const body = await request.arrayBuffer();
-  if (!body || !body.byteLength) return err(400, "Empty upload");
-  if (body.byteLength > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
+  const body = await readRequestBodyLimited(request, MEDIA_MAX_BYTES);
+  if (body == null) return err(413, "Images are capped at 10 MB — resize and try again");
+  if (!body.byteLength) return err(400, "Empty upload");
   const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
   const key = "media/" + id + "." + ext;
   const filename = cleanText(url.searchParams.get("filename") || ("image." + ext), 160) || ("image." + ext);
@@ -2319,7 +2341,17 @@ export async function serveMedia(request, url, env) {
   headers.set("Cache-Control", "public, max-age=31536000, immutable");
   headers.set("etag", obj.httpEtag);
   const ifNoneMatch = String(request.headers.get("If-None-Match") || "");
-  if (ifNoneMatch && ifNoneMatch.split(",").map(function (tag) { return tag.trim(); }).includes(obj.httpEtag)) {
+  function normalizeEtag(tag) {
+    tag = String(tag || "").trim();
+    if (tag.slice(0, 2) === "W/") tag = tag.slice(2).trim();
+    if (tag[0] === '"' && tag[tag.length - 1] === '"') tag = tag.slice(1, -1);
+    return tag;
+  }
+  const currentEtag = normalizeEtag(obj.httpEtag);
+  if (ifNoneMatch && ifNoneMatch.split(",").some(function (tag) {
+    const normalized = normalizeEtag(tag);
+    return normalized === "*" || normalized === currentEtag;
+  })) {
     return new Response(null, { status: 304, headers: headers });
   }
   return new Response(request.method === "HEAD" ? null : obj.body, { headers: headers });
