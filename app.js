@@ -503,6 +503,12 @@
     var id = state.tracking.activeStudentId;
     return id && students()[id] ? students()[id] : null;
   }
+  function canManageStudentWorkspace(s) {
+    if (!s) return false;
+    if (!SERVER) return true;
+    if (isAtLeastAdmin()) return true;
+    return !s._viewerOnly;
+  }
   /* Completions are keyed "assignmentId::activityId" — the same shape as reflections
    * ('' assignment = completed with no assignment context) — so the SAME activity
    * re-assigned in a new set starts fresh instead of showing as already done. */
@@ -1961,7 +1967,8 @@
   }
 
   // Org-wide student directory (GET /all-athletes), lazy-loaded into state.allStudents and
-  // filtered client-side by the search box. Everyone sees it; only admin+ get a delete action.
+  // filtered client-side by the search box. All staff can open a student's workspace; admin+
+  // additionally get assign/reassign/delete controls.
   function renderAllStudents() {
     var listBox = $("#all-students-list");
     if (!listBox) return;
@@ -1993,23 +2000,21 @@
       var stat = s.completedCount + " completed · " + s.assignmentCount + " assignment" + (s.assignmentCount === 1 ? "" : "s");
       nameKids.push(el("span", { class: "student-stat" }, stat));
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+      var actions = [
+        el("button", { class: "btn btn--sm btn--ghost", title: "Open this student's workspace", "aria-label": "Open workspace for " + s.name, onclick: function () { openStudentWorkspaceFromDirectory(s); } }, "Open workspace")
+      ];
       if (isAtLeastAdmin()) {
-        row.appendChild(el("div", { class: "student-row-actions" }, [
-          el("button", { class: "btn btn--sm btn--ghost", title: "Assign work to this athlete", "aria-label": "Assign work to " + s.name, onclick: function () { openAssignForAnyStudent(s); } }, "Assign…"),
-          el("button", { class: "btn btn--sm btn--ghost", title: "Move this athlete to a different coach, or unassign them", "aria-label": "Move " + s.name, onclick: function () { openReassignStudent(s); } }, "Move…"),
-          el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAllStudent(s); } }, "✕ Delete")
-        ]));
+        actions.push(el("button", { class: "btn btn--sm btn--ghost", title: "Assign work to this athlete", "aria-label": "Assign work to " + s.name, onclick: function () { openAssignForAnyStudent(s); } }, "Assign…"));
+        actions.push(el("button", { class: "btn btn--sm btn--ghost", title: "Move this athlete to a different coach, or unassign them", "aria-label": "Move " + s.name, onclick: function () { openReassignStudent(s); } }, "Move…"));
+        actions.push(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this athlete and all their data", "aria-label": "Delete " + s.name, onclick: function () { deleteAllStudent(s); } }, "✕ Delete"));
       }
+      row.appendChild(el("div", { class: "student-row-actions" }, actions));
       listBox.appendChild(row);
     });
   }
 
-  // Assign work to a student who isn't on your own roster (admin+). Coaches assign from their
-  // own panel; admins/super admins can assign to ANY athlete. Loads the athlete's detail on
-  // demand (GET /athletes/:id/detail — server allows admin+ to fetch any athlete), injects it
-  // into the local store so the shared assign builder can use it, then opens that builder.
-  // Modal-scoped, so the background roster sync stays paused while the dialog is open.
-  function openAssignForAnyStudent(s) {
+  function openStudentWorkspaceFromDirectory(s, opts) {
+    opts = opts || {};
     api("/athletes/" + encodeURIComponent(s.id) + "/detail").then(function (res) {
       if (!res.ok || !res.data || !res.data.athlete) { toast(apiError(res, "Couldn't load this student")); return; }
       var a = res.data.athlete;
@@ -2020,10 +2025,25 @@
       if (!Array.isArray(a.journal)) a.journal = [];
       if (!Array.isArray(a.messages)) a.messages = [];
       if (typeof a.coachNote !== "string") a.coachNote = "";
+      a._viewerOnly = !!(SERVER && res.data && res.data.canManage === false);
       state.tracking.students[s.id] = a;
-      state.allStudents = null;   // assignment count will change; re-fetch the directory on next view
-      openAssignBuilderModal(s.id);
+      state.tracking.activeStudentId = s.id;
+      try { if (SERVER) localStorage.setItem(activeStudentStorageKey(), s.id); } catch (e) {}
+      state.studentTab = "mine";
+      state.allStudents = null;   // assignment/progress counts can change while this detail is open
+      renderAll();
+      if (opts.assign && !a._viewerOnly) openAssignBuilderModal(s.id);
+      if (a._viewerOnly) toast("Read-only workspace: this student is not on your roster");
     }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
+  // Assign work to a student who isn't on your own roster (admin+). Coaches assign from their
+  // own panel; admins/super admins can assign to ANY athlete. Loads the athlete's detail on
+  // demand (GET /athletes/:id/detail — server allows admin+ to fetch any athlete), injects it
+  // into the local store so the shared assign builder can use it, then opens that builder.
+  // Modal-scoped, so the background roster sync stays paused while the dialog is open.
+  function openAssignForAnyStudent(s) {
+    openStudentWorkspaceFromDirectory(s, { assign: true });
   }
 
   // Move an athlete to a different coach from the All-students directory (admin+). This
@@ -2195,10 +2215,14 @@
   // own actionable view is the workout spine (appendWorkoutSpine), not this list.
   function appendAssignmentList(container, s, opts) {
     opts = opts || {};
+    var canManage = !!opts.admin;
+    var canReview = !!opts.review || canManage;
     var list = studentAssignments(s);
     if (!list.length) {
-      container.appendChild(el("p", { class: "no-link" }, opts.admin
+      container.appendChild(el("p", { class: "no-link" }, canManage
         ? "No assignments yet. Create one to give this student a focused set of activities."
+        : (canReview
+        ? "No assignments yet for this student."
         : "No workouts assigned yet. Ask your coach for your next set."));
       return;
     }
@@ -2209,7 +2233,7 @@
       var card = el("div", { class: "assignment" });
 
       var actions = el("div", { class: "assignment-actions" });
-      if (opts.admin) {
+      if (canManage) {
         if (SERVER) actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Save this set as a reusable template", onclick: function () {
           saveTemplate(asg.title, asg.note || "", asg.items);
         } }, "★ Template"));
@@ -2249,13 +2273,13 @@
         ]));
         var link = itemLink(asg, id);
         if (link) item.appendChild(el("a", { class: "btn btn--sm" + (itemHasCustomLink(asg, id) ? " has-custom-link" : ""), href: link, target: "_blank", rel: "noopener", title: itemHasCustomLink(asg, id) ? "Custom link for this student" : "" }, "Open ↗"));
-        if (opts.admin) {
+        if (canManage) {
           var hasCustom = itemHasCustomLink(asg, id);
           item.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: hasCustom ? "Edit this student's custom link" : "Set a custom link for this student", onclick: function () {
             openItemLinkModal(s.id, asg, id);
           } }, hasCustom ? "🔗 Edit link" : "🔗 Custom link"));
         }
-        if (opts.admin) {
+        if (canManage) {
           var btn = el("button", { class: "btn btn--sm done-btn", "aria-pressed": done ? "true" : "false", onclick: function () {
             setCompletion(s, id, !completionAt(s, asg.id, id), asg.id);
             renderAll();
@@ -2272,7 +2296,7 @@
           item.appendChild(det);
         }
         // Coach read-only view of the athlete's per-activity reflection / observation.
-        if (opts.admin) {
+        if (canReview) {
           var itemRefl = getReflectionEntry(s, asg.id, id);
           if (itemRefl && itemRefl.text) {
             item.appendChild(el("div", { class: "reflection-read", style: "width:100%; margin-top:6px;" }, [
@@ -2290,7 +2314,7 @@
       // per-activity fields above). Shown read-only to the coach ONLY when an athlete
       // actually wrote one back then \u2014 no empty "not submitted" noise on new work.
       var ASSIGN_REFL_KEY = "__assignment__";
-      if (opts.admin) {
+      if (canReview) {
         var asgReflAdmin = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
         if (asgReflAdmin && asgReflAdmin.text) {
           card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
@@ -2311,7 +2335,7 @@
     // On the admin/coach side, collapse fully-completed assignments into one
     // expandable section so the coach doesn't scroll past finished work to find
     // what's still in progress.
-    if (opts.admin) {
+    if (canReview) {
       var activeAsgs = list.filter(function (asg) { return !isAssignmentComplete(asg); });
       var doneAsgs = list.filter(isAssignmentComplete);
       if (!activeAsgs.length) {
@@ -2548,16 +2572,20 @@
       ]));
       return;
     }
+    var canManage = canManageStudentWorkspace(s);
     var headActions = el("div", { class: "section-head-actions" }, [
       el("button", { class: "btn btn--sm", title: "Download all assignments as .pdf", onclick: function () { downloadAllAssignmentsPdf(s); } }, "⬇ Download all as PDF"),
       el("button", { class: "btn btn--sm", title: "Download all assignments as .txt", onclick: function () { downloadAllAssignmentsTxt(s); } }, "⬇ Download all as TXT"),
-      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment")
+      canManage ? el("button", { class: "btn btn--sm btn--accent", onclick: function () { openAssignBuilderModal(s.id); } }, "+ New assignment") : null
     ]);
     detail.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, s.name + " — Assignments"),
       headActions
     ]));
-    if (!studentAssignments(s).length) {
+    if (!canManage) {
+      detail.appendChild(el("div", { class: "note-banner" }, "Read-only workspace: you can review assignments, progress, and reflections, but editing is limited to the student's coach (or admin/super admin)."));
+    }
+    if (!studentAssignments(s).length && canManage) {
       detail.appendChild(el("div", { class: "note-banner students-next-step" }, [
         el("strong", {}, "Next step:"),
         el("span", {}, " Create the first assignment for " + s.name + " so progress, reflections, and check-ins have a clear starting point."),
@@ -2577,12 +2605,12 @@
       }
       detail.appendChild(el("div", { class: "asg-summary" }, summaryParts));
     }
-    appendAssignmentList(detail, s, { admin: true });
+    appendAssignmentList(detail, s, { admin: canManage, review: true });
 
     detail.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Progress"));
     appendProgress(detail, s);
     appendWellbeing(detail, s);
-    appendCoachComms(detail, s);
+    if (canManage) appendCoachComms(detail, s);
   }
 
   /* ----------------------------- Student views ----------------------------- */

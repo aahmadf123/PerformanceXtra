@@ -1236,18 +1236,29 @@ async function canManageAthlete(session, athleteId, env) {
   return row.coach_id === session.uid ? row : null;     // coach: own athlete only
 }
 
+// View-only gate for reading an athlete's full detail card in the staff UI. All staff
+// tiers (coach/admin/super admin) may view any athlete in the org; write paths still use
+// canManageAthlete() so cross-coach editing is never widened by this helper.
+async function canViewAthlete(session, athleteId, env) {
+  if (!atLeast(session, "coach") || !athleteId) return null;
+  return env.DB.prepare("SELECT id, coach_id FROM users WHERE id = ? AND role='athlete'")
+    .bind(athleteId).first();
+}
+
 // Full detail for a single athlete (assignments, links, reflections, wellbeing, thread).
 // A coach may fetch their own athlete; an admin/super admin may fetch ANY athlete — this
 // backs the All-students "open & assign" flow for staff who don't directly coach them.
 async function handleGetAthleteDetail(session, env, athleteId) {
-  if (!(await canManageAthlete(session, athleteId, env))) return err(403, "Not your athlete");
+  const viewRow = await canViewAthlete(session, athleteId, env);
+  if (!viewRow) return err(404, "Athlete not found");
+  const canManage = !!(await canManageAthlete(session, athleteId, env));
   const row = await env.DB.prepare(
     "SELECT id,name,email,coach_id,created_at,(password_hash IS NOT NULL) AS has_password FROM users WHERE id = ?"
   ).bind(athleteId).first();
   if (!row) return err(404, "Athlete not found");
   const a = await assembleAthlete(env, row, { includeCoachNote: true, coachId: row.coach_id || null });
   a.hasPassword = !!row.has_password;
-  return json({ athlete: a });
+  return json({ athlete: a, canManage: canManage });
 }
 
 async function handleListAssignments(session, env, url) {
