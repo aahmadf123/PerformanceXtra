@@ -4785,6 +4785,7 @@
     else if (type === "cards") props = { items: [{ title: "Card title", body: "Card text", icon: "★" }] };
     else if (type === "button") props = { label: "Button", href: "", style: "primary" };
     else if (type === "spacer") props = { size: "md" };
+    else if (type === "richtext") props = { doc: { blocks: [{ type: "paragraph", data: { text: "Write anything — bold, links, lists, quotes…" } }] } };
     return { id: id, type: type, props: props };
   }
   function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); renderAppearance(); }
@@ -4802,6 +4803,12 @@
     if (b.type === "cards") return (p.items || []).length + " card" + ((p.items || []).length === 1 ? "" : "s");
     if (b.type === "button") return p.label || "(button)";
     if (b.type === "spacer") return p.size || "md";
+    if (b.type === "richtext") {
+      var n = ((p.doc || {}).blocks || []).length;
+      var first = (((p.doc || {}).blocks || [])[0] || {}).data || {};
+      var plain = String(first.text || "").replace(/<[^>]*>/g, "");
+      return plain.slice(0, 60) || (n + " rich block" + (n === 1 ? "" : "s"));
+    }
     return "";
   }
   // Pages manager: a list of every builder page (create / edit / duplicate / publish /
@@ -4953,7 +4960,7 @@
     ]));
 
     var palette = el("div", { class: "builder-palette" });
-    [["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
+    [["richtext", "Rich text"], ["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
       palette.appendChild(el("button", { class: "btn btn--sm btn--ghost", onclick: function () { addBlock(pair[0]); } }, "+ " + pair[1]));
     });
     panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Add a block"), palette]));
@@ -5012,6 +5019,7 @@
     if (!b) return;
     var p = Object.assign({}, b.props || {});
     var fields = el("div", { class: "form-stack" });
+    var editorRef = { ed: null };   // Editor.js instance for richtext blocks
     function textField(key, label, ta) {
       var input = ta ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
       input.value = p[key] != null ? p[key] : "";
@@ -5042,10 +5050,41 @@
       selectField("size", "Size", [["sm", "Small"], ["md", "Medium"], ["lg", "Large"]]);
     } else if (b.type === "cards") {
       renderCardsEditor(fields, p);
+    } else if (b.type === "richtext") {
+      // WordPress-style editor: block-based rich text (Editor.js), loaded on demand.
+      var holder = el("div", { class: "richtext-holder" });
+      var loading = el("p", { class: "field-hint" }, "Loading the rich-text editor…");
+      fields.appendChild(el("div", { class: "field" }, [holder, loading]));
+      ensureRichTextEditor().then(function () {
+        loading.remove();
+        editorRef.ed = new window.EditorJS({
+          holder: holder,
+          data: (p.doc && Array.isArray(p.doc.blocks)) ? p.doc : { blocks: [] },
+          minHeight: 120,
+          tools: {
+            header: { class: window.Header, inlineToolbar: true, config: { levels: [1, 2, 3, 4], defaultLevel: 2 } },
+            list: { class: window.List, inlineToolbar: true },
+            quote: { class: window.Quote, inlineToolbar: true },
+            delimiter: window.Delimiter
+          }
+        });
+      }).catch(function () { loading.textContent = "Couldn't load the rich-text editor. Check your connection and try again."; });
     }
     openModal("Edit " + b.type, fields, [
-      { label: "Cancel", onClick: closeModal },
+      { label: "Cancel", onClick: function () {
+        if (editorRef.ed) { try { editorRef.ed.destroy(); } catch (e) {} }
+        closeModal();
+      } },
       { label: "Done", accent: true, onClick: function () {
+        if (b.type === "richtext") {
+          if (!editorRef.ed) { closeModal(); return; }
+          editorRef.ed.save().then(function (data) {
+            p.doc = { blocks: ((data && data.blocks) || []).map(function (x) { return { type: x.type, data: x.data }; }) };
+            try { editorRef.ed.destroy(); } catch (e) {}
+            b.props = p; closeModal(); renderAppearance();
+          }).catch(function () { toast("Couldn't read the editor content"); });
+          return;
+        }
         if (b.type === "heading") p.level = parseInt(p.level, 10) || 2;
         b.props = p; closeModal(); renderAppearance();
       } }
@@ -5127,8 +5166,79 @@
     });
   }
 
+  /* ----------------------------- Rich text (Editor.js + DOMPurify) -----------------------------
+   * Self-hosted, pinned bundles under vendor/ (no runtime CDN dependency), lazy-loaded:
+   * DOMPurify only when a rich block needs rendering, the Editor.js suite only when a
+   * super admin opens the rich-text editor. */
+  var scriptPromises = {};
+  function loadScript(src) {
+    if (scriptPromises[src]) return scriptPromises[src];
+    scriptPromises[src] = new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src; s.async = true;
+      s.onload = resolve;
+      s.onerror = function () { delete scriptPromises[src]; reject(new Error("failed to load " + src)); };
+      document.head.appendChild(s);
+    });
+    return scriptPromises[src];
+  }
+  function ensureDomPurify() {
+    return window.DOMPurify ? Promise.resolve() : loadScript("vendor/dompurify.min.js");
+  }
+  function ensureRichTextEditor() {
+    return loadScript("vendor/editorjs.umd.js").then(function () {
+      return Promise.all([
+        loadScript("vendor/editorjs-header.umd.js"),
+        loadScript("vendor/editorjs-list.umd.js"),
+        loadScript("vendor/editorjs-quote.umd.js"),
+        loadScript("vendor/editorjs-delimiter.umd.js"),
+        ensureDomPurify()
+      ]);
+    });
+  }
+  // Sanitize an inline-HTML fragment and return a DOM node. The server already scrubbed
+  // on save; DOMPurify at render time is the second, authoritative layer. Links are
+  // post-hardened to https-only + noopener (tightening after sanitize is safe).
+  var RICH_ALLOWED_TAGS = ["b", "i", "strong", "em", "a", "code", "mark", "br", "u", "s"];
+  function richInline(tag, cls, html) {
+    var node = el(tag, cls ? { class: cls } : {});
+    node.innerHTML = window.DOMPurify
+      ? window.DOMPurify.sanitize(String(html || ""), { ALLOWED_TAGS: RICH_ALLOWED_TAGS, ALLOWED_ATTR: ["href"] })
+      : "";
+    $all("a", node).forEach(function (a) {
+      var href = a.getAttribute("href") || "";
+      if (!/^https:\/\//i.test(href)) { a.removeAttribute("href"); return; }
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+    });
+    return node;
+  }
+  // Build DOM for a sanitized Editor.js document (paragraph/header/list/quote/delimiter).
+  function renderRichDoc(doc, mount) {
+    ((doc && doc.blocks) || []).forEach(function (b) {
+      if (!b) return;
+      var d = b.data || {};
+      if (b.type === "paragraph") mount.appendChild(richInline("p", "pb-rich-p", d.text));
+      else if (b.type === "header") {
+        var lvl = d.level >= 1 && d.level <= 4 ? Math.floor(d.level) : 2;
+        mount.appendChild(richInline("h" + lvl, "pb-rich-h", d.text));
+      } else if (b.type === "list") {
+        var listEl = el(d.style === "ordered" ? "ol" : "ul", { class: "pb-rich-list" });
+        (d.items || []).forEach(function (it) { listEl.appendChild(richInline("li", "", it)); });
+        mount.appendChild(listEl);
+      } else if (b.type === "quote") {
+        var q = el("blockquote", { class: "pb-rich-quote" }, [richInline("p", "", d.text)]);
+        if (d.caption) q.appendChild(richInline("cite", "", d.caption));
+        mount.appendChild(q);
+      } else if (b.type === "delimiter") {
+        mount.appendChild(el("div", { class: "pb-rich-delimiter", "aria-hidden": "true" }, "* * *"));
+      }
+    });
+  }
+
   // Render an ordered list of sanitized content blocks into a mount node. All text is
-  // set via textContent (never innerHTML) and links/images are forced to https, so
+  // set via textContent (never innerHTML) and links/images are forced to https; the
+  // one exception is rich text, which goes through DOMPurify (richInline above), so
   // rendering builder content can't inject script.
   function renderPageBlocks(blocks, mount) {
     mount.textContent = "";
@@ -5177,6 +5287,13 @@
     spacer: function (p) {
       var h = p.size === "sm" ? 16 : (p.size === "lg" ? 64 : 32);
       return el("div", { style: "height:" + h + "px" });
+    },
+    richtext: function (p) {
+      var wrap = el("div", { class: "pb-rich" });
+      // DOMPurify may not be loaded yet on a public view; fill the node once it is.
+      if (window.DOMPurify) renderRichDoc(p.doc, wrap);
+      else ensureDomPurify().then(function () { renderRichDoc(p.doc, wrap); }).catch(function () {});
+      return wrap;
     }
   };
 

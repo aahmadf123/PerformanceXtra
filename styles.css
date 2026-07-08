@@ -1408,3 +1408,23 @@
   .landing-nav-link:hover, .landing-nav-link:focus-visible { color: var(--accent); border-color: var(--accent); }
   .landing-nav-link.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
   #view-page .pb-page { max-width: 880px; margin: 0 auto; }
+
+  /* ----------------------------- Rich text blocks (Editor.js output) ----------------------------- */
+  .richtext-holder {
+    border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+    background: var(--bg-2); padding: 8px 14px; min-height: 160px; color: var(--ink);
+  }
+  .richtext-holder .codex-editor__redactor { padding-bottom: 60px !important; }
+  .pb-rich { line-height: 1.65; }
+  .pb-rich .pb-rich-p { margin: 0 0 12px; color: var(--ink-soft); }
+  .pb-rich .pb-rich-h { margin: 20px 0 10px; color: var(--ink); }
+  .pb-rich .pb-rich-list { margin: 0 0 12px; padding-left: 26px; color: var(--ink-soft); }
+  .pb-rich .pb-rich-list li { margin: 4px 0; }
+  .pb-rich .pb-rich-quote {
+    margin: 14px 0; padding: 10px 18px; border-left: 3px solid var(--accent);
+    background: var(--bg-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+    font-style: italic; color: var(--ink);
+  }
+  .pb-rich .pb-rich-quote cite { display: block; margin-top: 6px; font-size: .82rem; font-style: normal; color: var(--muted); }
+  .pb-rich-delimiter { text-align: center; letter-spacing: .5em; color: var(--muted); margin: 18px 0; }
+  .pb-rich a { color: var(--accent); text-underline-offset: 3px; }

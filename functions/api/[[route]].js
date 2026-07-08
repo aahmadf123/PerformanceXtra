@@ -1821,7 +1821,59 @@ const DEFAULT_THEME = {
 };
 const THEME_KEYS = Object.keys(DEFAULT_THEME);
 const SITE_KEYS = ["brandName", "brandTag"];
-const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer"];
+const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer", "richtext"];
+
+/* Rich text (Editor.js) sanitization. A richtext page block stores an Editor.js
+ * document: { doc: { blocks: [{type, data}, ...] } }. Only these inner block types
+ * survive, and every inline-HTML field is scrubbed by scrubInlineHtml below. The
+ * client additionally runs DOMPurify at render time — this server pass is the
+ * persistence-layer defence so a hand-crafted POST can't store active markup. */
+const RICH_INNER_TYPES = ["paragraph", "header", "list", "quote", "delimiter"];
+
+// Allowlist scrub for inline HTML fragments: any tag that isn't EXACTLY a permitted
+// simple tag (<b>, </em>, <br> ...) or an https-only <a href="..."> is HTML-escaped,
+// so unknown/malformed markup renders as visible text instead of parsing as HTML.
+function scrubInlineHtml(v, max) {
+  const s = String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 4000);
+  return s.replace(/<[^>]*>?/g, function (tag) {
+    let m = tag.match(/^<(\/?)(b|i|strong|em|code|mark|u|s)>$/i);
+    if (m) return "<" + m[1] + m[2].toLowerCase() + ">";
+    if (/^<br\s*\/?>$/i.test(tag)) return "<br>";
+    m = tag.match(/^<a\s+href="(https:\/\/[^"<>\s]{1,300})"[^<>]*>$/i);
+    if (m) return '<a href="' + m[1] + '">';
+    if (/^<\/a>$/i.test(tag)) return "</a>";
+    return tag.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  });
+}
+// One sanitized Editor.js inner block, or null to drop it.
+function sanitizeRichInner(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const type = String(raw.type || "").toLowerCase();
+  if (RICH_INNER_TYPES.indexOf(type) === -1) return null;
+  const d = (raw.data && typeof raw.data === "object") ? raw.data : {};
+  const data = {};
+  if (type === "paragraph") {
+    data.text = scrubInlineHtml(d.text, 8000);
+  } else if (type === "header") {
+    data.text = scrubInlineHtml(d.text, 400);
+    data.level = (d.level >= 1 && d.level <= 4) ? Math.floor(d.level) : 2;
+  } else if (type === "list") {
+    data.style = d.style === "ordered" ? "ordered" : "unordered";
+    data.items = (Array.isArray(d.items) ? d.items : []).slice(0, 100).map(function (it) {
+      // list v1 items are HTML strings; newer versions may wrap them in {content}.
+      return scrubInlineHtml(typeof it === "string" ? it : (it && it.content), 2000);
+    });
+  } else if (type === "quote") {
+    data.text = scrubInlineHtml(d.text, 4000);
+    data.caption = scrubInlineHtml(d.caption, 400);
+  }
+  // delimiter carries no data
+  return { type: type, data: data };
+}
+function sanitizeRichDoc(raw) {
+  const src = (raw && typeof raw === "object" && Array.isArray(raw.blocks)) ? raw.blocks : [];
+  return { blocks: src.slice(0, 200).map(sanitizeRichInner).filter(Boolean) };
+}
 
 async function loadSiteSettings(env) {
   const out = { theme: Object.assign({}, DEFAULT_THEME), site: {} };
@@ -1985,6 +2037,8 @@ function sanitizeBlock(raw, i) {
     props.style = (p.style === "ghost" || p.style === "ember") ? p.style : "primary";
   } else if (type === "spacer") {
     props.size = (p.size === "sm" || p.size === "lg") ? p.size : "md";
+  } else if (type === "richtext") {
+    props.doc = sanitizeRichDoc(p.doc);
   }
   return { id: id, type: type, props: props };
 }
