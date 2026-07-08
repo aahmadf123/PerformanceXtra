@@ -495,8 +495,10 @@
   }
 
   function students() { return state.tracking.students; }
+  function isWorkspaceOnlyStudent(s) { return !!(s && s._workspaceOnly); }
   function studentList() {
     return Object.keys(students()).map(function (id) { return students()[id]; })
+      .filter(function (s) { return !isWorkspaceOnlyStudent(s); })
       .sort(function (a, b) { return a.name.localeCompare(b.name); });
   }
   function activeStudent() {
@@ -1004,7 +1006,8 @@
   function activeStudentStorageKey() { return "px.activeStudent." + ((state.session && state.session.id) || "local"); }
   function setActiveStudent(id) {
     state.tracking.activeStudentId = id || null;
-    try { if (SERVER && id) localStorage.setItem(activeStudentStorageKey(), id); } catch (e) {}
+    var s = id ? students()[id] : null;
+    try { if (SERVER && id && !isWorkspaceOnlyStudent(s)) localStorage.setItem(activeStudentStorageKey(), id); } catch (e) {}
     saveTracking();
   }
 
@@ -2026,9 +2029,9 @@
       if (!Array.isArray(a.messages)) a.messages = [];
       if (typeof a.coachNote !== "string") a.coachNote = "";
       a._viewerOnly = !!(SERVER && res.data && res.data.canManage === false);
+      a._workspaceOnly = true;   // opened from org directory; don't treat as roster ownership
       state.tracking.students[s.id] = a;
       state.tracking.activeStudentId = s.id;
-      try { if (SERVER) localStorage.setItem(activeStudentStorageKey(), s.id); } catch (e) {}
       state.studentTab = "mine";
       state.allStudents = null;   // assignment/progress counts can change while this detail is open
       renderAll();
