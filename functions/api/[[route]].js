@@ -525,6 +525,7 @@ async function route(method, path, request, env, url, secure) {
   // Site appearance (theme tokens + brand) and published builder pages are PUBLIC so the
   // signed-out login page can theme/render itself. Writes are super-admin only (below).
   if (method === "GET" && path === "/site") return handleGetSite(env);
+  if (method === "GET" && path === "/content") return handleGetContent(env);
   if (method === "GET" && head === "pages" && seg.length === 2) return handleGetPage(env, seg[1]);
 
   /* -------- session required below -------- */
@@ -580,6 +581,10 @@ async function route(method, path, request, env, url, secure) {
   if (head === "site" && method === "POST" && seg.length === 1) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     return handleSaveSite(request, env);
+  }
+  if (head === "content" && method === "POST" && seg.length === 1) {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    return handleSaveContent(request, env);
   }
   if (head === "pages") {
     // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
@@ -1862,6 +1867,72 @@ async function handleSaveSite(request, env) {
   try { await env.DB.batch(stmts); }
   catch (e) { return err(500, "Couldn't save appearance (is the site_settings table migrated?)"); }
   return json({ ok: true, site: await loadSiteSettings(env) });
+}
+
+/* ----------------------- Editable site copy ("content slots") -----------------------
+ * Every previously hardcoded piece of user-facing text has a stable slot key. The
+ * defaults live in the client (CONTENT_DEFAULTS in app.js); this table stores only
+ * overrides, so an empty table renders the original site. Keys are whitelisted here
+ * (with a max length each) so a save can't invent keys or store oversized blobs.
+ * Reads are public (the signed-out landing shows slot copy); writes are super-admin. */
+const CONTENT_SLOTS = {
+  "brand.name": 80, "brand.tag": 120,
+  "hero.kicker": 120, "hero.title": 240, "hero.copy": 600,
+  "hero.role1": 120, "hero.role2": 120, "hero.role3": 120,
+  "hero.note_title": 80, "hero.note_copy": 200,
+  "guide.title": 120, "guide.meta": 80,
+  "guide.step1_title": 200, "guide.step1_copy": 300,
+  "guide.step2_title": 200, "guide.step2_copy": 300,
+  "guide.step3_title": 200, "guide.step3_copy": 300,
+  "moment.morning_label": 60, "moment.morning_copy": 300,
+  "moment.midday_label": 60, "moment.midday_copy": 300,
+  "moment.evening_label": 60, "moment.evening_copy": 300,
+  "preview.kicker": 80, "preview.title": 160, "preview.copy": 400,
+  "repo.heading": 80, "repo.intro": 500,
+  "students.heading": 80, "students.intro": 500,
+  "content.heading": 80, "content.intro": 500,
+  "workouts.heading": 80, "workouts.intro": 500,
+  "checkin.heading": 80, "checkin.intro": 500,
+  "messages.heading": 80, "messages.intro": 500,
+  "progress.heading": 80, "progress.intro": 500,
+  "settings.heading": 80, "settings.intro": 500,
+  "footer.text": 200, "footer.tagline": 120
+};
+
+async function handleGetContent(env) {
+  const out = {};
+  try {
+    const rows = await env.DB.prepare("SELECT key,value FROM content_slots").all();
+    (rows.results || []).forEach(function (r) {
+      if (CONTENT_SLOTS[r.key] != null) out[r.key] = r.value;
+    });
+  } catch (e) { /* table not migrated yet — no overrides */ }
+  return json({ content: out });
+}
+
+// Upsert each provided slot; null/empty string deletes the override (reset to default).
+async function handleSaveContent(request, env) {
+  const b = await readBody(request);
+  const src = (b && typeof b.content === "object" && b.content) || {};
+  const stmts = [];
+  Object.keys(src).forEach(function (k) {
+    const max = CONTENT_SLOTS[k];
+    if (max == null) return;                       // unknown key — drop silently
+    const v = src[k];
+    if (v == null || String(v).trim() === "") {
+      stmts.push(env.DB.prepare("DELETE FROM content_slots WHERE key = ?").bind(k));
+    } else {
+      stmts.push(env.DB.prepare(
+        "INSERT INTO content_slots (key,value,updated_at) VALUES (?,?,?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+      ).bind(k, cleanText(v, max), nowSec()));
+    }
+  });
+  if (!stmts.length) return err(400, "Nothing to save");
+  try { await env.DB.batch(stmts); }
+  catch (e) { return err(500, "Couldn't save site content (is the content_slots table migrated?)"); }
+  const res = await handleGetContent(env);
+  return res;
 }
 
 // Drop ASCII control chars and cap length before persistence. Rendering uses textContent

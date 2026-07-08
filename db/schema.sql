@@ -181,6 +181,15 @@ CREATE TABLE IF NOT EXISTS pages (
   updated_at INTEGER NOT NULL
 );
 
+-- Editable site copy overrides (migration 0017). Each previously hardcoded piece of
+-- user-facing text has a stable slot key; the original copy stays in the client as the
+-- default, so this table stores only overrides (empty table = original site).
+CREATE TABLE IF NOT EXISTS content_slots (
+  key        TEXT PRIMARY KEY,   -- e.g. 'hero.title', 'repo.intro', 'footer.text'
+  value      TEXT NOT NULL,      -- plain text override for this slot
+  updated_at INTEGER NOT NULL
+);
+
 -- Mental-performance check-ins + journaling (migration 0008). Athletes self-report a
 -- daily mood/energy/stress (each 1-5) + optional note (one row per athlete per local
 -- day), and free-form journal entries; their coach reads both read-only.

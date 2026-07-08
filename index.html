@@ -24,8 +24,8 @@
       <div class="brand">
         <div class="brand-logo" aria-hidden="true">PX</div>
         <div>
-          <div class="brand-name">PerformanceXtra</div>
-          <div class="brand-tag">Mental Workout Repository</div>
+          <div class="brand-name" data-slot="brand.name">PerformanceXtra</div>
+          <div class="brand-tag" data-slot="brand.tag">Mental Workout Repository</div>
         </div>
       </div>
       <div class="student-picker">
@@ -62,8 +62,8 @@
   <!-- ===================== Repository ===================== -->
   <section id="view-repo" class="view is-active" aria-labelledby="repo-h">
     <div class="view-intro">
-      <h2 id="repo-h">Activity Repository</h2>
-      <p>Every mental-training activity in one place. Search and filter by topic, content type, and progression, then open the resource or expand it for instructions and reflection prompts.</p>
+      <h2 id="repo-h" data-slot="repo.heading">Activity Repository</h2>
+      <p data-slot="repo.intro">Every mental-training activity in one place. Search and filter by topic, content type, and progression, then open the resource or expand it for instructions and reflection prompts.</p>
     </div>
 
     <div class="repo-toolbar admin-only">
@@ -98,8 +98,8 @@
   <!-- ===================== Students ===================== -->
   <section id="view-students" class="view" aria-labelledby="students-h">
     <div class="view-intro">
-      <h2 id="students-h">Students</h2>
-      <p>Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.</p>
+      <h2 id="students-h" data-slot="students.heading">Students</h2>
+      <p data-slot="students.intro">Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.</p>
     </div>
 
     <div class="seg" id="students-subnav" hidden></div>
@@ -138,8 +138,8 @@
   <!-- ===================== Content (admin CMS) ===================== -->
   <section id="view-content" class="view" aria-labelledby="content-h">
     <div class="view-intro">
-      <h2 id="content-h">Content</h2>
-      <p>Manage your activity library and the Topic, Subtopic, and Content-type lists used across the app. Changes save to your team database and take effect right away, with no developer needed.</p>
+      <h2 id="content-h" data-slot="content.heading">Content</h2>
+      <p data-slot="content.intro">Manage your activity library and the Topic, Subtopic, and Content-type lists used across the app. Changes save to your team database and take effect right away, with no developer needed.</p>
     </div>
     <div class="cms-scope seg" id="cms-scope" role="radiogroup" aria-label="Content library" hidden></div>
     <div class="cms-subnav seg" id="cms-subnav" role="navigation" aria-label="Content sections"></div>
@@ -159,8 +159,8 @@
   <!-- ===================== My Workouts (student) ===================== -->
   <section id="view-workouts" class="view" aria-labelledby="workouts-h">
     <div class="view-intro">
-      <h2 id="workouts-h">My Workouts</h2>
-      <p>These are the activities your coach has assigned for you. Work through them and mark each one done as you go.</p>
+      <h2 id="workouts-h" data-slot="workouts.heading">My Workouts</h2>
+      <p data-slot="workouts.intro">These are the activities your coach has assigned for you. Work through them and mark each one done as you go.</p>
     </div>
     <div id="workouts-panel"></div>
   </section>
@@ -168,8 +168,8 @@
   <!-- ===================== Check-in (student) ===================== -->
   <section id="view-checkin" class="view" aria-labelledby="checkin-h">
     <div class="view-intro">
-      <h2 id="checkin-h">Daily check-in</h2>
-      <p>A quick, private moment to notice how you’re doing. There are no wrong answers. It simply helps you and your coach notice patterns over time.</p>
+      <h2 id="checkin-h" data-slot="checkin.heading">Daily check-in</h2>
+      <p data-slot="checkin.intro">A quick, private moment to notice how you’re doing. There are no wrong answers. It simply helps you and your coach notice patterns over time.</p>
     </div>
     <div id="checkin-panel"></div>
   </section>
@@ -177,8 +177,8 @@
   <!-- ===================== Messages (student) ===================== -->
   <section id="view-messages" class="view" aria-labelledby="messages-h">
     <div class="view-intro">
-      <h2 id="messages-h">Messages</h2>
-      <p>A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.</p>
+      <h2 id="messages-h" data-slot="messages.heading">Messages</h2>
+      <p data-slot="messages.intro">A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.</p>
     </div>
     <div id="messages-panel"></div>
   </section>
@@ -186,8 +186,8 @@
   <!-- ===================== My Progress (student) ===================== -->
   <section id="view-progress" class="view" aria-labelledby="progress-h">
     <div class="view-intro">
-      <h2 id="progress-h">My Progress</h2>
-      <p>See how much you’ve completed so far, broken down by topic and by week.</p>
+      <h2 id="progress-h" data-slot="progress.heading">My Progress</h2>
+      <p data-slot="progress.intro">See how much you’ve completed so far, broken down by topic and by week.</p>
     </div>
     <div class="panel" id="progress-panel"></div>
   </section>
@@ -195,8 +195,8 @@
   <!-- ===================== Settings (admin) ===================== -->
   <section id="view-settings" class="view" aria-labelledby="settings-h">
     <div class="view-intro">
-      <h2 id="settings-h">Settings</h2>
-      <p>Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.</p>
+      <h2 id="settings-h" data-slot="settings.heading">Settings</h2>
+      <p data-slot="settings.intro">Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.</p>
     </div>
 
     <div class="settings-layout">
@@ -247,7 +247,7 @@
 <div id="print-area" aria-hidden="true"></div>
 
 <footer class="site-footer">
-  <div class="container">PerformanceXtra — Mental Workout Repository · <span id="total-count"></span> catalog items (and growing)</div>
+  <div class="container"><span data-slot="footer.text">PerformanceXtra — Mental Workout Repository</span> · <span id="total-count"></span> <span data-slot="footer.tagline">catalog items (and growing)</span></div>
 </footer>
 
 <div id="toast" role="status" aria-live="polite"></div>

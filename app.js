@@ -1037,7 +1037,8 @@
     templates: [],          // reusable assignment templates (coach), from bootstrap
     globalTracking: null,   // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
     studentTab: "mine",     // Students subtab: "mine" (own roster) | "all" (org-wide directory)
-    allStudents: null       // org-wide student directory, lazy-loaded for the "All students" subtab
+    allStudents: null,      // org-wide student directory, lazy-loaded for the "All students" subtab
+    content: {}             // site-copy overrides from content_slots (key -> text); defaults live in CONTENT_DEFAULTS
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -3268,6 +3269,7 @@
   // the current view + auth state.
   function applyRole() {
     document.body.setAttribute("data-role", isAdminView() ? "admin" : "student");
+    decorateSlotEditing();   // refresh inline ✎ copy-edit buttons on role/view changes
     var addBtn = $("#add-student-form button"); if (addBtn) addBtn.textContent = SERVER ? "Add athlete" : "Add student";
     var badge = $("#role-badge");
     badge.hidden = false;
@@ -3699,8 +3701,8 @@
     return el("div", { class: "auth-head" }, [
       el("div", { class: "brand-logo", "aria-hidden": "true" }, "PX"),
       el("div", {}, [
-        el("div", { class: "brand-name" }, "PerformanceXtra"),
-        el("div", { class: "brand-tag" }, "Mental Workout Repository")
+        el("div", { class: "brand-name", "data-slot": "brand.name" }, slot("brand.name")),
+        el("div", { class: "brand-tag", "data-slot": "brand.tag" }, slot("brand.tag"))
       ])
     ]);
   }
@@ -3744,14 +3746,14 @@
   function buildSignedOutHero(customLanding) {
     return el("section", { class: "signedout-hero", "aria-labelledby": "signedout-hero-title" }, [
       el("div", { class: "signedout-brand" }, [authHeader()]),
-      el("div", { class: "signedout-kicker" }, "Mental training, kept in motion"),
-      el("h1", { class: "signedout-title", id: "signedout-hero-title" }, "One focused place for athlete check-ins, coach guidance, and mental performance work."),
-      el("p", { class: "signedout-copy" }, "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools."),
+      el("div", { class: "signedout-kicker", "data-slot": "hero.kicker" }, slot("hero.kicker")),
+      el("h1", { class: "signedout-title", id: "signedout-hero-title", "data-slot": "hero.title" }, slot("hero.title")),
+      el("p", { class: "signedout-copy", "data-slot": "hero.copy" }, slot("hero.copy")),
       buildSignedOutMoment(),
       el("div", { class: "signedout-roles", "aria-label": "Who this is for" }, [
-        el("span", { class: "signedout-role" }, "Athletes: workouts, check-ins, messages"),
-        el("span", { class: "signedout-role" }, "Coaches: assignments, tracking, support"),
-        el("span", { class: "signedout-role" }, "Admins: team setup, content, operations")
+        el("span", { class: "signedout-role", "data-slot": "hero.role1" }, slot("hero.role1")),
+        el("span", { class: "signedout-role", "data-slot": "hero.role2" }, slot("hero.role2")),
+        el("span", { class: "signedout-role", "data-slot": "hero.role3" }, slot("hero.role3"))
       ]),
       buildSignedOutStartGuide(),
       el("div", { class: "signedout-actions" }, [
@@ -3759,61 +3761,38 @@
         el("button", { class: "btn btn--ghost", type: "button", onclick: focusPreviewSection }, "See sample activities")
       ]),
       el("div", { class: "signedout-note" }, [
-        el("strong", {}, "Preview the library"),
-        el("span", {}, " Then sign in to open your workspace.")
+        el("strong", { "data-slot": "hero.note_title" }, slot("hero.note_title")),
+        " ",
+        el("span", { "data-slot": "hero.note_copy" }, slot("hero.note_copy"))
       ]),
       customLanding
     ]);
   }
 
   function buildSignedOutMoment() {
-    var cue = signedOutMomentCue();
+    // Time-of-day flavor line; each period's copy is its own editable slot.
+    var hour = new Date().getHours();
+    var period = hour < 11 ? "morning" : (hour < 17 ? "midday" : "evening");
     return el("div", { class: "signedout-moment", "aria-label": "Current training moment" }, [
-      el("span", { class: "signedout-moment-label" }, cue.label),
-      el("span", { class: "signedout-moment-copy" }, cue.copy)
+      el("span", { class: "signedout-moment-label", "data-slot": "moment." + period + "_label" }, slot("moment." + period + "_label")),
+      el("span", { class: "signedout-moment-copy", "data-slot": "moment." + period + "_copy" }, slot("moment." + period + "_copy"))
     ]);
   }
 
-  function signedOutMomentCue() {
-    var hour = new Date().getHours();
-    if (hour < 11) {
-      return {
-        label: "Morning reset",
-        copy: "Start the day with one clear assignment, one honest check-in, and one place to return later."
-      };
-    }
-    if (hour < 17) {
-      return {
-        label: "Midday focus",
-        copy: "Keep practice notes, reflections, and coach direction together while the session is still fresh."
-      };
-    }
-    return {
-      label: "Evening review",
-      copy: "Review today's work, send reflections, and leave coaches a cleaner picture of progress."
-    };
-  }
-
   function buildSignedOutStartGuide() {
+    function step(n) {
+      return el("li", { class: "signedout-guide-step" }, [
+        el("strong", { "data-slot": "guide.step" + n + "_title" }, slot("guide.step" + n + "_title")),
+        " ",
+        el("span", { "data-slot": "guide.step" + n + "_copy" }, slot("guide.step" + n + "_copy"))
+      ]);
+    }
     return el("section", { class: "signedout-guide", "aria-labelledby": "signedout-guide-title" }, [
       el("div", { class: "signedout-guide-head" }, [
-        el("h2", { class: "signedout-guide-title", id: "signedout-guide-title" }, "Start in a few focused steps"),
-        el("span", { class: "signedout-guide-meta" }, "Usually 1 to 2 minutes")
+        el("h2", { class: "signedout-guide-title", id: "signedout-guide-title", "data-slot": "guide.title" }, slot("guide.title")),
+        el("span", { class: "signedout-guide-meta", "data-slot": "guide.meta" }, slot("guide.meta"))
       ]),
-      el("ol", { class: "signedout-guide-list" }, [
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "Athletes sign in with the email and passcode their coach shared."),
-          el("span", {}, " Open your assigned workouts, send reflections, and check in without extra setup.")
-        ]),
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "Coaches and staff sign in with their own account."),
-          el("span", {}, " If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.")
-        ]),
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "The first screen after sign-in is role-specific."),
-          el("span", {}, " Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.")
-        ])
-      ])
+      el("ol", { class: "signedout-guide-list" }, [step(1), step(2), step(3)])
     ]);
   }
 
@@ -3838,9 +3817,9 @@
     return el("section", { class: "signedout-preview", "aria-labelledby": "signedout-preview-title" }, [
       el("div", { class: "signedout-preview-head" }, [
         el("div", {}, [
-          el("div", { class: "signedout-preview-kicker" }, "Inside the library"),
-          el("h2", { id: "signedout-preview-title" }, "A small preview of the work athletes return to"),
-            el("p", { class: "signedout-preview-copy" }, "These sample activities show the kind of work inside the full library. Filters, assignments, and role-specific tools appear after sign-in.")
+          el("div", { class: "signedout-preview-kicker", "data-slot": "preview.kicker" }, slot("preview.kicker")),
+          el("h2", { id: "signedout-preview-title", "data-slot": "preview.title" }, slot("preview.title")),
+            el("p", { class: "signedout-preview-copy", "data-slot": "preview.copy" }, slot("preview.copy"))
         ]),
         el("div", { class: "signedout-preview-meta" }, sample.length + " sample activities")
       ]),
@@ -4456,6 +4435,173 @@
     return String(Number(m[1])) + m[2];
   }
 
+  /* ----------------------------- Editable site copy ("content slots") -----------------------------
+   * Every previously hardcoded piece of user-facing text has a stable slot key. These
+   * defaults ARE the original copy; the content_slots table stores only overrides (same
+   * pattern as DEFAULT_THEME). Any DOM node carrying data-slot="key" is (re)hydrated by
+   * applySiteContent(), and for a super admin gets an inline ✎ edit button. The same keys
+   * are edited in bulk from the Appearance → Site content panel. */
+  var CONTENT_DEFAULTS = {
+    "brand.name": "PerformanceXtra",
+    "brand.tag": "Mental Workout Repository",
+    "hero.kicker": "Mental training, kept in motion",
+    "hero.title": "One focused place for athlete check-ins, coach guidance, and mental performance work.",
+    "hero.copy": "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools.",
+    "hero.role1": "Athletes: workouts, check-ins, messages",
+    "hero.role2": "Coaches: assignments, tracking, support",
+    "hero.role3": "Admins: team setup, content, operations",
+    "hero.note_title": "Preview the library",
+    "hero.note_copy": "Then sign in to open your workspace.",
+    "guide.title": "Start in a few focused steps",
+    "guide.meta": "Usually 1 to 2 minutes",
+    "guide.step1_title": "Athletes sign in with the email and passcode their coach shared.",
+    "guide.step1_copy": "Open your assigned workouts, send reflections, and check in without extra setup.",
+    "guide.step2_title": "Coaches and staff sign in with their own account.",
+    "guide.step2_copy": "If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.",
+    "guide.step3_title": "The first screen after sign-in is role-specific.",
+    "guide.step3_copy": "Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.",
+    "moment.morning_label": "Morning reset",
+    "moment.morning_copy": "Start the day with one clear assignment, one honest check-in, and one place to return later.",
+    "moment.midday_label": "Midday focus",
+    "moment.midday_copy": "Keep practice notes, reflections, and coach direction together while the session is still fresh.",
+    "moment.evening_label": "Evening review",
+    "moment.evening_copy": "Review today's work, send reflections, and leave coaches a cleaner picture of progress.",
+    "preview.kicker": "Inside the library",
+    "preview.title": "A small preview of the work athletes return to",
+    "preview.copy": "These sample activities show the kind of work inside the full library. Filters, assignments, and role-specific tools appear after sign-in.",
+    "repo.heading": "Activity Repository",
+    "repo.intro": "Every mental-training activity in one place. Search and filter by topic, content type, and progression, then open the resource or expand it for instructions and reflection prompts.",
+    "students.heading": "Students",
+    "students.intro": "Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.",
+    "content.heading": "Content",
+    "content.intro": "Manage your activity library and the Topic, Subtopic, and Content-type lists used across the app. Changes save to your team database and take effect right away, with no developer needed.",
+    "workouts.heading": "My Workouts",
+    "workouts.intro": "These are the activities your coach has assigned for you. Work through them and mark each one done as you go.",
+    "checkin.heading": "Daily check-in",
+    "checkin.intro": "A quick, private moment to notice how you’re doing. There are no wrong answers. It simply helps you and your coach notice patterns over time.",
+    "messages.heading": "Messages",
+    "messages.intro": "A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.",
+    "progress.heading": "My Progress",
+    "progress.intro": "See how much you’ve completed so far, broken down by topic and by week.",
+    "settings.heading": "Settings",
+    "settings.intro": "Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.",
+    "footer.text": "PerformanceXtra — Mental Workout Repository",
+    "footer.tagline": "catalog items (and growing)"
+  };
+  // Groups drive the Appearance → Site content panel layout (and inline-editor labels).
+  var CONTENT_GROUPS = [
+    { title: "Brand & header", keys: [["brand.name", "Brand name"], ["brand.tag", "Brand tagline"]] },
+    { title: "Signed-out landing: hero", keys: [
+      ["hero.kicker", "Kicker line"], ["hero.title", "Headline", true], ["hero.copy", "Intro paragraph", true],
+      ["hero.role1", "Role line 1"], ["hero.role2", "Role line 2"], ["hero.role3", "Role line 3"],
+      ["hero.note_title", "Note title"], ["hero.note_copy", "Note copy"]
+    ] },
+    { title: "Signed-out landing: training moment", keys: [
+      ["moment.morning_label", "Morning label"], ["moment.morning_copy", "Morning copy", true],
+      ["moment.midday_label", "Midday label"], ["moment.midday_copy", "Midday copy", true],
+      ["moment.evening_label", "Evening label"], ["moment.evening_copy", "Evening copy", true]
+    ] },
+    { title: "Signed-out landing: start guide", keys: [
+      ["guide.title", "Guide title"], ["guide.meta", "Time estimate"],
+      ["guide.step1_title", "Step 1 title", true], ["guide.step1_copy", "Step 1 copy", true],
+      ["guide.step2_title", "Step 2 title", true], ["guide.step2_copy", "Step 2 copy", true],
+      ["guide.step3_title", "Step 3 title", true], ["guide.step3_copy", "Step 3 copy", true]
+    ] },
+    { title: "Signed-out landing: library preview", keys: [
+      ["preview.kicker", "Kicker line"], ["preview.title", "Heading"], ["preview.copy", "Copy", true]
+    ] },
+    { title: "Section headings & intros", keys: [
+      ["repo.heading", "Repository heading"], ["repo.intro", "Repository intro", true],
+      ["students.heading", "Students heading"], ["students.intro", "Students intro", true],
+      ["content.heading", "Content heading"], ["content.intro", "Content intro", true],
+      ["workouts.heading", "My Workouts heading"], ["workouts.intro", "My Workouts intro", true],
+      ["checkin.heading", "Check-in heading"], ["checkin.intro", "Check-in intro", true],
+      ["messages.heading", "Messages heading"], ["messages.intro", "Messages intro", true],
+      ["progress.heading", "My Progress heading"], ["progress.intro", "My Progress intro", true],
+      ["settings.heading", "Settings heading"], ["settings.intro", "Settings intro", true]
+    ] },
+    { title: "Footer", keys: [["footer.text", "Footer text"], ["footer.tagline", "Catalog tagline"]] }
+  ];
+  function slotLabel(key) {
+    for (var g = 0; g < CONTENT_GROUPS.length; g++) {
+      var hit = CONTENT_GROUPS[g].keys.filter(function (k) { return k[0] === key; })[0];
+      if (hit) return hit[1];
+    }
+    return key;
+  }
+  // Effective copy for a slot: super-admin override if one is saved, else the original.
+  function slot(key) {
+    var o = state.content && state.content[key];
+    return (o != null && o !== "") ? o : (CONTENT_DEFAULTS[key] || "");
+  }
+  // Public endpoint; tolerant of a missing table (no overrides → original copy).
+  function loadSiteContent() {
+    return api("/content").then(function (res) {
+      if (res.ok && res.data && res.data.content) state.content = res.data.content;
+      applySiteContent();
+    }).catch(function () {});
+  }
+  // Rehydrate every data-slot node from the current overrides. Text only (textContent),
+  // so slot copy can never inject markup. Safe to call any time — nodes that don't exist
+  // yet are picked up on the next call (boot, save, auth-gate build).
+  function applySiteContent() {
+    $all("[data-slot]").forEach(function (n) {
+      var key = n.getAttribute("data-slot");
+      if (CONTENT_DEFAULTS[key] != null) n.textContent = slot(key);
+    });
+    document.title = slot("brand.name") + " — " + slot("brand.tag");
+    decorateSlotEditing();
+  }
+  // Inline editing: give each data-slot node a small ✎ button (super admin only).
+  // Buttons are siblings, not children, so rehydrating textContent never eats them.
+  function decorateSlotEditing() {
+    $all(".slot-edit-btn").forEach(function (b) { b.remove(); });
+    $all("[data-slot]").forEach(function (n) { n.classList.remove("slot-editable"); });
+    if (!isSuperadmin()) return;
+    $all("[data-slot]").forEach(function (n) {
+      var key = n.getAttribute("data-slot");
+      if (CONTENT_DEFAULTS[key] == null) return;
+      if (n.closest("#view-appearance")) return;   // the panel edits copy via its own form
+      if (n.closest(".brand") || n.closest(".auth-head")) return;   // header brand is too tight for a button — edit via the panel
+      n.classList.add("slot-editable");
+      var btn = el("button", {
+        class: "slot-edit-btn", type: "button",
+        title: "Edit this text", "aria-label": "Edit: " + slotLabel(key),
+        onclick: function (e) { e.preventDefault(); e.stopPropagation(); openSlotEditor(key); }
+      }, "✎");
+      n.insertAdjacentElement("afterend", btn);
+    });
+  }
+  function openSlotEditor(key) {
+    var long = (CONTENT_DEFAULTS[key] || "").length > 80;
+    var input = long ? el("textarea", { rows: 4 }) : el("input", { type: "text" });
+    input.value = slot(key);
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, slotLabel(key)), input]),
+      el("p", { class: "field-hint" }, "Shown to everyone. Leave empty and save to restore the original text.")
+    ]);
+    openModal("Edit site copy", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save", accent: true, onClick: function () {
+        saveContentSlots([[key, input.value]], closeModal);
+      } }
+    ]);
+    setTimeout(function () { try { input.focus(); } catch (e) {} }, 40);
+  }
+  // Shared save path for the inline editor and the Site content panel. `pairs` is
+  // [[key, value], ...]; an empty value clears the override (back to original copy).
+  function saveContentSlots(pairs, onDone) {
+    var payload = {};
+    pairs.forEach(function (p) { payload[p[0]] = p[1]; });
+    api("/content", { method: "POST", body: { content: payload } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't save site copy")); return; }
+      state.content = (res.data && res.data.content) || {};
+      applySiteContent();
+      toast("Site copy saved");
+      if (onDone) onDone();
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
   function renderAppearance() {
     var view = $("#view-appearance");
     if (!view) return;
@@ -4482,10 +4628,51 @@
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
       el("h2", {}, "Appearance"),
-      el("p", {}, "Change the site's colors, fonts and sizes, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
+      el("p", {}, "Change the site's colors, fonts and sizes, edit every piece of site copy, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
     ]));
     view.appendChild(renderThemeEditor());
+    view.appendChild(renderSiteContentEditor());
     view.appendChild(renderPageBuilder());
+  }
+
+  /* ----------------------------- Appearance: site content panel -----------------------------
+   * Bulk editor for every content slot, grouped by page area. Fields start at the
+   * effective copy; clearing a field restores the original. Only changed keys are sent. */
+  function renderSiteContentEditor() {
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Site content"),
+      el("span", { class: "cms-count" }, "All editable copy")
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Every heading, intro and label below is live site copy. Edit and save to change it for everyone; clear a field and save to restore the original wording. You can also edit any of these in place — look for the ✎ button next to the text on each page."));
+    var dirty = {};   // key -> new value (only fields the user touched)
+    CONTENT_GROUPS.forEach(function (group) {
+      var body = el("div", { class: "form-stack" });
+      group.keys.forEach(function (def) {
+        var key = def[0], label = def[1], multiline = !!def[2];
+        var input = multiline ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
+        input.value = slot(key);
+        input.addEventListener("input", function () { dirty[key] = input.value; });
+        var hint = (state.content && state.content[key] != null)
+          ? el("span", { class: "slot-flag", title: "This copy has been customized" }, "edited")
+          : null;
+        body.appendChild(el("div", { class: "field" }, [el("label", {}, hint ? [label + " ", hint] : label), input]));
+      });
+      var det = el("details", { class: "content-group" }, [
+        el("summary", {}, group.title),
+        body
+      ]);
+      panel.appendChild(det);
+    });
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        var pairs = Object.keys(dirty).map(function (k) { return [k, dirty[k]]; });
+        if (!pairs.length) { toast("Nothing changed yet"); return; }
+        saveContentSlots(pairs, function () { renderAppearance(); });
+      } }, "Save site content")
+    ]));
+    return panel;
   }
 
   function renderThemeEditor() {
@@ -5341,7 +5528,9 @@
       if (res.ok && res.data && res.data.id) {
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
-        return loadBaseActivities().then(loadServerSnapshot).then(loadAndApplySiteTheme).then(function () {
+        return loadBaseActivities().then(loadServerSnapshot).then(function () {
+          return Promise.all([loadAndApplySiteTheme(), loadSiteContent()]);
+        }).then(function () {
           // Coach, admin and super admin all use the tabbed app; the tab set grows with
           // rank. Only athletes get the student view.
           var staff = state.session.role !== "athlete";
@@ -5365,6 +5554,7 @@
         SERVER = true;
         loadAndApplySiteTheme();
         showAuthGate();
+        loadSiteContent();   // rehydrates the gate's data-slot nodes once copy arrives
         return;
       }
       // Some other status (e.g. 404 from static hosting) → no backend here.
