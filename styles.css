@@ -1395,3 +1395,16 @@
     letter-spacing: .06em; text-transform: uppercase; color: var(--accent); background: var(--accent-dim);
     border: 1px solid var(--accent); vertical-align: middle;
   }
+
+  /* ----------------------------- Builder pages (multi-page CMS) -----------------------------
+     Nav links shown on the signed-out gate for published pages, and the shared
+     #view-page section that hosts a builder page inside the signed-in app. */
+  .landing-nav { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+  .landing-nav-link {
+    display: inline-block; padding: 6px 14px; border-radius: 999px; font-size: .84rem; font-weight: 600;
+    color: var(--ink-soft); background: var(--bg-2); border: 1px solid var(--line-strong); text-decoration: none;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .landing-nav-link:hover, .landing-nav-link:focus-visible { color: var(--accent); border-color: var(--accent); }
+  .landing-nav-link.is-active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+  #view-page .pb-page { max-width: 880px; margin: 0 auto; }

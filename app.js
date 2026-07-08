@@ -1038,7 +1038,8 @@
     globalTracking: null,   // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
     studentTab: "mine",     // Students subtab: "mine" (own roster) | "all" (org-wide directory)
     allStudents: null,      // org-wide student directory, lazy-loaded for the "All students" subtab
-    content: {}             // site-copy overrides from content_slots (key -> text); defaults live in CONTENT_DEFAULTS
+    content: {},            // site-copy overrides from content_slots (key -> text); defaults live in CONTENT_DEFAULTS
+    navPages: []            // published builder pages with a nav label: [{id,label,order}]
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -3220,15 +3221,20 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
+    // Published builder pages with a nav label appear as extra tabs for everyone.
+    function withNavPages(tabs) {
+      (state.navPages || []).forEach(function (p) { tabs.push({ id: "page:" + p.id, label: p.label }); });
+      return tabs;
+    }
     if (!isAdminView()) {
       var meS = activeStudent();
       var unread = meS ? threadUnread(meS, "coach") : 0;
-      return [
+      return withNavPages([
         { id: "workouts", label: "My Workouts" },
         { id: "checkin", label: "Check-in" },
         { id: "messages", label: "Messages" + (unread ? " (" + unread + ")" : "") },
         { id: "progress", label: "My Progress" }
-      ];
+      ]);
     }
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
@@ -3238,7 +3244,7 @@
     if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
     if (isSuperadmin()) tabs.push({ id: "appearance", label: "Appearance" });
     tabs.push({ id: "settings", label: "Settings" });
-    return tabs;
+    return withNavPages(tabs);
   }
 
   function renderTabs() {
@@ -3250,6 +3256,22 @@
   }
 
   function setTab(tab) {
+    // Builder pages: any "page:<slug>" id renders into the shared #view-page section.
+    // Direct #/p/<slug> links work even when the page isn't in the nav.
+    if (tab && tab.indexOf("page:") === 0) {
+      var slug = tab.slice(5);
+      state.tab = tab;
+      var pv = ensurePageView();
+      renderPublicPage(slug, pv);
+      $all(".tab").forEach(function (b) {
+        var on = b.getAttribute("data-tab") === tab;
+        b.classList.toggle("is-active", on);
+        if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      });
+      $all(".view").forEach(function (v) { v.classList.toggle("is-active", v.id === "view-page"); });
+      if (location.hash !== "#/p/" + slug) history.replaceState(null, "", "#/p/" + slug);
+      return;
+    }
     var ids = currentTabs().map(function (t) { return t.id; });
     if (ids.indexOf(tab) === -1) tab = ids[0];
     state.tab = tab;
@@ -3883,15 +3905,35 @@
     }
     return { eyebrow: "Built for steady reps", hint: "Sign in to save progress, reflections, and follow-up from coaches.", badge: "Preview" };
   }
-  // Render the published 'landing' builder page (if any) for signed-out visitors. The
-  // endpoint is public and returns 404 when no published page exists, in which case the
-  // sign-in card simply shows on its own.
-  function renderLandingInto(mount) {
-    api("/pages/landing").then(function (res) {
-      if (res.ok && res.data && Array.isArray(res.data.blocks) && res.data.blocks.length) {
-        renderPageBlocks(res.data.blocks, mount);
-        mount.hidden = false;
+  // Render builder-page content for signed-out visitors: the published 'landing' page by
+  // default, or whichever page a "#/p/<slug>" link points at, plus nav links for every
+  // published page that opted into the nav. Both endpoints are public; when neither a
+  // page nor nav links exist the sign-in card simply shows on its own.
+  function renderLandingInto(mount, slugOverride) {
+    var h = (location.hash || "").replace("#", "");
+    var slug = slugOverride || (h.indexOf("/p/") === 0 ? h.slice(3) : "landing");
+    Promise.all([api("/pages/" + encodeURIComponent(slug)), api("/nav")]).then(function (out) {
+      var pageRes = out[0];
+      var nav = (out[1].ok && out[1].data && out[1].data.nav) || [];
+      var hasPage = pageRes.ok && pageRes.data && Array.isArray(pageRes.data.blocks) && pageRes.data.blocks.length;
+      if (!hasPage && !nav.length) return;
+      mount.textContent = "";
+      if (nav.length) {
+        var row = el("nav", { class: "landing-nav", "aria-label": "Pages" });
+        nav.forEach(function (p) {
+          row.appendChild(el("a", {
+            class: "landing-nav-link" + (p.id === slug ? " is-active" : ""),
+            href: "#/p/" + p.id
+          }, p.label));
+        });
+        mount.appendChild(row);
       }
+      if (hasPage) {
+        var wrap = el("div", { class: "pb-page" });
+        renderPageBlocks(pageRes.data.blocks, wrap);
+        mount.appendChild(wrap);
+      }
+      mount.hidden = false;
     }).catch(function () {});
   }
   function renderLoginForm(card, offline) {
@@ -4762,24 +4804,152 @@
     if (b.type === "spacer") return p.size || "md";
     return "";
   }
+  // Pages manager: a list of every builder page (create / edit / duplicate / publish /
+  // delete), or the block editor for the page currently being edited.
   function renderPageBuilder() {
-    if (!state.pageDraft) {
-      var existing = (state.pages || []).filter(function (p) { return p.id === "landing"; })[0];
-      state.pageDraft = existing
-        ? { id: "landing", title: existing.title || "Landing", blocks: (existing.blocks || []).slice(), published: !!existing.published }
-        : { id: "landing", title: "Landing", blocks: [], published: false };
+    return state.pageDraft ? renderPageEditor() : renderPagesList();
+  }
+  function slugify(s) {
+    return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  }
+  function openPageDraft(page) { openPageDraftState(page); renderAppearance(); }
+  function openNewPageModal() {
+    var title = el("input", { type: "text", placeholder: "About us" });
+    var slugI = el("input", { type: "text", placeholder: "about-us" });
+    var touched = false;
+    title.addEventListener("input", function () { if (!touched) slugI.value = slugify(title.value); });
+    slugI.addEventListener("input", function () { touched = true; slugI.value = slugI.value.replace(/[^a-z0-9-]/g, ""); });
+    var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    openModal("New page", el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Page title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Address (slug)"), slugI,
+        el("p", { class: "field-hint" }, "The page will live at #/p/<slug>. Lowercase letters, numbers and dashes only.")]),
+      errBox
+    ]), [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Create page", accent: true, onClick: function () {
+        var id = slugify(slugI.value || title.value);
+        if (!id) { errBox.textContent = "Give the page a title or slug first."; errBox.hidden = false; return; }
+        if ((state.pages || []).some(function (p) { return p.id === id; })) {
+          errBox.textContent = "A page with that slug already exists."; errBox.hidden = false; return;
+        }
+        closeModal();
+        openPageDraft({ id: id, title: title.value.trim() || id, blocks: [], status: "draft" });
+      } }
+    ]);
+  }
+  function refreshNavAndTabs() {
+    return loadNavPages().then(function () { if (state.session) renderTabs(); });
+  }
+  function renderPagesList() {
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Pages"),
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: openNewPageModal }, "+ New page")
+      ])
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Build as many pages as you like from content blocks. Published pages are visible to everyone at #/p/<slug>; give a page a nav label to add it to the site navigation. The special “landing” page also shows above the sign-in form for signed-out visitors."));
+    var list = el("div", { class: "builder-canvas" });
+    if (!(state.pages || []).length) {
+      list.appendChild(el("p", { class: "no-link" }, "No pages yet. Create your first one."));
     }
+    (state.pages || []).forEach(function (p) {
+      var pub = (p.status || (p.published ? "published" : "draft")) === "published";
+      list.appendChild(el("div", { class: "builder-block" }, [
+        el("div", { class: "builder-block-head" }, [
+          el("span", { class: "chip " + (pub ? "chip--accent" : "") }, pub ? "published" : "draft"),
+          el("span", { class: "builder-block-summary" }, [
+            el("strong", {}, p.title || p.id), " · #/p/" + p.id +
+            " · " + ((p.blocks || []).length) + " block" + ((p.blocks || []).length === 1 ? "" : "s") +
+            (p.navLabel ? " · in nav as “" + p.navLabel + "”" : "")
+          ])
+        ]),
+        el("div", { class: "cms-actions" }, [
+          el("button", { class: "btn btn--sm", onclick: function () { openPageDraft(p); } }, "Edit"),
+          el("button", { class: "btn btn--sm btn--ghost", onclick: function () { togglePagePublished(p); } }, pub ? "Unpublish" : "Publish"),
+          el("button", { class: "btn btn--sm btn--ghost", onclick: function () { duplicatePage(p.id); } }, "Duplicate"),
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { confirmDeletePage(p); } }, "Delete")
+        ])
+      ]));
+    });
+    panel.appendChild(list);
+    return panel;
+  }
+  function togglePagePublished(p) {
+    var pub = (p.status || (p.published ? "published" : "draft")) === "published";
+    api("/pages/" + encodeURIComponent(p.id), { method: "POST", body: {
+      title: p.title, blocks: p.blocks || [], status: pub ? "draft" : "published",
+      description: p.description || "", navLabel: p.navLabel || "", navOrder: p.navOrder
+    } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't update page")); return; }
+      state.pages = (state.pages || []).map(function (pg) { return pg.id === p.id ? res.data : pg; });
+      refreshNavAndTabs();
+      renderAppearance();
+      toast(pub ? "Page unpublished" : "Page published");
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function duplicatePage(id) {
+    api("/pages/" + encodeURIComponent(id) + "/duplicate", { method: "POST", body: {} }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't duplicate page")); return; }
+      state.pages.push(res.data);
+      renderAppearance();
+      toast("Page duplicated — it starts as a draft");
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function confirmDeletePage(p) {
+    openModal("Delete page", el("p", {}, "Delete “" + (p.title || p.id) + "” (#/p/" + p.id + ")? This can't be undone."), [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Delete page", danger: true, onClick: function () {
+        api("/pages/" + encodeURIComponent(p.id), { method: "DELETE" }).then(function (res) {
+          closeModal();
+          if (!res.ok) { toast(apiError(res, "Couldn't delete page")); return; }
+          state.pages = (state.pages || []).filter(function (pg) { return pg.id !== p.id; });
+          if (state.pageDraft && state.pageDraft.id === p.id) state.pageDraft = null;
+          refreshNavAndTabs();
+          renderAppearance();
+          toast("Page deleted");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }
+    ]);
+  }
+  function renderPageEditor() {
     var draft = state.pageDraft;
     var panel = el("div", { class: "panel" });
-    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Page builder"), el("span", { class: "cms-count" }, "Landing page")]));
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Page: " + (draft.title || draft.id)),
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm", onclick: function () { state.pageDraft = null; renderAppearance(); } }, "← All pages"),
+        el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+          window.open(location.pathname + "#/p/" + draft.id, "_blank");
+        } }, "Preview ↗")
+      ])
+    ]));
 
     var titleInput = el("input", { type: "text", value: draft.title });
     titleInput.addEventListener("input", function () { draft.title = titleInput.value; });
-    var pubCb = el("input", { type: "checkbox" }); pubCb.checked = !!draft.published;
-    pubCb.addEventListener("change", function () { draft.published = pubCb.checked; });
+    var slugInfo = el("input", { type: "text", value: "#/p/" + draft.id, readonly: true });
+    var statusSel = el("select", {});
+    [["draft", "Draft (only you can see it)"], ["published", "Published (visible to visitors)"]].forEach(function (o) {
+      var op = el("option", { value: o[0] }, o[1]); if (draft.status === o[0]) op.selected = true; statusSel.appendChild(op);
+    });
+    statusSel.addEventListener("change", function () { draft.status = statusSel.value; });
+    var descInput = el("textarea", { rows: 2, placeholder: "Short description (used for search engines and page lists)" });
+    descInput.value = draft.description || "";
+    descInput.addEventListener("input", function () { draft.description = descInput.value; });
+    var navInput = el("input", { type: "text", value: draft.navLabel || "", placeholder: "e.g. About" });
+    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; });
+    var navOrderInput = el("input", { type: "number", value: draft.navOrder || "", placeholder: "0" });
+    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; });
     panel.appendChild(el("div", { class: "appearance-grid" }, [
       el("label", { class: "appearance-field" }, [el("span", {}, "Page title"), titleInput]),
-      el("label", { class: "check" }, [pubCb, " Published (visible to visitors)"])
+      el("label", { class: "appearance-field" }, [el("span", {}, "Address"), slugInfo]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Status"), statusSel]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Nav link label (empty = not in nav)"), navInput]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Nav position"), navOrderInput]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Description"), descInput])
     ]));
 
     var palette = el("div", { class: "builder-palette" });
@@ -4883,18 +5053,78 @@
   }
   function savePage() {
     var draft = state.pageDraft;
-    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: { title: draft.title, blocks: draft.blocks, published: draft.published } }).then(function (res) {
+    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: {
+      title: draft.title, blocks: draft.blocks, status: draft.status,
+      description: draft.description, navLabel: draft.navLabel, navOrder: draft.navOrder
+    } }).then(function (res) {
       if (!res.ok) { toast(apiError(res, "Couldn't save page")); return; }
       var d = res.data || {};
-      state.pageDraft = { id: d.id || draft.id, title: d.title || draft.title, blocks: d.blocks || [], published: !!d.published };
+      openPageDraftState(d);
       var found = false;
       state.pages = (state.pages || []).map(function (pg) {
-        if (pg.id === state.pageDraft.id) { found = true; return Object.assign({}, pg, state.pageDraft); }
+        if (pg.id === d.id) { found = true; return d; }
         return pg;
       });
-      if (!found) state.pages.push(Object.assign({}, state.pageDraft));
+      if (!found) state.pages.push(d);
+      refreshNavAndTabs();
       renderAppearance(); toast("Page saved");
     }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  // Refresh the open draft from a server page row without re-rendering.
+  function openPageDraftState(page) {
+    state.pageDraft = {
+      id: page.id, title: page.title || page.id, blocks: (page.blocks || []).slice(),
+      status: page.status || (page.published ? "published" : "draft"),
+      description: page.description || "", navLabel: page.navLabel || "",
+      navOrder: page.navOrder == null ? "" : String(page.navOrder)
+    };
+  }
+  // Published pages that opted into the nav; public endpoint, tolerant of absence.
+  function loadNavPages() {
+    return api("/nav").then(function (res) {
+      state.navPages = (res.ok && res.data && res.data.nav) || [];
+    }).catch(function () { state.navPages = state.navPages || []; });
+  }
+  /* ----------------------------- Public builder pages (#/p/:slug) ----------------------------- */
+  // Lazily created host section for rendering builder pages inside the signed-in app.
+  function ensurePageView() {
+    var v = $("#view-page");
+    if (!v) {
+      v = el("section", { id: "view-page", class: "view", "aria-label": "Page" });
+      $("main.container").appendChild(v);
+    }
+    return v;
+  }
+  function renderPublicPage(slug, mount) {
+    mount.textContent = "";
+    mount.appendChild(el("p", { class: "field-hint" }, "Loading page…"));
+    // Super admins read the full row so they can preview drafts; everyone else only
+    // ever sees published pages (the public endpoint 404s otherwise).
+    var path = isSuperadmin()
+      ? "/pages/" + encodeURIComponent(slug) + "/full"
+      : "/pages/" + encodeURIComponent(slug);
+    api(path).then(function (res) {
+      mount.textContent = "";
+      if (!res.ok || !res.data) {
+        mount.appendChild(el("div", { class: "view-intro" }, [
+          el("h2", {}, "Page not found"),
+          el("p", {}, "This page doesn't exist or isn't published.")
+        ]));
+        return;
+      }
+      if (isSuperadmin() && res.data.status !== "published") {
+        mount.appendChild(el("div", { class: "note-banner" }, [
+          el("strong", {}, "Draft preview: "),
+          "only super admins can see this page until it's published."
+        ]));
+      }
+      var wrap = el("div", { class: "pb-page" });
+      renderPageBlocks(res.data.blocks || [], wrap);
+      mount.appendChild(wrap);
+    }).catch(function () {
+      mount.textContent = "";
+      mount.appendChild(el("p", { class: "no-link" }, "Couldn't load this page."));
+    });
   }
 
   // Render an ordered list of sanitized content blocks into a mount node. All text is
@@ -5513,8 +5743,23 @@
     if (helpBtn) helpBtn.addEventListener("click", function () { startTour(isAdminView() ? TOUR_ADMIN : TOUR_STUDENT, true); });
 
     // Pick up an initial tab from the URL hash (validated against the role).
+    // "#/p/<slug>" deep-links to a builder page.
     var initial = (location.hash || "").replace("#", "");
-    if (initial) state.tab = initial;
+    if (initial.indexOf("/p/") === 0) state.tab = "page:" + initial.slice(3);
+    else if (initial) state.tab = initial;
+
+    // Builder-page links (#/p/<slug>) navigate without a reload, signed in or out.
+    window.addEventListener("hashchange", function () {
+      var h = (location.hash || "").replace("#", "");
+      if (h.indexOf("/p/") !== 0) return;
+      var slug = h.slice(3);
+      if ($("#auth-gate")) {
+        var mount = $("#auth-landing");
+        if (mount) renderLandingInto(mount, slug);
+      } else {
+        setTab("page:" + slug);
+      }
+    });
 
     configureRepoFilterDensity();
     boot();
@@ -5529,7 +5774,7 @@
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
         return loadBaseActivities().then(loadServerSnapshot).then(function () {
-          return Promise.all([loadAndApplySiteTheme(), loadSiteContent()]);
+          return Promise.all([loadAndApplySiteTheme(), loadSiteContent(), loadNavPages()]);
         }).then(function () {
           // Coach, admin and super admin all use the tabbed app; the tab set grows with
           // rank. Only athletes get the student view.

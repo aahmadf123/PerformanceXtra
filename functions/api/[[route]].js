@@ -526,6 +526,7 @@ async function route(method, path, request, env, url, secure) {
   // signed-out login page can theme/render itself. Writes are super-admin only (below).
   if (method === "GET" && path === "/site") return handleGetSite(env);
   if (method === "GET" && path === "/content") return handleGetContent(env);
+  if (method === "GET" && path === "/nav") return handleGetNav(env);
   if (method === "GET" && head === "pages" && seg.length === 2) return handleGetPage(env, seg[1]);
 
   /* -------- session required below -------- */
@@ -590,7 +591,10 @@ async function route(method, path, request, env, url, secure) {
     // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     if (method === "GET" && seg.length === 1) return handleListPages(env);
+    if (method === "GET" && seg.length === 3 && seg[2] === "full") return handleGetPageFull(env, seg[1]);
+    if (method === "POST" && seg.length === 3 && seg[2] === "duplicate") return handleDuplicatePage(env, seg[1]);
     if (method === "POST" && seg.length === 2) return handleSavePage(request, env, seg[1]);
+    if (method === "DELETE" && seg.length === 2) return handleDeletePage(env, seg[1]);
   }
 
   /* -------- admin & super admin: manage coach accounts -------- */
@@ -1987,21 +1991,54 @@ function sanitizeBlock(raw, i) {
 function sanitizeBlocks(raw) {
   return (Array.isArray(raw) ? raw : []).slice(0, 100).map(sanitizeBlock).filter(Boolean);
 }
+// Lifecycle for a row that may predate migration 0018 (no status column / NULL status).
+function pageStatus(row) {
+  if (row && (row.status === "published" || row.status === "draft")) return row.status;
+  return row && row.published ? "published" : "draft";
+}
+function pageMeta(row, withBlocks) {
+  let blocks = []; try { blocks = JSON.parse(row.blocks) || []; } catch (e) {}
+  const out = {
+    id: row.id, title: row.title, status: pageStatus(row), published: pageStatus(row) === "published",
+    description: row.description || "", navLabel: row.nav_label || "",
+    navOrder: row.nav_order == null ? null : row.nav_order,
+    updated_at: row.updated_at, created_at: row.created_at || row.updated_at
+  };
+  if (withBlocks) out.blocks = blocks;
+  else out.blockCount = blocks.length;
+  return out;
+}
+// Public: one published page, rendered by visitors (signed-in or out).
 async function handleGetPage(env, slug) {
   try {
-    const row = await env.DB.prepare("SELECT id,title,blocks,published FROM pages WHERE id = ?").bind(String(slug)).first();
-    if (!row || !row.published) return err(404, "Page not found");
-    let blocks = []; try { blocks = JSON.parse(row.blocks) || []; } catch (e) {}
-    return json({ id: row.id, title: row.title, blocks: blocks, published: !!row.published });
+    const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+    if (!row || pageStatus(row) !== "published") return err(404, "Page not found");
+    return json(pageMeta(row, true));
+  } catch (e) { return err(404, "Page not found"); }
+}
+// Public: published pages that opted into the nav (nav_label set), for building links.
+async function handleGetNav(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM pages").all();
+    const nav = (rows.results || [])
+      .filter(function (r) { return pageStatus(r) === "published" && r.nav_label; })
+      .map(function (r) { return { id: r.id, label: String(r.nav_label), order: r.nav_order == null ? 0 : r.nav_order }; })
+      .sort(function (a, b) { return (a.order - b.order) || a.label.localeCompare(b.label); });
+    return json({ nav: nav });
+  } catch (e) { return json({ nav: [] }); }
+}
+// Super admin: full page row regardless of status (draft preview / builder editing).
+async function handleGetPageFull(env, slug) {
+  try {
+    const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+    if (!row) return err(404, "Page not found");
+    return json(pageMeta(row, true));
   } catch (e) { return err(404, "Page not found"); }
 }
 async function handleListPages(env) {
   try {
-    const rows = await env.DB.prepare("SELECT id,title,blocks,published,updated_at FROM pages ORDER BY id").all();
-    const pages = (rows.results || []).map(function (r) {
-      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
-      return { id: r.id, title: r.title, blocks: blocks, published: !!r.published, updated_at: r.updated_at };
-    });
+    const rows = await env.DB.prepare("SELECT * FROM pages ORDER BY id").all();
+    const pages = (rows.results || []).map(function (r) { return pageMeta(r, true); });
     return json({ pages: pages });
   } catch (e) { return json({ pages: [] }); }
 }
@@ -2011,14 +2048,65 @@ async function handleSavePage(request, env, slug) {
   const b = await readBody(request);
   const title = cleanText(b.title, 120) || id;
   const blocks = sanitizeBlocks(b.blocks);
-  const published = b.published ? 1 : 0;
+  // status wins when provided; legacy callers that only send `published` still work.
+  const status = b.status === "published" || (b.status == null && b.published) ? "published" : "draft";
+  const published = status === "published" ? 1 : 0;
+  const description = cleanText(b.description, 300);
+  const navLabel = cleanText(b.navLabel, 40);
+  let navOrder = null;
+  if (b.navOrder != null && b.navOrder !== "") {
+    const n = parseInt(b.navOrder, 10);
+    if (!isNaN(n)) navOrder = Math.max(-999, Math.min(999, n));
+  }
   try {
     await env.DB.prepare(
-      "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
-      "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
-    ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
-  } catch (e) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
-  return json({ ok: true, id: id, title: title, blocks: blocks, published: !!published });
+      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, " +
+      "updated_at = excluded.updated_at, status = excluded.status, description = excluded.description, " +
+      "nav_label = excluded.nav_label, nav_order = excluded.nav_order"
+    ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
+  } catch (e) {
+    // Self-heal for a DB that predates migration 0018: fall back to the legacy columns.
+    try {
+      await env.DB.prepare(
+        "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
+      ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
+    } catch (e2) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
+  }
+  const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+  return json(Object.assign({ ok: true }, pageMeta(row, true)));
+}
+async function handleDeletePage(env, slug) {
+  const id = String(slug || "").trim().toLowerCase();
+  try {
+    const res = await env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id).run();
+    if (!res.meta || !res.meta.changes) return err(404, "Page not found");
+  } catch (e) { return err(500, "Couldn't delete page"); }
+  return json({ ok: true, id: id });
+}
+// Copy an existing page to '<slug>-copy[-N]' as an unpublished draft.
+async function handleDuplicatePage(env, slug) {
+  const src = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+  if (!src) return err(404, "Page not found");
+  let base = (src.id + "-copy").slice(0, 36), id = base;
+  for (let n = 2; n < 50; n++) {
+    const hit = await env.DB.prepare("SELECT id FROM pages WHERE id = ?").bind(id).first();
+    if (!hit) break;
+    id = base + "-" + n;
+  }
+  try {
+    await env.DB.prepare(
+      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,0,?,?,?,NULL,NULL,?)"
+    ).bind(id, cleanText(src.title + " (copy)", 120), src.blocks, nowSec(), "draft", src.description || "", nowSec()).run();
+  } catch (e) {
+    try {
+      await env.DB.prepare("INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,0,?)")
+        .bind(id, cleanText(src.title + " (copy)", 120), src.blocks, nowSec()).run();
+    } catch (e2) { return err(500, "Couldn't duplicate page"); }
+  }
+  const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+  return json(Object.assign({ ok: true }, pageMeta(row, true)));
 }
 
 /* One-time migration of a coach's exported localStorage store into D1. */

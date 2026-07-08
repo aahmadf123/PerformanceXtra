@@ -173,12 +173,19 @@ CREATE TABLE IF NOT EXISTS site_settings (
 
 -- Builder pages. Blocks are an ordered JSON array on the row: [{id,type,props}, ...].
 -- type is a server-enforced whitelist: hero|heading|text|image|cards|button|spacer.
+-- status is the lifecycle ('draft'|'published'); the legacy `published` flag is kept
+-- in sync by the API. nav_label/nav_order surface published pages as nav links.
 CREATE TABLE IF NOT EXISTS pages (
-  id         TEXT PRIMARY KEY,              -- slug, e.g. 'landing'
-  title      TEXT NOT NULL,
-  blocks     TEXT NOT NULL DEFAULT '[]',    -- JSON array of blocks
-  published  INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET
-  updated_at INTEGER NOT NULL
+  id          TEXT PRIMARY KEY,              -- slug, e.g. 'landing'
+  title       TEXT NOT NULL,
+  blocks      TEXT NOT NULL DEFAULT '[]',    -- JSON array of blocks
+  published   INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET (legacy mirror of status)
+  updated_at  INTEGER NOT NULL,
+  status      TEXT,                          -- 'draft' | 'published' (migration 0018)
+  description TEXT,                          -- meta/SEO description
+  nav_label   TEXT,                          -- when set, page appears as a nav link
+  nav_order   INTEGER,                       -- sort order among nav links (NULL = not in nav)
+  created_at  INTEGER
 );
 
 -- Editable site copy overrides (migration 0017). Each previously hardcoded piece of
