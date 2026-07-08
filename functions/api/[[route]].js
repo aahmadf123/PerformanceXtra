@@ -1825,10 +1825,12 @@ const DEFAULT_THEME = {
   radius: "14px", space: "16px",
   fontBody: "\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif",
   fontDisplay: "\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif",
-  fontScale: "1"
+  fontScale: "1", scaleRatio: "1.25"
 };
 const THEME_KEYS = Object.keys(DEFAULT_THEME);
-const SITE_KEYS = ["brandName", "brandTag"];
+// brandName/brandTag: reserved copy overrides. logoUrl/faviconUrl: media-library image
+// paths (or https URLs), sanitized with cleanImageSrc below so a save can't inject markup.
+const SITE_KEYS = ["brandName", "brandTag", "logoUrl", "faviconUrl"];
 const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer", "richtext"];
 
 /* Rich text (Editor.js) sanitization. A richtext page block stores an Editor.js
@@ -1922,6 +1924,9 @@ async function handleSaveSite(request, env) {
   }
   if (b.site != null) {
     const site = pickStrings(b.site, SITE_KEYS);
+    // Image references must be a media-library path or an https URL — never arbitrary text.
+    if (site.logoUrl != null) site.logoUrl = cleanImageSrc(site.logoUrl);
+    if (site.faviconUrl != null) site.faviconUrl = cleanImageSrc(site.faviconUrl);
     stmts.push(env.DB.prepare(
       "INSERT INTO site_settings (key,value,updated_at) VALUES ('site',?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"

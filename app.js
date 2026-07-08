@@ -3242,7 +3242,7 @@
       { id: "students", label: "Students" }, { id: "content", label: "Content" }
     ];
     if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
-    if (isSuperadmin()) tabs.push({ id: "appearance", label: "Appearance" });
+    if (isSuperadmin()) tabs.push({ id: "appearance", label: "CMS" });
     tabs.push({ id: "settings", label: "Settings" });
     return withNavPages(tabs);
   }
@@ -3284,7 +3284,10 @@
       if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
     $all(".view").forEach(function (v) { v.classList.toggle("is-active", v.id === "view-" + tab); });
-    if (location.hash !== "#" + tab) history.replaceState(null, "", "#" + tab);
+    // The CMS tab keeps its open section in the hash (#cms/<section>) so it deep-links
+    // and survives a reload; every other tab is just "#<id>".
+    var targetHash = tab === "appearance" ? ("#cms/" + cmsSection()) : ("#" + tab);
+    if (location.hash !== targetHash) history.replaceState(null, "", targetHash);
   }
 
   // Sync all role-dependent chrome (body flag, header buttons, badge, tabs) to
@@ -4447,7 +4450,7 @@
     radius: "14px", space: "16px",
     fontBody: "\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif",
     fontDisplay: "\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif",
-    fontScale: "1"
+    fontScale: "1", scaleRatio: "1.25"
   };
   var THEME_VAR_MAP = {
     accent: "--accent", ember: "--ember", bg: "--bg", surface: "--surface",
@@ -4464,12 +4467,48 @@
     });
     if (theme.fontScale != null && theme.fontScale !== "") r.style.setProperty("--font-scale", theme.fontScale);
     if (theme.accent) { r.style.setProperty("--brand", theme.accent); r.style.setProperty("--success", theme.accent); }
+    // Derived type-scale steps (base size × ratio^n). --font-scale still drives the global
+    // text size as before; these --text-* steps expose a proper type scale for page/block
+    // typography going forward. scaleRatio is a derived token (not a direct CSS var), so it
+    // lives in DEFAULT_THEME(_C) but not THEME_VAR_MAP.
+    var base = 16 * (parseFloat(theme.fontScale) || 1);
+    var ratio = parseFloat(theme.scaleRatio) || 1.25;
+    var steps = { "--text-sm": -1, "--text-base": 0, "--text-lg": 1, "--text-xl": 2, "--text-2xl": 3, "--text-3xl": 4 };
+    Object.keys(steps).forEach(function (v) { r.style.setProperty(v, (base * Math.pow(ratio, steps[v])).toFixed(2) + "px"); });
+  }
+  // Apply the uploaded logo (header brand mark) and favicon. Both are optional media-library
+  // images stored in site_settings.site; absent values fall back to the built-in "PX" mark
+  // and the default favicon. Safe pre-login so the sign-in page brands itself too.
+  function applySiteBranding(site) {
+    site = site || (state.site && state.site.site) || {};
+    var logo = $(".brand-logo");
+    if (logo) {
+      var url = safeImageSrc(site.logoUrl);
+      if (url) {
+        logo.textContent = "";
+        logo.classList.add("brand-logo--img");
+        logo.appendChild(el("img", { src: url, alt: slot("brand.name") || "Logo" }));
+      } else {
+        logo.classList.remove("brand-logo--img");
+        if (!logo.firstChild || logo.querySelector("img")) logo.textContent = "PX";
+      }
+    }
+    var fav = safeImageSrc(site.faviconUrl);
+    if (fav) {
+      var link = $("link[rel='icon']");
+      if (!link) { link = el("link", { rel: "icon" }); document.head.appendChild(link); }
+      link.setAttribute("href", fav);
+    }
   }
   // Fetch the saved site theme/copy and apply it. Safe pre-login (the endpoint is public)
   // and tolerant of a missing/empty table (returns defaults, so it never blocks boot).
   function loadAndApplySiteTheme() {
     return api("/site").then(function (res) {
-      if (res.ok && res.data && res.data.theme) { state.site = res.data; applySiteTheme(res.data.theme); }
+      if (res.ok && res.data) {
+        state.site = res.data;
+        if (res.data.theme) applySiteTheme(res.data.theme);
+        applySiteBranding(res.data.site);
+      }
     }).catch(function () {});
   }
   function toHex(v) { v = String(v || "").trim(); return /^#[0-9a-fA-F]{6}$/.test(v) ? v : ""; }
@@ -4653,40 +4692,160 @@
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
+  /* ----------------------------- CMS hub (WordPress-style admin) -----------------------------
+   * The whole super-admin CMS lives in one "CMS" tab (#view-appearance) organized into
+   * sections shown in a left sub-nav, instead of one long scroll. Each section carries a
+   * `minRole` (the capability model): only super admins see the tab today, but when
+   * multi-author editing lands we flip the tab to isAtLeastAdmin() and admins automatically
+   * get just the sections they're allowed. `soon` marks a section whose feature is on the
+   * roadmap; it renders a placeholder describing what's coming. */
+  function cmsSectionList() {
+    return [
+      { id: "dashboard", label: "Dashboard", minRole: "admin", render: renderCmsDashboard },
+      { id: "pages", label: "Pages", minRole: "admin", render: renderPageBuilder },
+      { id: "design", label: "Design", minRole: "superadmin", render: renderThemeEditor },
+      { id: "content", label: "Content", minRole: "admin", render: renderSiteContentEditor },
+      { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
+      { id: "menus", label: "Menus", minRole: "superadmin", soon: "Build your site navigation — order links, add custom URLs, and choose exactly what shows up in the nav (instead of it being derived automatically from published pages)." },
+      { id: "checkin", label: "Check-in", minRole: "superadmin", soon: "Configure the athlete daily check-in — rename the dimensions (Mood, Energy, Stress…), add your own, and set each 1–5 scale and its end labels." },
+      { id: "access", label: "Access", minRole: "superadmin", soon: "Choose which roles (admins, coaches) can edit pages, content and media — multi-author editing." },
+      { id: "settings", label: "Settings", minRole: "superadmin", soon: "Site-wide options and defaults gathered in one place." }
+    ];
+  }
+  function visibleCmsSections() { return cmsSectionList().filter(function (s) { return isAtLeast(s.minRole); }); }
+  function sectionDef(id) {
+    var all = cmsSectionList();
+    return all.filter(function (s) { return s.id === id; })[0] || all[0];
+  }
+  // The active section, normalized to one the current role may actually see.
+  function cmsSection() {
+    var vis = visibleCmsSections().map(function (s) { return s.id; });
+    var cur = state.cmsSection || "dashboard";
+    return vis.indexOf(cur) === -1 ? (vis[0] || "dashboard") : cur;
+  }
+  function setCmsSection(id) {
+    state.cmsSection = id;
+    var h = "#cms/" + id;
+    if (location.hash !== h) history.replaceState(null, "", h);
+    renderAppearance();
+  }
+  // Which data each section needs (lazy — a section never blocks on data it doesn't use).
+  function cmsDataReady(section) {
+    if (!state.site) return false;
+    if ((section === "pages" || section === "dashboard") && !state.pages) return false;
+    if ((section === "media" || section === "dashboard") && state.media == null) return false;
+    return true;
+  }
+  function ensureCmsData(section) {
+    var jobs = [];
+    if (!state.site) jobs.push(api("/site").then(function (r) {
+      state.site = (r && r.data && r.data.theme) ? r.data : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
+    }).catch(function () { state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} }; }));
+    if ((section === "pages" || section === "dashboard") && !state.pages) jobs.push(api("/pages").then(function (r) {
+      state.pages = (r && r.data && r.data.pages) ? r.data.pages : [];
+    }).catch(function () { state.pages = state.pages || []; }));
+    if ((section === "media" || section === "dashboard") && state.media == null) jobs.push(loadMediaList());
+    return jobs.length ? Promise.all(jobs) : Promise.resolve();
+  }
   function renderAppearance() {
     var view = $("#view-appearance");
     if (!view) return;
-    // The theme may already be loaded at boot (loadAndApplySiteTheme), but the page list
-    // is fetched lazily here. Load whichever is still missing before rendering.
-    if (!state.site || !state.pages || state.media == null) {
+    var section = cmsSection();
+    if (!cmsDataReady(section)) {
       view.textContent = "";
-      view.appendChild(el("p", { class: "field-hint" }, "Loading appearance…"));
-      Promise.all([
-        state.site ? Promise.resolve({ data: state.site }) : api("/site"),
-        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages"),
-        state.media != null ? Promise.resolve() : loadMediaList()
-      ]).then(function (out) {
-        var s = out[0] && out[0].data, p = out[1] && out[1].data;
-        state.site = (s && s.theme) ? s : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
-        state.pages = (p && p.pages) ? p.pages : [];
-        renderAppearance();
-      }).catch(function () {
-        state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
-        state.pages = state.pages || [];
-        state.media = state.media || [];
-        renderAppearance();
+      view.appendChild(el("p", { class: "field-hint" }, "Loading…"));
+      ensureCmsData(section).then(function () {
+        if (state.tab === "appearance") paintCmsHub(view, cmsSection());
       });
       return;
     }
+    paintCmsHub(view, section);
+  }
+  function paintCmsHub(view, section) {
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "Appearance"),
-      el("p", {}, "Change the site's colors, fonts and sizes, edit every piece of site copy, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
+      el("h2", {}, "CMS"),
+      el("p", {}, "Manage your whole site from one place — pages, design, content and media. Changes save to the database and apply to everyone.")
     ]));
-    view.appendChild(renderThemeEditor());
-    view.appendChild(renderSiteContentEditor());
-    view.appendChild(renderMediaLibrary());
-    view.appendChild(renderPageBuilder());
+    var nav = el("nav", { class: "cms-nav", "aria-label": "CMS sections" });
+    visibleCmsSections().forEach(function (s) {
+      nav.appendChild(el("button", {
+        class: "cms-nav-item" + (s.id === section ? " is-active" : ""),
+        type: "button",
+        "aria-current": s.id === section ? "page" : null,
+        onclick: function () { if (s.id !== cmsSection()) setCmsSection(s.id); }
+      }, [
+        el("span", { class: "cms-nav-label" }, s.label),
+        s.soon ? el("span", { class: "cms-nav-soon" }, "soon") : null
+      ]));
+    });
+    var def = sectionDef(section);
+    var body = el("div", { class: "cms-hub-body" }, [def.soon ? renderCmsSoon(def) : def.render()]);
+    view.appendChild(el("div", { class: "cms-hub" }, [nav, body]));
+  }
+  function renderCmsSoon(def) {
+    var panel = el("div", { class: "panel cms-soon" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, def.label),
+      el("span", { class: "chip" }, "Coming soon")
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin-top:4px" }, def.soon));
+    return panel;
+  }
+  function dashCard(label, value, sub, onClick) {
+    return el("button", { class: "cms-dash-card", type: "button", onclick: onClick }, [
+      el("div", { class: "cms-dash-value" }, String(value)),
+      el("div", { class: "cms-dash-label" }, label),
+      el("div", { class: "cms-dash-sub" }, sub)
+    ]);
+  }
+  function renderCmsDashboard() {
+    var wrap = el("div", { class: "cms-dash" });
+    var pages = state.pages || [];
+    var pub = pages.filter(function (p) { return (p.status || (p.published ? "published" : "draft")) === "published"; }).length;
+    var mediaCount = (state.media || []).length;
+    var theme = (state.site && state.site.theme) || {};
+    wrap.appendChild(el("div", { class: "cms-dash-grid" }, [
+      dashCard("Pages", pages.length, pub + " published · " + (pages.length - pub) + " draft", function () { setCmsSection("pages"); }),
+      dashCard("Media", mediaCount, mediaCount === 1 ? "image" : "images", function () { setCmsSection("media"); }),
+      dashCard("Accent", toHex(theme.accent) || "—", "theme color", function () { setCmsSection("design"); })
+    ]));
+
+    var actions = el("div", { class: "panel" });
+    actions.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Quick actions")]));
+    actions.appendChild(el("div", { class: "cms-actions" }, [
+      el("button", { class: "btn btn--sm btn--accent", onclick: function () { state.pageDraft = null; setCmsSection("pages"); setTimeout(openNewPageModal, 0); } }, "+ New page"),
+      el("button", { class: "btn btn--sm", onclick: function () { setCmsSection("design"); } }, "Edit design"),
+      el("button", { class: "btn btn--sm", onclick: function () { setCmsSection("content"); } }, "Edit site copy"),
+      el("button", { class: "btn btn--sm", onclick: function () { setCmsSection("media"); } }, "Upload media")
+    ]));
+    wrap.appendChild(actions);
+
+    var recent = el("div", { class: "panel" });
+    recent.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Your pages"),
+      el("button", { class: "btn btn--sm", onclick: function () { setCmsSection("pages"); } }, "All pages →")
+    ]));
+    if (!pages.length) {
+      recent.appendChild(el("p", { class: "no-link" }, "No pages yet. Create your first one from Pages."));
+    } else {
+      var list = el("div", { class: "builder-canvas" });
+      pages.slice(0, 6).forEach(function (p) {
+        var isPub = (p.status || (p.published ? "published" : "draft")) === "published";
+        list.appendChild(el("div", { class: "builder-block" }, [
+          el("div", { class: "builder-block-head" }, [
+            el("span", { class: "chip " + (isPub ? "chip--accent" : "") }, isPub ? "published" : "draft"),
+            el("span", { class: "builder-block-summary" }, [el("strong", {}, p.title || p.id), " · #/p/" + p.id])
+          ]),
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm", onclick: function () { setCmsSection("pages"); setTimeout(function () { openPageDraft(p); }, 0); } }, "Edit")
+          ])
+        ]));
+      });
+      recent.appendChild(list);
+    }
+    wrap.appendChild(recent);
+    return wrap;
   }
 
   /* ----------------------------- Appearance: site content panel -----------------------------
@@ -4729,11 +4888,53 @@
     return panel;
   }
 
+  // The "Design" CMS section: brand (logo/favicon), colors, typography + type scale (the
+  // "scaler"), and dimensions (spacing/radius) — every control previews live and only
+  // persists on Save. Theme tokens map 1:1 to CSS variables (THEME_VAR_MAP); scaleRatio is
+  // derived into --text-* steps by applySiteTheme. Logo/favicon live in site_settings.site.
   function renderThemeEditor() {
-    var theme = Object.assign({}, DEFAULT_THEME_C, state.site.theme || {});
-    var panel = el("div", { class: "panel" });
-    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Theme")]));
+    var theme = Object.assign({}, DEFAULT_THEME_C, (state.site && state.site.theme) || {});
+    var siteCfg = Object.assign({}, (state.site && state.site.site) || {});
+    var wrap = el("div", { class: "cms-design" });
+    function addHead(panel, title, hint) {
+      panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, title)]));
+      if (hint) panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" }, hint));
+    }
 
+    /* ---- Brand: logo + favicon ---- */
+    var brand = el("div", { class: "panel" });
+    addHead(brand, "Brand", "Upload a logo for the header and a favicon for the browser tab. Leave empty to use the built-in “PX” mark.");
+    function imagePickerRow(key, label, hint) {
+      var thumb = el("div", { class: "brand-pick-thumb" });
+      function drawThumb() {
+        thumb.textContent = "";
+        var url = safeImageSrc(siteCfg[key]);
+        thumb.appendChild(url ? el("img", { src: url, alt: "" }) : el("span", { class: "no-link" }, "None"));
+      }
+      drawThumb();
+      return el("div", { class: "brand-pick" }, [
+        thumb,
+        el("div", { class: "brand-pick-main" }, [
+          el("div", { class: "detail-label" }, label),
+          hint ? el("p", { class: "field-hint" }, hint) : null,
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm", type: "button", onclick: function () {
+              openMediaPicker(function (m) { siteCfg[key] = "/" + m.key; drawThumb(); applySiteBranding(siteCfg); });
+            } }, "Choose image"),
+            el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () {
+              siteCfg[key] = ""; drawThumb(); applySiteBranding(siteCfg);
+            } }, "Remove")
+          ])
+        ])
+      ]);
+    }
+    brand.appendChild(imagePickerRow("logoUrl", "Logo", "Shown top-left in the header. A wide image with a transparent background works best."));
+    brand.appendChild(imagePickerRow("faviconUrl", "Favicon", "The small icon in the browser tab. A square image is best."));
+    wrap.appendChild(brand);
+
+    /* ---- Colors ---- */
+    var colorsPanel = el("div", { class: "panel" });
+    addHead(colorsPanel, "Colors");
     var COLORS = [["accent", "Accent"], ["ember", "Secondary accent"], ["bg", "Background"], ["surface", "Surface / cards"], ["ink", "Text"], ["danger", "Danger"], ["warn", "Warning"]];
     var colorGrid = el("div", { class: "appearance-grid" });
     COLORS.forEach(function (pair) {
@@ -4741,8 +4942,12 @@
       input.addEventListener("input", function () { theme[pair[0]] = input.value; applySiteTheme(theme); });
       colorGrid.appendChild(el("label", { class: "appearance-field" }, [el("span", {}, pair[1]), input]));
     });
-    panel.appendChild(colorGrid);
+    colorsPanel.appendChild(colorGrid);
+    wrap.appendChild(colorsPanel);
 
+    /* ---- Typography + type scale (the "scaler") ---- */
+    var typePanel = el("div", { class: "panel" });
+    addHead(typePanel, "Typography", "Choose fonts and set the type scale — a base text size and the ratio between each step.");
     var FONTS = [
       ["\"Hanken Grotesk\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, sans-serif", "Hanken Grotesk"],
       ["\"Bricolage Grotesque\", \"Hanken Grotesk\", system-ui, sans-serif", "Bricolage Grotesque"],
@@ -4753,37 +4958,83 @@
     function fontSelect(key, label) {
       var sel = el("select", {});
       FONTS.forEach(function (o) { var op = el("option", { value: o[0] }, o[1]); if (lc(theme[key]) === lc(o[0])) op.selected = true; sel.appendChild(op); });
-      sel.addEventListener("change", function () { theme[key] = sel.value; applySiteTheme(theme); });
+      sel.addEventListener("change", function () { theme[key] = sel.value; applySiteTheme(theme); drawScale(); });
       return el("label", { class: "appearance-field" }, [el("span", {}, label), sel]);
     }
-    panel.appendChild(el("div", { class: "appearance-grid" }, [fontSelect("fontBody", "Body font"), fontSelect("fontDisplay", "Heading font")]));
+    var scalePreview = el("div", { class: "type-scale-preview" });
+    function drawScale() {
+      var base = 16 * (parseFloat(theme.fontScale) || 1);
+      var ratio = parseFloat(theme.scaleRatio) || 1.25;
+      scalePreview.textContent = "";
+      [["Display", 4], ["Heading 1", 3], ["Heading 2", 2], ["Heading 3", 1], ["Body", 0], ["Small", -1]].forEach(function (row) {
+        var px = base * Math.pow(ratio, row[1]);
+        scalePreview.appendChild(el("div", { class: "type-scale-row", style: "font-size:" + px.toFixed(1) + "px" }, [
+          el("span", {}, row[0]),
+          el("span", { class: "type-scale-size" }, px.toFixed(0) + "px")
+        ]));
+      });
+    }
+    var sizeOut = el("span", { class: "appearance-val" }, Math.round(16 * (parseFloat(theme.fontScale) || 1)) + "px");
+    var sizeInput = el("input", { type: "range", min: 0.8, max: 1.4, step: 0.05, value: parseFloat(theme.fontScale) || 1 });
+    sizeInput.addEventListener("input", function () {
+      theme.fontScale = sizeInput.value;
+      sizeOut.textContent = Math.round(16 * parseFloat(sizeInput.value)) + "px";
+      applySiteTheme(theme); drawScale();
+    });
+    var ratioSel = el("select", {});
+    [["1.125", "Compact (1.125)"], ["1.2", "Reduced (1.2)"], ["1.25", "Balanced (1.25)"], ["1.333", "Bold (1.333)"], ["1.5", "Dramatic (1.5)"]].forEach(function (o) {
+      var op = el("option", { value: o[0] }, o[1]);
+      if (String(parseFloat(theme.scaleRatio)) === String(parseFloat(o[0]))) op.selected = true;
+      ratioSel.appendChild(op);
+    });
+    ratioSel.addEventListener("change", function () { theme.scaleRatio = ratioSel.value; applySiteTheme(theme); drawScale(); });
+    typePanel.appendChild(el("div", { class: "appearance-grid" }, [fontSelect("fontBody", "Body font"), fontSelect("fontDisplay", "Heading font")]));
+    typePanel.appendChild(el("div", { class: "appearance-grid" }, [
+      el("label", { class: "appearance-field" }, [el("span", {}, "Base text size"), el("div", { class: "appearance-slider" }, [sizeInput, sizeOut])]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Scale ratio"), ratioSel])
+    ]));
+    drawScale();
+    typePanel.appendChild(el("div", { class: "field" }, [el("label", {}, "Type scale preview"), scalePreview]));
+    wrap.appendChild(typePanel);
 
-    function slider(key, label, min, max, step, unit) {
-      var cur = parseFloat(theme[key]); if (isNaN(cur)) cur = parseFloat(DEFAULT_THEME_C[key]) || 1;
-      var out = el("span", { class: "appearance-val" }, cur + unit);
-      var input = el("input", { type: "range", min: min, max: max, step: step, value: cur });
-      input.addEventListener("input", function () { theme[key] = input.value + unit; out.textContent = input.value + unit; applySiteTheme(theme); });
+    /* ---- Dimensions: radius + spacing ---- */
+    var dimPanel = el("div", { class: "panel" });
+    addHead(dimPanel, "Dimensions", "Corner rounding and the base spacing unit used across the app.");
+    var dimPreview = el("div", { class: "dim-preview" });
+    function drawDim() {
+      var rad = parseFloat(theme.radius) || 0, sp = parseFloat(theme.space) || 0;
+      dimPreview.textContent = "";
+      dimPreview.appendChild(el("div", { class: "dim-swatch", style: "border-radius:" + rad + "px" }, "radius " + rad + "px"));
+      dimPreview.appendChild(el("div", { class: "dim-gap", style: "gap:" + sp + "px" }, [el("span", {}), el("span", {}), el("span", {})]));
+    }
+    function dimSlider(key, label, min, max) {
+      var cur = parseFloat(theme[key]); if (isNaN(cur)) cur = parseFloat(DEFAULT_THEME_C[key]) || 0;
+      var out = el("span", { class: "appearance-val" }, cur + "px");
+      var input = el("input", { type: "range", min: min, max: max, step: 1, value: cur });
+      input.addEventListener("input", function () { theme[key] = input.value + "px"; out.textContent = input.value + "px"; applySiteTheme(theme); drawDim(); });
       return el("label", { class: "appearance-field" }, [el("span", {}, label), el("div", { class: "appearance-slider" }, [input, out])]);
     }
-    panel.appendChild(el("div", { class: "appearance-grid" }, [
-      slider("fontScale", "Text size", 0.8, 1.4, 0.05, ""),
-      slider("radius", "Corner radius", 0, 28, 1, "px"),
-      slider("space", "Spacing", 8, 28, 1, "px")
-    ]));
+    dimPanel.appendChild(el("div", { class: "appearance-grid" }, [dimSlider("radius", "Corner radius", 0, 28), dimSlider("space", "Spacing", 8, 28)]));
+    drawDim();
+    dimPanel.appendChild(el("div", { class: "field" }, [el("label", {}, "Preview"), dimPreview]));
+    wrap.appendChild(dimPanel);
 
-    panel.appendChild(el("div", { class: "appearance-actions" }, [
+    /* ---- Actions ---- */
+    wrap.appendChild(el("div", { class: "appearance-actions" }, [
       el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
-        applySiteTheme(DEFAULT_THEME_C); state.site.theme = Object.assign({}, DEFAULT_THEME_C); renderAppearance();
-      } }, "Reset to defaults"),
+        applySiteTheme(DEFAULT_THEME_C);
+        if (state.site) state.site.theme = Object.assign({}, DEFAULT_THEME_C);
+        renderAppearance();
+      } }, "Reset theme"),
       el("button", { class: "btn btn--sm btn--primary", onclick: function () {
-        api("/site", { method: "POST", body: { theme: theme } }).then(function (res) {
+        api("/site", { method: "POST", body: { theme: theme, site: siteCfg } }).then(function (res) {
           if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
           if (res.data && res.data.site) state.site = res.data.site;
-          applySiteTheme(state.site.theme); toast("Appearance saved");
+          applySiteTheme(state.site.theme); applySiteBranding(state.site.site); toast("Design saved");
         }).catch(function () { toast("Couldn't reach the server"); });
-      } }, "Save appearance")
+      } }, "Save design")
     ]));
-    return panel;
+    return wrap;
   }
 
   /* ----------------------------- Appearance: page builder ----------------------------- */
@@ -6108,6 +6359,7 @@
     // "#/p/<slug>" deep-links to a builder page.
     var initial = (location.hash || "").replace("#", "");
     if (initial.indexOf("/p/") === 0) state.tab = "page:" + initial.slice(3);
+    else if (initial.indexOf("cms") === 0) { state.tab = "appearance"; var seg0 = initial.split("/")[1]; if (seg0) state.cmsSection = seg0; }
     else if (initial) state.tab = initial;
 
     // Page-builder autosave: park dirty edits in the server-side working copy every
@@ -6120,6 +6372,12 @@
     // Builder-page links (#/p/<slug>) navigate without a reload, signed in or out.
     window.addEventListener("hashchange", function () {
       var h = (location.hash || "").replace("#", "");
+      // Deep-link into a CMS section (#cms/<section>) for signed-in super admins.
+      if (h.indexOf("cms") === 0 && !$("#auth-gate") && isSuperadmin()) {
+        state.cmsSection = h.split("/")[1] || "dashboard";
+        setTab("appearance");
+        return;
+      }
       if (h.indexOf("/p/") !== 0) return;
       var slug = h.slice(3);
       if ($("#auth-gate")) {
