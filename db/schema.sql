@@ -173,12 +173,57 @@ CREATE TABLE IF NOT EXISTS site_settings (
 
 -- Builder pages. Blocks are an ordered JSON array on the row: [{id,type,props}, ...].
 -- type is a server-enforced whitelist: hero|heading|text|image|cards|button|spacer.
+-- status is the lifecycle ('draft'|'published'); the legacy `published` flag is kept
+-- in sync by the API. nav_label/nav_order surface published pages as nav links.
 CREATE TABLE IF NOT EXISTS pages (
-  id         TEXT PRIMARY KEY,              -- slug, e.g. 'landing'
-  title      TEXT NOT NULL,
-  blocks     TEXT NOT NULL DEFAULT '[]',    -- JSON array of blocks
-  published  INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET
+  id          TEXT PRIMARY KEY,              -- slug, e.g. 'landing'
+  title       TEXT NOT NULL,
+  blocks      TEXT NOT NULL DEFAULT '[]',    -- JSON array of blocks
+  published   INTEGER NOT NULL DEFAULT 0,    -- 1 = visible to the public GET (legacy mirror of status)
+  updated_at  INTEGER NOT NULL,
+  status      TEXT,                          -- 'draft' | 'published' (migration 0018)
+  description TEXT,                          -- meta/SEO description
+  nav_label   TEXT,                          -- when set, page appears as a nav link
+  nav_order   INTEGER,                       -- sort order among nav links (NULL = not in nav)
+  created_at  INTEGER,
+  draft_title  TEXT,                         -- autosaved working copy (migration 0020);
+  draft_blocks TEXT                          -- cleared on explicit save/publish
+);
+
+-- Page edit history (migration 0020): every explicit save snapshots the previous state;
+-- the API prunes each page to its latest 20 revisions.
+CREATE TABLE IF NOT EXISTS page_revisions (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  page_id  TEXT NOT NULL,
+  title    TEXT NOT NULL,
+  blocks   TEXT NOT NULL,     -- JSON array snapshot
+  status   TEXT,
+  saved_at INTEGER NOT NULL,
+  saved_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_page_revisions_page ON page_revisions(page_id, id);
+
+-- Editable site copy overrides (migration 0017). Each previously hardcoded piece of
+-- user-facing text has a stable slot key; the original copy stays in the client as the
+-- default, so this table stores only overrides (empty table = original site).
+CREATE TABLE IF NOT EXISTS content_slots (
+  key        TEXT PRIMARY KEY,   -- e.g. 'hero.title', 'repo.intro', 'footer.text'
+  value      TEXT NOT NULL,      -- plain text override for this slot
   updated_at INTEGER NOT NULL
+);
+
+-- CMS media library metadata (migration 0019). Image bytes live in the R2 bucket bound
+-- as MEDIA (key 'media/<id>.<ext>'); this table is the browsable index for the
+-- Appearance -> Media panel and image picker.
+CREATE TABLE IF NOT EXISTS media (
+  id         TEXT PRIMARY KEY,   -- random id; also the R2 key stem
+  key        TEXT NOT NULL,      -- full R2 object key, e.g. 'media/abc123.webp'
+  filename   TEXT NOT NULL,      -- original filename, for display
+  mime       TEXT NOT NULL,      -- image/jpeg | image/png | image/webp | image/gif
+  size       INTEGER NOT NULL,   -- bytes as stored
+  alt        TEXT,               -- default alt text
+  created_at INTEGER NOT NULL,
+  created_by TEXT                -- uploader's user id
 );
 
 -- Mental-performance check-ins + journaling (migration 0008). Athletes self-report a

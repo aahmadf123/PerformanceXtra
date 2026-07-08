@@ -1037,7 +1037,9 @@
     templates: [],          // reusable assignment templates (coach), from bootstrap
     globalTracking: null,   // global-library-only snapshot, lazy-loaded for the super-admin Content "Global" scope
     studentTab: "mine",     // Students subtab: "mine" (own roster) | "all" (org-wide directory)
-    allStudents: null       // org-wide student directory, lazy-loaded for the "All students" subtab
+    allStudents: null,      // org-wide student directory, lazy-loaded for the "All students" subtab
+    content: {},            // site-copy overrides from content_slots (key -> text); defaults live in CONTENT_DEFAULTS
+    navPages: []            // published builder pages with a nav label: [{id,label,order}]
   };
   rebuildData();
   saveStore();   // persist normalization / v1→v2 migration so it survives even if nothing else changes
@@ -3219,15 +3221,20 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
+    // Published builder pages with a nav label appear as extra tabs for everyone.
+    function withNavPages(tabs) {
+      (state.navPages || []).forEach(function (p) { tabs.push({ id: "page:" + p.id, label: p.label }); });
+      return tabs;
+    }
     if (!isAdminView()) {
       var meS = activeStudent();
       var unread = meS ? threadUnread(meS, "coach") : 0;
-      return [
+      return withNavPages([
         { id: "workouts", label: "My Workouts" },
         { id: "checkin", label: "Check-in" },
         { id: "messages", label: "Messages" + (unread ? " (" + unread + ")" : "") },
         { id: "progress", label: "My Progress" }
-      ];
+      ]);
     }
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
@@ -3237,7 +3244,7 @@
     if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
     if (isSuperadmin()) tabs.push({ id: "appearance", label: "Appearance" });
     tabs.push({ id: "settings", label: "Settings" });
-    return tabs;
+    return withNavPages(tabs);
   }
 
   function renderTabs() {
@@ -3249,6 +3256,22 @@
   }
 
   function setTab(tab) {
+    // Builder pages: any "page:<slug>" id renders into the shared #view-page section.
+    // Direct #/p/<slug> links work even when the page isn't in the nav.
+    if (tab && tab.indexOf("page:") === 0) {
+      var slug = tab.slice(5);
+      state.tab = tab;
+      var pv = ensurePageView();
+      renderPublicPage(slug, pv);
+      $all(".tab").forEach(function (b) {
+        var on = b.getAttribute("data-tab") === tab;
+        b.classList.toggle("is-active", on);
+        if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      });
+      $all(".view").forEach(function (v) { v.classList.toggle("is-active", v.id === "view-page"); });
+      if (location.hash !== "#/p/" + slug) history.replaceState(null, "", "#/p/" + slug);
+      return;
+    }
     var ids = currentTabs().map(function (t) { return t.id; });
     if (ids.indexOf(tab) === -1) tab = ids[0];
     state.tab = tab;
@@ -3268,6 +3291,7 @@
   // the current view + auth state.
   function applyRole() {
     document.body.setAttribute("data-role", isAdminView() ? "admin" : "student");
+    decorateSlotEditing();   // refresh inline ✎ copy-edit buttons on role/view changes
     var addBtn = $("#add-student-form button"); if (addBtn) addBtn.textContent = SERVER ? "Add athlete" : "Add student";
     var badge = $("#role-badge");
     badge.hidden = false;
@@ -3335,12 +3359,15 @@
 
   /* ----------------------------- Modal ----------------------------- */
   var modalReturnFocus = null;
+  var modalOnClose = null;
   function modalFocusables(container) {
     return $all('a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])', container)
       .filter(function (n) { return n.offsetWidth > 0 || n.offsetHeight > 0 || n === document.activeElement; });
   }
   function closeModal() {
     var root = $("#modal-root");
+    var onClose = modalOnClose; modalOnClose = null;
+    if (typeof onClose === "function") { try { onClose(); } catch (e) {} }
     root.hidden = true; root.setAttribute("aria-hidden", "true"); root.textContent = ""; root.onclick = null;
     document.removeEventListener("keydown", modalKeydown);
     // Return focus to whatever opened the modal (WCAG 2.4.3 / keyboard-first).
@@ -3362,9 +3389,10 @@
       e.preventDefault(); first.focus();
     }
   }
-  function openModal(title, bodyNode, actions) {
+  function openModal(title, bodyNode, actions, onClose) {
     var root = $("#modal-root");
     modalReturnFocus = document.activeElement;
+    modalOnClose = typeof onClose === "function" ? onClose : null;
     root.textContent = "";
     var modal = el("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-label": title });
     modal.appendChild(el("div", { class: "modal-head" }, [
@@ -3699,8 +3727,8 @@
     return el("div", { class: "auth-head" }, [
       el("div", { class: "brand-logo", "aria-hidden": "true" }, "PX"),
       el("div", {}, [
-        el("div", { class: "brand-name" }, "PerformanceXtra"),
-        el("div", { class: "brand-tag" }, "Mental Workout Repository")
+        el("div", { class: "brand-name", "data-slot": "brand.name" }, slot("brand.name")),
+        el("div", { class: "brand-tag", "data-slot": "brand.tag" }, slot("brand.tag"))
       ])
     ]);
   }
@@ -3744,14 +3772,14 @@
   function buildSignedOutHero(customLanding) {
     return el("section", { class: "signedout-hero", "aria-labelledby": "signedout-hero-title" }, [
       el("div", { class: "signedout-brand" }, [authHeader()]),
-      el("div", { class: "signedout-kicker" }, "Mental training, kept in motion"),
-      el("h1", { class: "signedout-title", id: "signedout-hero-title" }, "One focused place for athlete check-ins, coach guidance, and mental performance work."),
-      el("p", { class: "signedout-copy" }, "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools."),
+      el("div", { class: "signedout-kicker", "data-slot": "hero.kicker" }, slot("hero.kicker")),
+      el("h1", { class: "signedout-title", id: "signedout-hero-title", "data-slot": "hero.title" }, slot("hero.title")),
+      el("p", { class: "signedout-copy", "data-slot": "hero.copy" }, slot("hero.copy")),
       buildSignedOutMoment(),
       el("div", { class: "signedout-roles", "aria-label": "Who this is for" }, [
-        el("span", { class: "signedout-role" }, "Athletes: workouts, check-ins, messages"),
-        el("span", { class: "signedout-role" }, "Coaches: assignments, tracking, support"),
-        el("span", { class: "signedout-role" }, "Admins: team setup, content, operations")
+        el("span", { class: "signedout-role", "data-slot": "hero.role1" }, slot("hero.role1")),
+        el("span", { class: "signedout-role", "data-slot": "hero.role2" }, slot("hero.role2")),
+        el("span", { class: "signedout-role", "data-slot": "hero.role3" }, slot("hero.role3"))
       ]),
       buildSignedOutStartGuide(),
       el("div", { class: "signedout-actions" }, [
@@ -3759,61 +3787,38 @@
         el("button", { class: "btn btn--ghost", type: "button", onclick: focusPreviewSection }, "See sample activities")
       ]),
       el("div", { class: "signedout-note" }, [
-        el("strong", {}, "Preview the library"),
-        el("span", {}, " Then sign in to open your workspace.")
+        el("strong", { "data-slot": "hero.note_title" }, slot("hero.note_title")),
+        " ",
+        el("span", { "data-slot": "hero.note_copy" }, slot("hero.note_copy"))
       ]),
       customLanding
     ]);
   }
 
   function buildSignedOutMoment() {
-    var cue = signedOutMomentCue();
+    // Time-of-day flavor line; each period's copy is its own editable slot.
+    var hour = new Date().getHours();
+    var period = hour < 11 ? "morning" : (hour < 17 ? "midday" : "evening");
     return el("div", { class: "signedout-moment", "aria-label": "Current training moment" }, [
-      el("span", { class: "signedout-moment-label" }, cue.label),
-      el("span", { class: "signedout-moment-copy" }, cue.copy)
+      el("span", { class: "signedout-moment-label", "data-slot": "moment." + period + "_label" }, slot("moment." + period + "_label")),
+      el("span", { class: "signedout-moment-copy", "data-slot": "moment." + period + "_copy" }, slot("moment." + period + "_copy"))
     ]);
   }
 
-  function signedOutMomentCue() {
-    var hour = new Date().getHours();
-    if (hour < 11) {
-      return {
-        label: "Morning reset",
-        copy: "Start the day with one clear assignment, one honest check-in, and one place to return later."
-      };
-    }
-    if (hour < 17) {
-      return {
-        label: "Midday focus",
-        copy: "Keep practice notes, reflections, and coach direction together while the session is still fresh."
-      };
-    }
-    return {
-      label: "Evening review",
-      copy: "Review today's work, send reflections, and leave coaches a cleaner picture of progress."
-    };
-  }
-
   function buildSignedOutStartGuide() {
+    function step(n) {
+      return el("li", { class: "signedout-guide-step" }, [
+        el("strong", { "data-slot": "guide.step" + n + "_title" }, slot("guide.step" + n + "_title")),
+        " ",
+        el("span", { "data-slot": "guide.step" + n + "_copy" }, slot("guide.step" + n + "_copy"))
+      ]);
+    }
     return el("section", { class: "signedout-guide", "aria-labelledby": "signedout-guide-title" }, [
       el("div", { class: "signedout-guide-head" }, [
-        el("h2", { class: "signedout-guide-title", id: "signedout-guide-title" }, "Start in a few focused steps"),
-        el("span", { class: "signedout-guide-meta" }, "Usually 1 to 2 minutes")
+        el("h2", { class: "signedout-guide-title", id: "signedout-guide-title", "data-slot": "guide.title" }, slot("guide.title")),
+        el("span", { class: "signedout-guide-meta", "data-slot": "guide.meta" }, slot("guide.meta"))
       ]),
-      el("ol", { class: "signedout-guide-list" }, [
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "Athletes sign in with the email and passcode their coach shared."),
-          el("span", {}, " Open your assigned workouts, send reflections, and check in without extra setup.")
-        ]),
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "Coaches and staff sign in with their own account."),
-          el("span", {}, " If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.")
-        ]),
-        el("li", { class: "signedout-guide-step" }, [
-          el("strong", {}, "The first screen after sign-in is role-specific."),
-          el("span", {}, " Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.")
-        ])
-      ])
+      el("ol", { class: "signedout-guide-list" }, [step(1), step(2), step(3)])
     ]);
   }
 
@@ -3838,9 +3843,9 @@
     return el("section", { class: "signedout-preview", "aria-labelledby": "signedout-preview-title" }, [
       el("div", { class: "signedout-preview-head" }, [
         el("div", {}, [
-          el("div", { class: "signedout-preview-kicker" }, "Inside the library"),
-          el("h2", { id: "signedout-preview-title" }, "A small preview of the work athletes return to"),
-            el("p", { class: "signedout-preview-copy" }, "These sample activities show the kind of work inside the full library. Filters, assignments, and role-specific tools appear after sign-in.")
+          el("div", { class: "signedout-preview-kicker", "data-slot": "preview.kicker" }, slot("preview.kicker")),
+          el("h2", { id: "signedout-preview-title", "data-slot": "preview.title" }, slot("preview.title")),
+            el("p", { class: "signedout-preview-copy", "data-slot": "preview.copy" }, slot("preview.copy"))
         ]),
         el("div", { class: "signedout-preview-meta" }, sample.length + " sample activities")
       ]),
@@ -3904,15 +3909,35 @@
     }
     return { eyebrow: "Built for steady reps", hint: "Sign in to save progress, reflections, and follow-up from coaches.", badge: "Preview" };
   }
-  // Render the published 'landing' builder page (if any) for signed-out visitors. The
-  // endpoint is public and returns 404 when no published page exists, in which case the
-  // sign-in card simply shows on its own.
-  function renderLandingInto(mount) {
-    api("/pages/landing").then(function (res) {
-      if (res.ok && res.data && Array.isArray(res.data.blocks) && res.data.blocks.length) {
-        renderPageBlocks(res.data.blocks, mount);
-        mount.hidden = false;
+  // Render builder-page content for signed-out visitors: the published 'landing' page by
+  // default, or whichever page a "#/p/<slug>" link points at, plus nav links for every
+  // published page that opted into the nav. Both endpoints are public; when neither a
+  // page nor nav links exist the sign-in card simply shows on its own.
+  function renderLandingInto(mount, slugOverride) {
+    var h = (location.hash || "").replace("#", "");
+    var slug = slugOverride || (h.indexOf("/p/") === 0 ? h.slice(3) : "landing");
+    Promise.all([api("/pages/" + encodeURIComponent(slug)), api("/nav")]).then(function (out) {
+      var pageRes = out[0];
+      var nav = (out[1].ok && out[1].data && out[1].data.nav) || [];
+      var hasPage = pageRes.ok && pageRes.data && Array.isArray(pageRes.data.blocks) && pageRes.data.blocks.length;
+      if (!hasPage && !nav.length) return;
+      mount.textContent = "";
+      if (nav.length) {
+        var row = el("nav", { class: "landing-nav", "aria-label": "Pages" });
+        nav.forEach(function (p) {
+          row.appendChild(el("a", {
+            class: "landing-nav-link" + (p.id === slug ? " is-active" : ""),
+            href: "#/p/" + p.id
+          }, p.label));
+        });
+        mount.appendChild(row);
       }
+      if (hasPage) {
+        var wrap = el("div", { class: "pb-page" });
+        renderPageBlocks(pageRes.data.blocks, wrap);
+        mount.appendChild(wrap);
+      }
+      mount.hidden = false;
     }).catch(function () {});
   }
   function renderLoginForm(card, offline) {
@@ -4449,6 +4474,11 @@
   }
   function toHex(v) { v = String(v || "").trim(); return /^#[0-9a-fA-F]{6}$/.test(v) ? v : ""; }
   function safeUrl(u) { u = String(u || "").trim(); return /^https:\/\//i.test(u) ? u : ""; }
+  // Image sources may also be media-library paths (/media/<key>), not just https URLs.
+  function safeImageSrc(u) {
+    u = String(u || "").trim();
+    return /^\/media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(u) ? u : safeUrl(u);
+  }
   function safeMaxWidth(v) {
     v = String(v == null ? "" : v).trim();
     var m = v.match(/^((?:[0-9]{1,3}|1[0-9]{3}|2000))(px|%)$/);
@@ -4456,17 +4486,185 @@
     return String(Number(m[1])) + m[2];
   }
 
+  /* ----------------------------- Editable site copy ("content slots") -----------------------------
+   * Every previously hardcoded piece of user-facing text has a stable slot key. These
+   * defaults ARE the original copy; the content_slots table stores only overrides (same
+   * pattern as DEFAULT_THEME). Any DOM node carrying data-slot="key" is (re)hydrated by
+   * applySiteContent(), and for a super admin gets an inline ✎ edit button. The same keys
+   * are edited in bulk from the Appearance → Site content panel. */
+  var CONTENT_DEFAULTS = {
+    "brand.name": "PerformanceXtra",
+    "brand.tag": "Mental Workout Repository",
+    "hero.kicker": "Mental training, kept in motion",
+    "hero.title": "One focused place for athlete check-ins, coach guidance, and mental performance work.",
+    "hero.copy": "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools.",
+    "hero.role1": "Athletes: workouts, check-ins, messages",
+    "hero.role2": "Coaches: assignments, tracking, support",
+    "hero.role3": "Admins: team setup, content, operations",
+    "hero.note_title": "Preview the library",
+    "hero.note_copy": "Then sign in to open your workspace.",
+    "guide.title": "Start in a few focused steps",
+    "guide.meta": "Usually 1 to 2 minutes",
+    "guide.step1_title": "Athletes sign in with the email and passcode their coach shared.",
+    "guide.step1_copy": "Open your assigned workouts, send reflections, and check in without extra setup.",
+    "guide.step2_title": "Coaches and staff sign in with their own account.",
+    "guide.step2_copy": "If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.",
+    "guide.step3_title": "The first screen after sign-in is role-specific.",
+    "guide.step3_copy": "Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.",
+    "moment.morning_label": "Morning reset",
+    "moment.morning_copy": "Start the day with one clear assignment, one honest check-in, and one place to return later.",
+    "moment.midday_label": "Midday focus",
+    "moment.midday_copy": "Keep practice notes, reflections, and coach direction together while the session is still fresh.",
+    "moment.evening_label": "Evening review",
+    "moment.evening_copy": "Review today's work, send reflections, and leave coaches a cleaner picture of progress.",
+    "preview.kicker": "Inside the library",
+    "preview.title": "A small preview of the work athletes return to",
+    "preview.copy": "These sample activities show the kind of work inside the full library. Filters, assignments, and role-specific tools appear after sign-in.",
+    "repo.heading": "Activity Repository",
+    "repo.intro": "Every mental-training activity in one place. Search and filter by topic, content type, and progression, then open the resource or expand it for instructions and reflection prompts.",
+    "students.heading": "Students",
+    "students.intro": "Set up each athlete, assign them a focused set of activities to work on, and track what they’ve completed. Pick the active student in the header to assign work or review their progress.",
+    "content.heading": "Content",
+    "content.intro": "Manage your activity library and the Topic, Subtopic, and Content-type lists used across the app. Changes save to your team database and take effect right away, with no developer needed.",
+    "workouts.heading": "My Workouts",
+    "workouts.intro": "These are the activities your coach has assigned for you. Work through them and mark each one done as you go.",
+    "checkin.heading": "Daily check-in",
+    "checkin.intro": "A quick, private moment to notice how you’re doing. There are no wrong answers. It simply helps you and your coach notice patterns over time.",
+    "messages.heading": "Messages",
+    "messages.intro": "A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.",
+    "progress.heading": "My Progress",
+    "progress.intro": "See how much you’ve completed so far, broken down by topic and by week.",
+    "settings.heading": "Settings",
+    "settings.intro": "Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.",
+    "footer.text": "PerformanceXtra — Mental Workout Repository",
+    "footer.tagline": "catalog items (and growing)"
+  };
+  // Groups drive the Appearance → Site content panel layout (and inline-editor labels).
+  var CONTENT_GROUPS = [
+    { title: "Brand & header", keys: [["brand.name", "Brand name"], ["brand.tag", "Brand tagline"]] },
+    { title: "Signed-out landing: hero", keys: [
+      ["hero.kicker", "Kicker line"], ["hero.title", "Headline", true], ["hero.copy", "Intro paragraph", true],
+      ["hero.role1", "Role line 1"], ["hero.role2", "Role line 2"], ["hero.role3", "Role line 3"],
+      ["hero.note_title", "Note title"], ["hero.note_copy", "Note copy"]
+    ] },
+    { title: "Signed-out landing: training moment", keys: [
+      ["moment.morning_label", "Morning label"], ["moment.morning_copy", "Morning copy", true],
+      ["moment.midday_label", "Midday label"], ["moment.midday_copy", "Midday copy", true],
+      ["moment.evening_label", "Evening label"], ["moment.evening_copy", "Evening copy", true]
+    ] },
+    { title: "Signed-out landing: start guide", keys: [
+      ["guide.title", "Guide title"], ["guide.meta", "Time estimate"],
+      ["guide.step1_title", "Step 1 title", true], ["guide.step1_copy", "Step 1 copy", true],
+      ["guide.step2_title", "Step 2 title", true], ["guide.step2_copy", "Step 2 copy", true],
+      ["guide.step3_title", "Step 3 title", true], ["guide.step3_copy", "Step 3 copy", true]
+    ] },
+    { title: "Signed-out landing: library preview", keys: [
+      ["preview.kicker", "Kicker line"], ["preview.title", "Heading"], ["preview.copy", "Copy", true]
+    ] },
+    { title: "Section headings & intros", keys: [
+      ["repo.heading", "Repository heading"], ["repo.intro", "Repository intro", true],
+      ["students.heading", "Students heading"], ["students.intro", "Students intro", true],
+      ["content.heading", "Content heading"], ["content.intro", "Content intro", true],
+      ["workouts.heading", "My Workouts heading"], ["workouts.intro", "My Workouts intro", true],
+      ["checkin.heading", "Check-in heading"], ["checkin.intro", "Check-in intro", true],
+      ["messages.heading", "Messages heading"], ["messages.intro", "Messages intro", true],
+      ["progress.heading", "My Progress heading"], ["progress.intro", "My Progress intro", true],
+      ["settings.heading", "Settings heading"], ["settings.intro", "Settings intro", true]
+    ] },
+    { title: "Footer", keys: [["footer.text", "Footer text"], ["footer.tagline", "Catalog tagline"]] }
+  ];
+  function slotLabel(key) {
+    for (var g = 0; g < CONTENT_GROUPS.length; g++) {
+      var hit = CONTENT_GROUPS[g].keys.filter(function (k) { return k[0] === key; })[0];
+      if (hit) return hit[1];
+    }
+    return key;
+  }
+  // Effective copy for a slot: super-admin override if one is saved, else the original.
+  function slot(key) {
+    var o = state.content && state.content[key];
+    return (o != null && o !== "") ? o : (CONTENT_DEFAULTS[key] || "");
+  }
+  // Public endpoint; tolerant of a missing table (no overrides → original copy).
+  function loadSiteContent() {
+    return api("/content").then(function (res) {
+      if (res.ok && res.data && res.data.content) state.content = res.data.content;
+      applySiteContent();
+    }).catch(function () {});
+  }
+  // Rehydrate every data-slot node from the current overrides. Text only (textContent),
+  // so slot copy can never inject markup. Safe to call any time — nodes that don't exist
+  // yet are picked up on the next call (boot, save, auth-gate build).
+  function applySiteContent() {
+    $all("[data-slot]").forEach(function (n) {
+      var key = n.getAttribute("data-slot");
+      if (CONTENT_DEFAULTS[key] != null) n.textContent = slot(key);
+    });
+    document.title = slot("brand.name") + " — " + slot("brand.tag");
+    decorateSlotEditing();
+  }
+  // Inline editing: give each data-slot node a small ✎ button (super admin only).
+  // Buttons are siblings, not children, so rehydrating textContent never eats them.
+  function decorateSlotEditing() {
+    $all(".slot-edit-btn").forEach(function (b) { b.remove(); });
+    $all("[data-slot]").forEach(function (n) { n.classList.remove("slot-editable"); });
+    if (!isSuperadmin()) return;
+    $all("[data-slot]").forEach(function (n) {
+      var key = n.getAttribute("data-slot");
+      if (CONTENT_DEFAULTS[key] == null) return;
+      if (n.closest("#view-appearance")) return;   // the panel edits copy via its own form
+      if (n.closest(".brand") || n.closest(".auth-head")) return;   // header brand is too tight for a button — edit via the panel
+      n.classList.add("slot-editable");
+      var btn = el("button", {
+        class: "slot-edit-btn", type: "button",
+        title: "Edit this text", "aria-label": "Edit: " + slotLabel(key),
+        onclick: function (e) { e.preventDefault(); e.stopPropagation(); openSlotEditor(key); }
+      }, "✎");
+      n.insertAdjacentElement("afterend", btn);
+    });
+  }
+  function openSlotEditor(key) {
+    var long = (CONTENT_DEFAULTS[key] || "").length > 80;
+    var input = long ? el("textarea", { rows: 4 }) : el("input", { type: "text" });
+    input.value = slot(key);
+    var body = el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, slotLabel(key)), input]),
+      el("p", { class: "field-hint" }, "Shown to everyone. Leave empty and save to restore the original text.")
+    ]);
+    openModal("Edit site copy", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save", accent: true, onClick: function () {
+        saveContentSlots([[key, input.value]], closeModal);
+      } }
+    ]);
+    setTimeout(function () { try { input.focus(); } catch (e) {} }, 40);
+  }
+  // Shared save path for the inline editor and the Site content panel. `pairs` is
+  // [[key, value], ...]; an empty value clears the override (back to original copy).
+  function saveContentSlots(pairs, onDone) {
+    var payload = {};
+    pairs.forEach(function (p) { payload[p[0]] = p[1]; });
+    api("/content", { method: "POST", body: { content: payload } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't save site copy")); return; }
+      state.content = (res.data && res.data.content) || {};
+      applySiteContent();
+      toast("Site copy saved");
+      if (onDone) onDone();
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+
   function renderAppearance() {
     var view = $("#view-appearance");
     if (!view) return;
     // The theme may already be loaded at boot (loadAndApplySiteTheme), but the page list
     // is fetched lazily here. Load whichever is still missing before rendering.
-    if (!state.site || !state.pages) {
+    if (!state.site || !state.pages || state.media == null) {
       view.textContent = "";
       view.appendChild(el("p", { class: "field-hint" }, "Loading appearance…"));
       Promise.all([
         state.site ? Promise.resolve({ data: state.site }) : api("/site"),
-        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages")
+        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages"),
+        state.media != null ? Promise.resolve() : loadMediaList()
       ]).then(function (out) {
         var s = out[0] && out[0].data, p = out[1] && out[1].data;
         state.site = (s && s.theme) ? s : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
@@ -4475,6 +4673,7 @@
       }).catch(function () {
         state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
         state.pages = state.pages || [];
+        state.media = state.media || [];
         renderAppearance();
       });
       return;
@@ -4482,10 +4681,52 @@
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
       el("h2", {}, "Appearance"),
-      el("p", {}, "Change the site's colors, fonts and sizes, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
+      el("p", {}, "Change the site's colors, fonts and sizes, edit every piece of site copy, and build the landing page from content blocks. Changes are saved to the database and apply to everyone.")
     ]));
     view.appendChild(renderThemeEditor());
+    view.appendChild(renderSiteContentEditor());
+    view.appendChild(renderMediaLibrary());
     view.appendChild(renderPageBuilder());
+  }
+
+  /* ----------------------------- Appearance: site content panel -----------------------------
+   * Bulk editor for every content slot, grouped by page area. Fields start at the
+   * effective copy; clearing a field restores the original. Only changed keys are sent. */
+  function renderSiteContentEditor() {
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Site content"),
+      el("span", { class: "cms-count" }, "All editable copy")
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Every heading, intro and label below is live site copy. Edit and save to change it for everyone; clear a field and save to restore the original wording. You can also edit any of these in place — look for the ✎ button next to the text on each page."));
+    var dirty = {};   // key -> new value (only fields the user touched)
+    CONTENT_GROUPS.forEach(function (group) {
+      var body = el("div", { class: "form-stack" });
+      group.keys.forEach(function (def) {
+        var key = def[0], label = def[1], multiline = !!def[2];
+        var input = multiline ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
+        input.value = slot(key);
+        input.addEventListener("input", function () { dirty[key] = input.value; });
+        var hint = (state.content && state.content[key] != null)
+          ? el("span", { class: "slot-flag", title: "This copy has been customized" }, "edited")
+          : null;
+        body.appendChild(el("div", { class: "field" }, [el("label", {}, hint ? [label + " ", hint] : label), input]));
+      });
+      var det = el("details", { class: "content-group" }, [
+        el("summary", {}, group.title),
+        body
+      ]);
+      panel.appendChild(det);
+    });
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        var pairs = Object.keys(dirty).map(function (k) { return [k, dirty[k]]; });
+        if (!pairs.length) { toast("Nothing changed yet"); return; }
+        saveContentSlots(pairs, function () { renderAppearance(); });
+      } }, "Save site content")
+    ]));
+    return panel;
   }
 
   function renderThemeEditor() {
@@ -4556,13 +4797,14 @@
     else if (type === "cards") props = { items: [{ title: "Card title", body: "Card text", icon: "★" }] };
     else if (type === "button") props = { label: "Button", href: "", style: "primary" };
     else if (type === "spacer") props = { size: "md" };
+    else if (type === "richtext") props = { doc: { blocks: [{ type: "paragraph", data: { text: "Write anything — bold, links, lists, quotes…" } }] } };
     return { id: id, type: type, props: props };
   }
-  function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); renderAppearance(); }
+  function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); markPageDirty(); renderAppearance(); }
   function moveBlock(i, dir) {
     var b = state.pageDraft.blocks, j = i + dir;
     if (j < 0 || j >= b.length) return;
-    var tmp = b[i]; b[i] = b[j]; b[j] = tmp; renderAppearance();
+    var tmp = b[i]; b[i] = b[j]; b[j] = tmp; markPageDirty(); renderAppearance();
   }
   function blockSummary(b) {
     var p = b.props || {};
@@ -4573,30 +4815,312 @@
     if (b.type === "cards") return (p.items || []).length + " card" + ((p.items || []).length === 1 ? "" : "s");
     if (b.type === "button") return p.label || "(button)";
     if (b.type === "spacer") return p.size || "md";
+    if (b.type === "richtext") {
+      var n = ((p.doc || {}).blocks || []).length;
+      var first = (((p.doc || {}).blocks || [])[0] || {}).data || {};
+      var plain = String(first.text || "").replace(/<[^>]*>/g, "");
+      return plain.slice(0, 60) || (n + " rich block" + (n === 1 ? "" : "s"));
+    }
     return "";
   }
-  function renderPageBuilder() {
-    if (!state.pageDraft) {
-      var existing = (state.pages || []).filter(function (p) { return p.id === "landing"; })[0];
-      state.pageDraft = existing
-        ? { id: "landing", title: existing.title || "Landing", blocks: (existing.blocks || []).slice(), published: !!existing.published }
-        : { id: "landing", title: "Landing", blocks: [], published: false };
+  /* ----------------------------- Appearance: media library (R2) -----------------------------
+   * Images upload through the Worker into R2 (10 MB cap server-side); big photos are
+   * downscaled in the browser first so uploads stay small and free-tier storage lasts.
+   * The grid lists everything with alt-text editing, copy-URL and delete; the image
+   * block's "Choose from library" picker reuses the same data. */
+  var MEDIA_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  // Downscale to <=2000px on the long edge (webp when possible). GIFs upload untouched
+  // so animations survive; anything that fails to decode falls back to the raw file.
+  function downscaleImage(file) {
+    if (file.type === "image/gif") return Promise.resolve(file);
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var max = 2000, w = img.naturalWidth, h = img.naturalHeight;
+        if (w <= max && h <= max && file.size < 1.5 * 1024 * 1024) { resolve(file); return; }
+        var scale = Math.min(1, max / Math.max(w, h));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", 0.85);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+  function uploadMedia(file, onDone) {
+    if (MEDIA_UPLOAD_TYPES.indexOf(file.type) === -1) { toast("Only JPEG, PNG, WebP or GIF images can be uploaded"); return; }
+    toast("Uploading " + file.name + "…");
+    downscaleImage(file).then(function (blob) {
+      if (blob.size > 10 * 1024 * 1024) { toast("That image is over 10 MB even after resizing"); return; }
+      return fetch("/api/media?filename=" + encodeURIComponent(file.name), {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": blob.type || file.type }, body: blob
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); }).then(function (res) {
+        if (!res.ok) { toast((res.data && res.data.error) || "Upload failed"); return; }
+        state.media = state.media || [];
+        state.media.unshift(res.data);
+        toast("Image uploaded");
+        if (onDone) onDone(res.data);
+      });
+    }).catch(function () { toast("Upload failed"); });
+  }
+  function loadMediaList() {
+    return api("/media").then(function (res) {
+      state.media = (res.ok && res.data && res.data.media) || [];
+    }).catch(function () { state.media = state.media || []; });
+  }
+  function mediaUrl(m) { return "/" + m.key; }
+  function renderMediaLibrary() {
+    var panel = el("div", { class: "panel" });
+    var fileInput = el("input", { type: "file", accept: MEDIA_UPLOAD_TYPES.join(","), hidden: true });
+    fileInput.addEventListener("change", function () {
+      var f = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (f) uploadMedia(f, function () { renderAppearance(); });
+    });
+    panel.appendChild(fileInput);
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Media library"),
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: function () { fileInput.click(); } }, "⬆ Upload image")
+      ])
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Images are stored in your site's own storage and served from /media/…. Large photos are automatically resized before upload. Use them in image blocks via “Choose from library”."));
+    var grid = el("div", { class: "media-grid" });
+    if (!(state.media || []).length) grid.appendChild(el("p", { class: "no-link" }, "No images yet. Upload your first one."));
+    (state.media || []).forEach(function (m) {
+      var alt = el("input", { type: "text", value: m.alt || "", placeholder: "Alt text (describe the image)" });
+      alt.addEventListener("change", function () {
+        api("/media/" + encodeURIComponent(m.id), { method: "POST", body: { alt: alt.value } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save alt text")); return; }
+          m.alt = alt.value; toast("Alt text saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      });
+      grid.appendChild(el("div", { class: "media-card" }, [
+        el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
+        el("div", { class: "media-meta" }, [
+          el("div", { class: "media-name", title: m.filename }, m.filename),
+          alt,
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+              try { navigator.clipboard.writeText(location.origin + mediaUrl(m)); toast("Image URL copied"); }
+              catch (e) { toast(mediaUrl(m)); }
+            } }, "Copy URL"),
+            el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
+              openModal("Delete image", el("p", {}, "Delete “" + m.filename + "”? Pages using it will show a broken image."), [
+                { label: "Cancel", onClick: closeModal },
+                { label: "Delete image", danger: true, onClick: function () {
+                  api("/media/" + encodeURIComponent(m.id), { method: "DELETE" }).then(function (res) {
+                    closeModal();
+                    if (!res.ok) { toast(apiError(res, "Couldn't delete image")); return; }
+                    state.media = (state.media || []).filter(function (x) { return x.id !== m.id; });
+                    renderAppearance(); toast("Image deleted");
+                  }).catch(function () { toast("Couldn't reach the server"); });
+                } }
+              ]);
+            } }, "Delete")
+          ])
+        ])
+      ]));
+    });
+    panel.appendChild(grid);
+    return panel;
+  }
+  // Grid picker used by the image block editor: choose an existing image or upload.
+  function openMediaPicker(onPick) {
+    function body() {
+      var wrap = el("div", {});
+      var fileInput = el("input", { type: "file", accept: MEDIA_UPLOAD_TYPES.join(","), hidden: true });
+      fileInput.addEventListener("change", function () {
+        var f = fileInput.files && fileInput.files[0];
+        fileInput.value = "";
+        if (f) uploadMedia(f, function (m) { closeModal(); onPick(m); });
+      });
+      wrap.appendChild(fileInput);
+      wrap.appendChild(el("div", { style: "margin-bottom:12px" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: function () { fileInput.click(); } }, "⬆ Upload new image")
+      ]));
+      var grid = el("div", { class: "media-grid media-grid--picker" });
+      if (!(state.media || []).length) grid.appendChild(el("p", { class: "no-link" }, "No images in the library yet — upload one above."));
+      (state.media || []).forEach(function (m) {
+        var card = el("button", { class: "media-card media-card--pick", type: "button", onclick: function () { closeModal(); onPick(m); } }, [
+          el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
+          el("div", { class: "media-name", title: m.filename }, m.filename)
+        ]);
+        grid.appendChild(card);
+      });
+      wrap.appendChild(grid);
+      return wrap;
     }
+    if (state.media == null) loadMediaList().then(function () { openModal("Choose an image", body(), [{ label: "Cancel", onClick: closeModal }]); });
+    else openModal("Choose an image", body(), [{ label: "Cancel", onClick: closeModal }]);
+  }
+
+  // Pages manager: a list of every builder page (create / edit / duplicate / publish /
+  // delete), or the block editor for the page currently being edited.
+  function renderPageBuilder() {
+    return state.pageDraft ? renderPageEditor() : renderPagesList();
+  }
+  function slugify(s) {
+    return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+  }
+  function openPageDraft(page) { openPageDraftState(page); renderAppearance(); }
+  function openNewPageModal() {
+    var title = el("input", { type: "text", placeholder: "About us" });
+    var slugI = el("input", { type: "text", placeholder: "about-us" });
+    var touched = false;
+    title.addEventListener("input", function () { if (!touched) slugI.value = slugify(title.value); });
+    slugI.addEventListener("input", function () { touched = true; slugI.value = slugI.value.replace(/[^a-z0-9-]/g, ""); });
+    var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    openModal("New page", el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Page title"), title]),
+      el("div", { class: "field" }, [el("label", {}, "Address (slug)"), slugI,
+        el("p", { class: "field-hint" }, "The page will live at #/p/<slug>. Lowercase letters, numbers and dashes only.")]),
+      errBox
+    ]), [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Create page", accent: true, onClick: function () {
+        var id = slugify(slugI.value || title.value);
+        if (!id) { errBox.textContent = "Give the page a title or slug first."; errBox.hidden = false; return; }
+        if ((state.pages || []).some(function (p) { return p.id === id; })) {
+          errBox.textContent = "A page with that slug already exists."; errBox.hidden = false; return;
+        }
+        closeModal();
+        openPageDraft({ id: id, title: title.value.trim() || id, blocks: [], status: "draft" });
+      } }
+    ]);
+  }
+  function refreshNavAndTabs() {
+    return loadNavPages().then(function () { if (state.session) renderTabs(); });
+  }
+  function renderPagesList() {
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Pages"),
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: openNewPageModal }, "+ New page")
+      ])
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Build as many pages as you like from content blocks. Published pages are visible to everyone at #/p/<slug>; give a page a nav label to add it to the site navigation. The special “landing” page also shows above the sign-in form for signed-out visitors."));
+    var list = el("div", { class: "builder-canvas" });
+    if (!(state.pages || []).length) {
+      list.appendChild(el("p", { class: "no-link" }, "No pages yet. Create your first one."));
+    }
+    (state.pages || []).forEach(function (p) {
+      var pub = (p.status || (p.published ? "published" : "draft")) === "published";
+      list.appendChild(el("div", { class: "builder-block" }, [
+        el("div", { class: "builder-block-head" }, [
+          el("span", { class: "chip " + (pub ? "chip--accent" : "") }, pub ? "published" : "draft"),
+          el("span", { class: "builder-block-summary" }, [
+            el("strong", {}, p.title || p.id), " · #/p/" + p.id +
+            " · " + ((p.blocks || []).length) + " block" + ((p.blocks || []).length === 1 ? "" : "s") +
+            (p.navLabel ? " · in nav as “" + p.navLabel + "”" : "")
+          ])
+        ]),
+        el("div", { class: "cms-actions" }, [
+          el("button", { class: "btn btn--sm", onclick: function () { openPageDraft(p); } }, "Edit"),
+          el("button", { class: "btn btn--sm btn--ghost", onclick: function () { togglePagePublished(p); } }, pub ? "Unpublish" : "Publish"),
+          el("button", { class: "btn btn--sm btn--ghost", onclick: function () { duplicatePage(p.id); } }, "Duplicate"),
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { confirmDeletePage(p); } }, "Delete")
+        ])
+      ]));
+    });
+    panel.appendChild(list);
+    return panel;
+  }
+  function togglePagePublished(p) {
+    var pub = (p.status || (p.published ? "published" : "draft")) === "published";
+    api("/pages/" + encodeURIComponent(p.id), { method: "POST", body: {
+      title: p.title, blocks: p.blocks || [], status: pub ? "draft" : "published",
+      description: p.description || "", navLabel: p.navLabel || "", navOrder: p.navOrder
+    } }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't update page")); return; }
+      state.pages = (state.pages || []).map(function (pg) { return pg.id === p.id ? res.data : pg; });
+      refreshNavAndTabs();
+      renderAppearance();
+      toast(pub ? "Page unpublished" : "Page published");
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function duplicatePage(id) {
+    api("/pages/" + encodeURIComponent(id) + "/duplicate", { method: "POST", body: {} }).then(function (res) {
+      if (!res.ok) { toast(apiError(res, "Couldn't duplicate page")); return; }
+      state.pages.push(res.data);
+      renderAppearance();
+      toast("Page duplicated — it starts as a draft");
+    }).catch(function () { toast("Couldn't reach the server"); });
+  }
+  function confirmDeletePage(p) {
+    openModal("Delete page", el("p", {}, "Delete “" + (p.title || p.id) + "” (#/p/" + p.id + ")? This can't be undone."), [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Delete page", danger: true, onClick: function () {
+        api("/pages/" + encodeURIComponent(p.id), { method: "DELETE" }).then(function (res) {
+          closeModal();
+          if (!res.ok) { toast(apiError(res, "Couldn't delete page")); return; }
+          state.pages = (state.pages || []).filter(function (pg) { return pg.id !== p.id; });
+          if (state.pageDraft && state.pageDraft.id === p.id) state.pageDraft = null;
+          refreshNavAndTabs();
+          renderAppearance();
+          toast("Page deleted");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }
+    ]);
+  }
+  function renderPageEditor() {
     var draft = state.pageDraft;
     var panel = el("div", { class: "panel" });
-    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Page builder"), el("span", { class: "cms-count" }, "Landing page")]));
+    var dirtyFlag = el("span", { id: "page-dirty-flag", class: "cms-count page-flag" },
+      draft.dirty ? "● Unsaved changes" : (draft.autosavedAt ? "Autosaved (not published)" : ""));
+    if (draft.dirty) dirtyFlag.className = "cms-count page-flag page-flag--dirty";
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Page: " + (draft.title || draft.id)),
+      dirtyFlag,
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm", onclick: function () { state.pageDraft = null; renderAppearance(); } }, "← All pages"),
+        el("button", { class: "btn btn--sm btn--ghost", onclick: openRevisionsModal }, "Revisions"),
+        el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+          window.open(location.pathname + "#/p/" + draft.id, "_blank");
+        } }, "Preview ↗")
+      ])
+    ]));
+    if (draft.fromAutosave) {
+      panel.appendChild(el("div", { class: "note-banner", style: "margin:0 0 12px" }, [
+        el("strong", {}, "Resumed autosaved changes. "),
+        "These aren't visible to visitors until you save the page. Use Revisions to go back to the last saved version."
+      ]));
+    }
 
     var titleInput = el("input", { type: "text", value: draft.title });
-    titleInput.addEventListener("input", function () { draft.title = titleInput.value; });
-    var pubCb = el("input", { type: "checkbox" }); pubCb.checked = !!draft.published;
-    pubCb.addEventListener("change", function () { draft.published = pubCb.checked; });
+    titleInput.addEventListener("input", function () { draft.title = titleInput.value; markPageDirty(); });
+    var slugInfo = el("input", { type: "text", value: "#/p/" + draft.id, readonly: true });
+    var statusSel = el("select", {});
+    [["draft", "Draft (only you can see it)"], ["published", "Published (visible to visitors)"]].forEach(function (o) {
+      var op = el("option", { value: o[0] }, o[1]); if (draft.status === o[0]) op.selected = true; statusSel.appendChild(op);
+    });
+    statusSel.addEventListener("change", function () { draft.status = statusSel.value; markPageDirty("meta"); });
+    var descInput = el("textarea", { rows: 2, placeholder: "Short description (used for search engines and page lists)" });
+    descInput.value = draft.description || "";
+    descInput.addEventListener("input", function () { draft.description = descInput.value; markPageDirty("meta"); });
+    var navInput = el("input", { type: "text", value: draft.navLabel || "", placeholder: "e.g. About" });
+    navInput.addEventListener("input", function () { draft.navLabel = navInput.value; markPageDirty("meta"); });
+    var navOrderInput = el("input", { type: "number", value: draft.navOrder || "", placeholder: "0" });
+    navOrderInput.addEventListener("input", function () { draft.navOrder = navOrderInput.value; markPageDirty("meta"); });
     panel.appendChild(el("div", { class: "appearance-grid" }, [
       el("label", { class: "appearance-field" }, [el("span", {}, "Page title"), titleInput]),
-      el("label", { class: "check" }, [pubCb, " Published (visible to visitors)"])
+      el("label", { class: "appearance-field" }, [el("span", {}, "Address"), slugInfo]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Status"), statusSel]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Nav link label (empty = not in nav)"), navInput]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Nav position"), navOrderInput]),
+      el("label", { class: "appearance-field" }, [el("span", {}, "Description"), descInput])
     ]));
 
     var palette = el("div", { class: "builder-palette" });
-    [["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
+    [["richtext", "Rich text"], ["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
       palette.appendChild(el("button", { class: "btn btn--sm btn--ghost", onclick: function () { addBlock(pair[0]); } }, "+ " + pair[1]));
     });
     panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Add a block"), palette]));
@@ -4613,7 +5137,7 @@
           el("button", { class: "btn btn--sm", onclick: function () { openBlockModal(i); } }, "Edit"),
           el("button", { class: "btn btn--sm btn--ghost", disabled: i === 0, onclick: function () { moveBlock(i, -1); } }, "↑"),
           el("button", { class: "btn btn--sm btn--ghost", disabled: i === draft.blocks.length - 1, onclick: function () { moveBlock(i, 1); } }, "↓"),
-          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { draft.blocks.splice(i, 1); renderAppearance(); } }, "Delete")
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { draft.blocks.splice(i, 1); markPageDirty(); renderAppearance(); } }, "Delete")
         ])
       ]));
     });
@@ -4655,6 +5179,13 @@
     if (!b) return;
     var p = Object.assign({}, b.props || {});
     var fields = el("div", { class: "form-stack" });
+    var editorRef = { ed: null };   // Editor.js instance for richtext blocks
+    function destroyEditor() {
+      if (editorRef.ed) {
+        try { editorRef.ed.destroy(); } catch (e) {}
+        editorRef.ed = null;
+      }
+    }
     function textField(key, label, ta) {
       var input = ta ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
       input.value = p[key] != null ? p[key] : "";
@@ -4677,7 +5208,20 @@
     } else if (b.type === "text") {
       textField("text", "Text", true);
     } else if (b.type === "image") {
-      textField("src", "Image URL (https://…)"); textField("alt", "Alt text"); textField("width", "Max width (e.g. 480px)");
+      textField("src", "Image URL (https://… or /media/…)");
+      fields.appendChild(el("div", { class: "field" }, [
+        el("button", { class: "btn btn--sm", type: "button", onclick: function () {
+          // The picker replaces this modal, so commit in-progress edits first, then
+          // reopen the block editor with the chosen image filled in.
+          b.props = p;
+          openMediaPicker(function (m) {
+            b.props.src = "/" + m.key;
+            if (!b.props.alt && m.alt) b.props.alt = m.alt;
+            openBlockModal(i);
+          });
+        } }, "🖼 Choose from library")
+      ]));
+      textField("alt", "Alt text"); textField("width", "Max width (e.g. 480px)");
     } else if (b.type === "button") {
       textField("label", "Label"); textField("href", "Link (https://…)");
       selectField("style", "Style", [["primary", "Primary"], ["ember", "Secondary"], ["ghost", "Ghost"]]);
@@ -4685,33 +5229,261 @@
       selectField("size", "Size", [["sm", "Small"], ["md", "Medium"], ["lg", "Large"]]);
     } else if (b.type === "cards") {
       renderCardsEditor(fields, p);
+    } else if (b.type === "richtext") {
+      // WordPress-style editor: block-based rich text (Editor.js), loaded on demand.
+      var holder = el("div", { class: "richtext-holder" });
+      var loading = el("p", { class: "field-hint" }, "Loading the rich-text editor…");
+      fields.appendChild(el("div", { class: "field" }, [holder, loading]));
+      ensureRichTextEditor().then(function () {
+        loading.remove();
+        editorRef.ed = new window.EditorJS({
+          holder: holder,
+          data: (p.doc && Array.isArray(p.doc.blocks)) ? p.doc : { blocks: [] },
+          minHeight: 120,
+          tools: {
+            header: { class: window.Header, inlineToolbar: true, config: { levels: [1, 2, 3, 4], defaultLevel: 2 } },
+            list: { class: window.List, inlineToolbar: true },
+            quote: { class: window.Quote, inlineToolbar: true },
+            delimiter: window.Delimiter
+          }
+        });
+      }).catch(function () { loading.textContent = "Couldn't load the rich-text editor. Check your connection and try again."; });
     }
     openModal("Edit " + b.type, fields, [
-      { label: "Cancel", onClick: closeModal },
+      { label: "Cancel", onClick: function () {
+        destroyEditor();
+        closeModal();
+      } },
       { label: "Done", accent: true, onClick: function () {
+        if (b.type === "richtext") {
+          if (!editorRef.ed) { closeModal(); return; }
+          editorRef.ed.save().then(function (data) {
+            p.doc = { blocks: ((data && data.blocks) || []).map(function (x) { return { type: x.type, data: x.data }; }) };
+            destroyEditor();
+            b.props = p; markPageDirty(); closeModal(); renderAppearance();
+          }).catch(function () { toast("Couldn't read the editor content"); });
+          return;
+        }
         if (b.type === "heading") p.level = parseInt(p.level, 10) || 2;
-        b.props = p; closeModal(); renderAppearance();
+        b.props = p; markPageDirty(); closeModal(); renderAppearance();
       } }
-    ]);
+    ], destroyEditor);
   }
   function savePage() {
     var draft = state.pageDraft;
-    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: { title: draft.title, blocks: draft.blocks, published: draft.published } }).then(function (res) {
+    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: {
+      title: draft.title, blocks: draft.blocks, status: draft.status,
+      description: draft.description, navLabel: draft.navLabel, navOrder: draft.navOrder
+    } }).then(function (res) {
       if (!res.ok) { toast(apiError(res, "Couldn't save page")); return; }
       var d = res.data || {};
-      state.pageDraft = { id: d.id || draft.id, title: d.title || draft.title, blocks: d.blocks || [], published: !!d.published };
+      openPageDraftState(d);
       var found = false;
       state.pages = (state.pages || []).map(function (pg) {
-        if (pg.id === state.pageDraft.id) { found = true; return Object.assign({}, pg, state.pageDraft); }
+        if (pg.id === d.id) { found = true; return d; }
         return pg;
       });
-      if (!found) state.pages.push(Object.assign({}, state.pageDraft));
+      if (!found) state.pages.push(d);
+      refreshNavAndTabs();
       renderAppearance(); toast("Page saved");
     }).catch(function () { toast("Couldn't reach the server"); });
   }
+  // Refresh the open draft from a server page row without re-rendering. If the row
+  // carries an autosaved working copy (draftBlocks), the editor resumes from it —
+  // the published version stays untouched until an explicit save.
+  function openPageDraftState(page) {
+    var hasAutosave = Array.isArray(page.draftBlocks);
+    state.pageDraft = {
+      id: page.id,
+      title: (hasAutosave && page.draftTitle) || page.title || page.id,
+      blocks: (hasAutosave ? page.draftBlocks : (page.blocks || [])).slice(),
+      status: page.status || (page.published ? "published" : "draft"),
+      description: page.description || "", navLabel: page.navLabel || "",
+      navOrder: page.navOrder == null ? "" : String(page.navOrder),
+      dirty: false, metadataDirty: false, fromAutosave: hasAutosave, autosavedAt: null
+    };
+  }
+  function markPageDirty(kind) {
+    if (!state.pageDraft) return;
+    state.pageDraft.dirty = true;
+    if (kind === "meta") state.pageDraft.metadataDirty = true;
+    updateDirtyFlag();
+  }
+  function updateDirtyFlag() {
+    var flag = $("#page-dirty-flag");
+    if (!flag || !state.pageDraft) return;
+    if (state.pageDraft.dirty) { flag.textContent = "● Unsaved changes"; flag.className = "cms-count page-flag page-flag--dirty"; }
+    else if (state.pageDraft.autosavedAt) { flag.textContent = "Autosaved (not published)"; flag.className = "cms-count page-flag"; }
+    else { flag.textContent = ""; flag.className = "cms-count page-flag"; }
+  }
+  // Every 20s, quietly park dirty edits in the page's working copy on the server.
+  // A crash or closed tab then loses at most 20 seconds of work; the public page
+  // only changes on an explicit "Save page".
+  function autosavePageDraft() {
+    var draft = state.pageDraft;
+    if (!draft || !draft.dirty || !SERVER || !isSuperadmin()) return;
+    api("/pages/" + encodeURIComponent(draft.id), { method: "POST", body: {
+      mode: "autosave", title: draft.title, blocks: draft.blocks
+    } }).then(function (res) {
+      if (!res.ok || state.pageDraft !== draft) return;
+      draft.dirty = !!draft.metadataDirty;
+      draft.autosavedAt = Date.now();
+      updateDirtyFlag();
+    }).catch(function () {});
+  }
+  function openRevisionsModal() {
+    var draft = state.pageDraft;
+    if (!draft) return;
+    api("/pages/" + encodeURIComponent(draft.id) + "/revisions").then(function (res) {
+      var revs = (res.ok && res.data && res.data.revisions) || [];
+      var body = el("div", { class: "form-stack" });
+      if (!revs.length) body.appendChild(el("p", { class: "no-link" }, "No saved revisions yet. A revision is kept every time you save this page."));
+      revs.forEach(function (r) {
+        var when = new Date(r.saved_at * 1000).toLocaleString();
+        body.appendChild(el("div", { class: "builder-block" }, [
+          el("div", { class: "builder-block-head" }, [
+            el("span", { class: "chip" + (r.status === "published" ? " chip--accent" : "") }, r.status || "draft"),
+            el("span", { class: "builder-block-summary" }, [
+              el("strong", {}, r.title), " · " + r.blocks.length + " block" + (r.blocks.length === 1 ? "" : "s") +
+              " · " + when + (r.saved_by ? " · " + r.saved_by : "")
+            ])
+          ]),
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm", onclick: function () {
+              draft.title = r.title;
+              draft.blocks = (r.blocks || []).slice();
+              draft.dirty = true;
+              closeModal();
+              renderAppearance();
+              toast("Revision loaded into the editor — save to apply it");
+            } }, "Restore")
+          ])
+        ]));
+      });
+      openModal("Revisions — " + (draft.title || draft.id), body, [{ label: "Close", onClick: closeModal }]);
+    }).catch(function () { toast("Couldn't load revisions"); });
+  }
+  // Published pages that opted into the nav; public endpoint, tolerant of absence.
+  function loadNavPages() {
+    return api("/nav").then(function (res) {
+      state.navPages = (res.ok && res.data && res.data.nav) || [];
+    }).catch(function () { state.navPages = state.navPages || []; });
+  }
+  /* ----------------------------- Public builder pages (#/p/:slug) ----------------------------- */
+  // Lazily created host section for rendering builder pages inside the signed-in app.
+  function ensurePageView() {
+    var v = $("#view-page");
+    if (!v) {
+      v = el("section", { id: "view-page", class: "view", "aria-label": "Page" });
+      $("main.container").appendChild(v);
+    }
+    return v;
+  }
+  function renderPublicPage(slug, mount) {
+    mount.textContent = "";
+    mount.appendChild(el("p", { class: "field-hint" }, "Loading page…"));
+    // Super admins read the full row so they can preview drafts; everyone else only
+    // ever sees published pages (the public endpoint 404s otherwise).
+    var path = isSuperadmin()
+      ? "/pages/" + encodeURIComponent(slug) + "/full"
+      : "/pages/" + encodeURIComponent(slug);
+    api(path).then(function (res) {
+      mount.textContent = "";
+      if (!res.ok || !res.data) {
+        mount.appendChild(el("div", { class: "view-intro" }, [
+          el("h2", {}, "Page not found"),
+          el("p", {}, "This page doesn't exist or isn't published.")
+        ]));
+        return;
+      }
+      if (isSuperadmin() && res.data.status !== "published") {
+        mount.appendChild(el("div", { class: "note-banner" }, [
+          el("strong", {}, "Draft preview: "),
+          "only super admins can see this page until it's published."
+        ]));
+      }
+      var wrap = el("div", { class: "pb-page" });
+      renderPageBlocks(res.data.blocks || [], wrap);
+      mount.appendChild(wrap);
+    }).catch(function () {
+      mount.textContent = "";
+      mount.appendChild(el("p", { class: "no-link" }, "Couldn't load this page."));
+    });
+  }
+
+  /* ----------------------------- Rich text (Editor.js + DOMPurify) -----------------------------
+   * Self-hosted, pinned bundles under vendor/ (no runtime CDN dependency), lazy-loaded:
+   * DOMPurify only when a rich block needs rendering, the Editor.js suite only when a
+   * super admin opens the rich-text editor. */
+  var scriptPromises = {};
+  function loadScript(src) {
+    if (scriptPromises[src]) return scriptPromises[src];
+    scriptPromises[src] = new Promise(function (resolve, reject) {
+      var s = document.createElement("script");
+      s.src = src; s.async = true;
+      s.onload = resolve;
+      s.onerror = function () { delete scriptPromises[src]; reject(new Error("failed to load " + src)); };
+      document.head.appendChild(s);
+    });
+    return scriptPromises[src];
+  }
+  function ensureDomPurify() {
+    return window.DOMPurify ? Promise.resolve() : loadScript("vendor/dompurify.min.js");
+  }
+  function ensureRichTextEditor() {
+    return loadScript("vendor/editorjs.umd.js").then(function () {
+      return Promise.all([
+        loadScript("vendor/editorjs-header.umd.js"),
+        loadScript("vendor/editorjs-list.umd.js"),
+        loadScript("vendor/editorjs-quote.umd.js"),
+        loadScript("vendor/editorjs-delimiter.umd.js"),
+        ensureDomPurify()
+      ]);
+    });
+  }
+  // Sanitize an inline-HTML fragment and return a DOM node. The server already scrubbed
+  // on save; DOMPurify at render time is the second, authoritative layer. Links are
+  // post-hardened to https-only + noopener (tightening after sanitize is safe).
+  var RICH_ALLOWED_TAGS = ["b", "i", "strong", "em", "a", "code", "mark", "br", "u", "s"];
+  function richInline(tag, cls, html) {
+    var node = el(tag, cls ? { class: cls } : {});
+    node.innerHTML = window.DOMPurify
+      ? window.DOMPurify.sanitize(String(html || ""), { ALLOWED_TAGS: RICH_ALLOWED_TAGS, ALLOWED_ATTR: ["href"] })
+      : "";
+    $all("a", node).forEach(function (a) {
+      var href = a.getAttribute("href") || "";
+      if (!/^https:\/\//i.test(href)) { a.removeAttribute("href"); return; }
+      a.setAttribute("target", "_blank");
+      a.setAttribute("rel", "noopener noreferrer");
+    });
+    return node;
+  }
+  // Build DOM for a sanitized Editor.js document (paragraph/header/list/quote/delimiter).
+  function renderRichDoc(doc, mount) {
+    ((doc && doc.blocks) || []).forEach(function (b) {
+      if (!b) return;
+      var d = b.data || {};
+      if (b.type === "paragraph") mount.appendChild(richInline("p", "pb-rich-p", d.text));
+      else if (b.type === "header") {
+        var lvl = d.level >= 1 && d.level <= 4 ? Math.floor(d.level) : 2;
+        mount.appendChild(richInline("h" + lvl, "pb-rich-h", d.text));
+      } else if (b.type === "list") {
+        var listEl = el(d.style === "ordered" ? "ol" : "ul", { class: "pb-rich-list" });
+        (d.items || []).forEach(function (it) { listEl.appendChild(richInline("li", "", it)); });
+        mount.appendChild(listEl);
+      } else if (b.type === "quote") {
+        var q = el("blockquote", { class: "pb-rich-quote" }, [richInline("p", "", d.text)]);
+        if (d.caption) q.appendChild(richInline("cite", "", d.caption));
+        mount.appendChild(q);
+      } else if (b.type === "delimiter") {
+        mount.appendChild(el("div", { class: "pb-rich-delimiter", "aria-hidden": "true" }, "* * *"));
+      }
+    });
+  }
 
   // Render an ordered list of sanitized content blocks into a mount node. All text is
-  // set via textContent (never innerHTML) and links/images are forced to https, so
+  // set via textContent (never innerHTML) and links/images are forced to https; the
+  // one exception is rich text, which goes through DOMPurify (richInline above), so
   // rendering builder content can't inject script.
   function renderPageBlocks(blocks, mount) {
     mount.textContent = "";
@@ -4736,7 +5508,7 @@
     },
     text: function (p) { return el("p", { class: "pb-text" }, p.text || ""); },
     image: function (p) {
-      var src = safeUrl(p.src);
+      var src = safeImageSrc(p.src);
       if (!src) return null;
       var width = safeMaxWidth(p.width);
       return el("img", { class: "pb-image", src: src, alt: p.alt || "", style: width ? ("max-width:" + width) : "" });
@@ -4760,6 +5532,13 @@
     spacer: function (p) {
       var h = p.size === "sm" ? 16 : (p.size === "lg" ? 64 : 32);
       return el("div", { style: "height:" + h + "px" });
+    },
+    richtext: function (p) {
+      var wrap = el("div", { class: "pb-rich" });
+      // DOMPurify may not be loaded yet on a public view; fill the node once it is.
+      if (window.DOMPurify) renderRichDoc(p.doc, wrap);
+      else ensureDomPurify().then(function () { renderRichDoc(p.doc, wrap); }).catch(function () {});
+      return wrap;
     }
   };
 
@@ -5326,8 +6105,30 @@
     if (helpBtn) helpBtn.addEventListener("click", function () { startTour(isAdminView() ? TOUR_ADMIN : TOUR_STUDENT, true); });
 
     // Pick up an initial tab from the URL hash (validated against the role).
+    // "#/p/<slug>" deep-links to a builder page.
     var initial = (location.hash || "").replace("#", "");
-    if (initial) state.tab = initial;
+    if (initial.indexOf("/p/") === 0) state.tab = "page:" + initial.slice(3);
+    else if (initial) state.tab = initial;
+
+    // Page-builder autosave: park dirty edits in the server-side working copy every
+    // 20s, and warn before closing a tab with unsaved changes.
+    setInterval(autosavePageDraft, 20000);
+    window.addEventListener("beforeunload", function (e) {
+      if (state.pageDraft && state.pageDraft.dirty) { e.preventDefault(); e.returnValue = ""; }
+    });
+
+    // Builder-page links (#/p/<slug>) navigate without a reload, signed in or out.
+    window.addEventListener("hashchange", function () {
+      var h = (location.hash || "").replace("#", "");
+      if (h.indexOf("/p/") !== 0) return;
+      var slug = h.slice(3);
+      if ($("#auth-gate")) {
+        var mount = $("#auth-landing");
+        if (mount) renderLandingInto(mount, slug);
+      } else {
+        setTab("page:" + slug);
+      }
+    });
 
     configureRepoFilterDensity();
     boot();
@@ -5341,7 +6142,9 @@
       if (res.ok && res.data && res.data.id) {
         // Authenticated session — route by the server-trusted role.
         SERVER = true;
-        return loadBaseActivities().then(loadServerSnapshot).then(loadAndApplySiteTheme).then(function () {
+        return loadBaseActivities().then(loadServerSnapshot).then(function () {
+          return Promise.all([loadAndApplySiteTheme(), loadSiteContent(), loadNavPages()]);
+        }).then(function () {
           // Coach, admin and super admin all use the tabbed app; the tab set grows with
           // rank. Only athletes get the student view.
           var staff = state.session.role !== "athlete";
@@ -5365,6 +6168,7 @@
         SERVER = true;
         loadAndApplySiteTheme();
         showAuthGate();
+        loadSiteContent();   // rehydrates the gate's data-slot nodes once copy arrives
         return;
       }
       // Some other status (e.g. 404 from static hosting) → no backend here.

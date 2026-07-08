@@ -525,6 +525,8 @@ async function route(method, path, request, env, url, secure) {
   // Site appearance (theme tokens + brand) and published builder pages are PUBLIC so the
   // signed-out login page can theme/render itself. Writes are super-admin only (below).
   if (method === "GET" && path === "/site") return handleGetSite(env);
+  if (method === "GET" && path === "/content") return handleGetContent(env);
+  if (method === "GET" && path === "/nav") return handleGetNav(env);
   if (method === "GET" && head === "pages" && seg.length === 2) return handleGetPage(env, seg[1]);
 
   /* -------- session required below -------- */
@@ -581,11 +583,26 @@ async function route(method, path, request, env, url, secure) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     return handleSaveSite(request, env);
   }
+  if (head === "content" && method === "POST" && seg.length === 1) {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    return handleSaveContent(request, env);
+  }
+  if (head === "media") {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListMedia(env);
+    if (method === "POST" && seg.length === 1) return handleUploadMedia(session, request, env, url);
+    if (method === "POST" && seg.length === 2) return handleUpdateMedia(request, env, seg[1]);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteMedia(env, seg[1]);
+  }
   if (head === "pages") {
     // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     if (method === "GET" && seg.length === 1) return handleListPages(env);
-    if (method === "POST" && seg.length === 2) return handleSavePage(request, env, seg[1]);
+    if (method === "GET" && seg.length === 3 && seg[2] === "full") return handleGetPageFull(env, seg[1]);
+    if (method === "GET" && seg.length === 3 && seg[2] === "revisions") return handleListRevisions(env, seg[1]);
+    if (method === "POST" && seg.length === 3 && seg[2] === "duplicate") return handleDuplicatePage(env, seg[1]);
+    if (method === "POST" && seg.length === 2) return handleSavePage(session, request, env, seg[1]);
+    if (method === "DELETE" && seg.length === 2) return handleDeletePage(env, seg[1]);
   }
 
   /* -------- admin & super admin: manage coach accounts -------- */
@@ -1812,7 +1829,59 @@ const DEFAULT_THEME = {
 };
 const THEME_KEYS = Object.keys(DEFAULT_THEME);
 const SITE_KEYS = ["brandName", "brandTag"];
-const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer"];
+const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer", "richtext"];
+
+/* Rich text (Editor.js) sanitization. A richtext page block stores an Editor.js
+ * document: { doc: { blocks: [{type, data}, ...] } }. Only these inner block types
+ * survive, and every inline-HTML field is scrubbed by scrubInlineHtml below. The
+ * client additionally runs DOMPurify at render time — this server pass is the
+ * persistence-layer defence so a hand-crafted POST can't store active markup. */
+const RICH_INNER_TYPES = ["paragraph", "header", "list", "quote", "delimiter"];
+
+// Allowlist scrub for inline HTML fragments: any tag that isn't EXACTLY a permitted
+// simple tag (<b>, </em>, <br> ...) or an https-only <a href="..."> is HTML-escaped,
+// so unknown/malformed markup renders as visible text instead of parsing as HTML.
+function scrubInlineHtml(v, max) {
+  const s = String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 4000);
+  return s.replace(/<[^>]*>?/g, function (tag) {
+    let m = tag.match(/^<(\/?)(b|i|strong|em|code|mark|u|s)>$/i);
+    if (m) return "<" + m[1] + m[2].toLowerCase() + ">";
+    if (/^<br\s*\/?>$/i.test(tag)) return "<br>";
+    m = tag.match(/^<a\s+href="(https:\/\/[^"<>\s]{1,300})"[^<>]*>$/i);
+    if (m) return '<a href="' + m[1] + '">';
+    if (/^<\/a>$/i.test(tag)) return "</a>";
+    return tag.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  });
+}
+// One sanitized Editor.js inner block, or null to drop it.
+function sanitizeRichInner(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const type = String(raw.type || "").toLowerCase();
+  if (RICH_INNER_TYPES.indexOf(type) === -1) return null;
+  const d = (raw.data && typeof raw.data === "object") ? raw.data : {};
+  const data = {};
+  if (type === "paragraph") {
+    data.text = scrubInlineHtml(d.text, 8000);
+  } else if (type === "header") {
+    data.text = scrubInlineHtml(d.text, 400);
+    data.level = (d.level >= 1 && d.level <= 4) ? Math.floor(d.level) : 2;
+  } else if (type === "list") {
+    data.style = d.style === "ordered" ? "ordered" : "unordered";
+    data.items = (Array.isArray(d.items) ? d.items : []).slice(0, 100).map(function (it) {
+      // list v1 items are HTML strings; newer versions may wrap them in {content}.
+      return scrubInlineHtml(typeof it === "string" ? it : (it && it.content), 2000);
+    });
+  } else if (type === "quote") {
+    data.text = scrubInlineHtml(d.text, 4000);
+    data.caption = scrubInlineHtml(d.caption, 400);
+  }
+  // delimiter carries no data
+  return { type: type, data: data };
+}
+function sanitizeRichDoc(raw) {
+  const src = (raw && typeof raw === "object" && Array.isArray(raw.blocks)) ? raw.blocks : [];
+  return { blocks: src.slice(0, 200).map(sanitizeRichInner).filter(Boolean) };
+}
 
 async function loadSiteSettings(env) {
   const out = { theme: Object.assign({}, DEFAULT_THEME), site: {} };
@@ -1864,10 +1933,82 @@ async function handleSaveSite(request, env) {
   return json({ ok: true, site: await loadSiteSettings(env) });
 }
 
+/* ----------------------- Editable site copy ("content slots") -----------------------
+ * Every previously hardcoded piece of user-facing text has a stable slot key. The
+ * defaults live in the client (CONTENT_DEFAULTS in app.js); this table stores only
+ * overrides, so an empty table renders the original site. Keys are whitelisted here
+ * (with a max length each) so a save can't invent keys or store oversized blobs.
+ * Reads are public (the signed-out landing shows slot copy); writes are super-admin. */
+const CONTENT_SLOTS = {
+  "brand.name": 80, "brand.tag": 120,
+  "hero.kicker": 120, "hero.title": 240, "hero.copy": 600,
+  "hero.role1": 120, "hero.role2": 120, "hero.role3": 120,
+  "hero.note_title": 80, "hero.note_copy": 200,
+  "guide.title": 120, "guide.meta": 80,
+  "guide.step1_title": 200, "guide.step1_copy": 300,
+  "guide.step2_title": 200, "guide.step2_copy": 300,
+  "guide.step3_title": 200, "guide.step3_copy": 300,
+  "moment.morning_label": 60, "moment.morning_copy": 300,
+  "moment.midday_label": 60, "moment.midday_copy": 300,
+  "moment.evening_label": 60, "moment.evening_copy": 300,
+  "preview.kicker": 80, "preview.title": 160, "preview.copy": 400,
+  "repo.heading": 80, "repo.intro": 500,
+  "students.heading": 80, "students.intro": 500,
+  "content.heading": 80, "content.intro": 500,
+  "workouts.heading": 80, "workouts.intro": 500,
+  "checkin.heading": 80, "checkin.intro": 500,
+  "messages.heading": 80, "messages.intro": 500,
+  "progress.heading": 80, "progress.intro": 500,
+  "settings.heading": 80, "settings.intro": 500,
+  "footer.text": 200, "footer.tagline": 120
+};
+
+async function handleGetContent(env) {
+  const out = {};
+  try {
+    const rows = await env.DB.prepare("SELECT key,value FROM content_slots").all();
+    (rows.results || []).forEach(function (r) {
+      if (CONTENT_SLOTS[r.key] != null) out[r.key] = r.value;
+    });
+  } catch (e) { /* table not migrated yet — no overrides */ }
+  return json({ content: out });
+}
+
+// Upsert each provided slot; null/empty string deletes the override (reset to default).
+async function handleSaveContent(request, env) {
+  const b = await readBody(request);
+  const src = (b && typeof b.content === "object" && b.content) || {};
+  const stmts = [];
+  Object.keys(src).forEach(function (k) {
+    const max = CONTENT_SLOTS[k];
+    if (max == null) return;                       // unknown key — drop silently
+    const v = src[k];
+    if (v == null || String(v).trim() === "") {
+      stmts.push(env.DB.prepare("DELETE FROM content_slots WHERE key = ?").bind(k));
+    } else {
+      stmts.push(env.DB.prepare(
+        "INSERT INTO content_slots (key,value,updated_at) VALUES (?,?,?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+      ).bind(k, cleanText(v, max), nowSec()));
+    }
+  });
+  if (!stmts.length) return err(400, "Nothing to save");
+  try { await env.DB.batch(stmts); }
+  catch (e) { return err(500, "Couldn't save site content (is the content_slots table migrated?)"); }
+  const res = await handleGetContent(env);
+  return res;
+}
+
 // Drop ASCII control chars and cap length before persistence. Rendering uses textContent
 // on the client, and this server-side scrub adds an extra defence-in-depth layer.
 function cleanText(v, max) {
   return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 2000);
+}
+// Image sources may be an absolute https URL or a media-library path (/media/<key>).
+function cleanImageSrc(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (/^\/media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(s)) return s;
+  return cleanUrl(s) || "";
 }
 // Allow only tight CSS length tokens used for image max-width.
 function cleanMaxWidth(v) {
@@ -1896,7 +2037,7 @@ function sanitizeBlock(raw, i) {
   } else if (type === "text") {
     props.text = cleanText(p.text, 4000);
   } else if (type === "image") {
-    props.src = cleanUrl(p.src) || "";
+    props.src = cleanImageSrc(p.src);
     props.alt = cleanText(p.alt, 200);
     props.width = cleanMaxWidth(p.width);
   } else if (type === "cards") {
@@ -1910,44 +2051,310 @@ function sanitizeBlock(raw, i) {
     props.style = (p.style === "ghost" || p.style === "ember") ? p.style : "primary";
   } else if (type === "spacer") {
     props.size = (p.size === "sm" || p.size === "lg") ? p.size : "md";
+  } else if (type === "richtext") {
+    props.doc = sanitizeRichDoc(p.doc);
   }
   return { id: id, type: type, props: props };
 }
 function sanitizeBlocks(raw) {
   return (Array.isArray(raw) ? raw : []).slice(0, 100).map(sanitizeBlock).filter(Boolean);
 }
+// Lifecycle for a row that may predate migration 0018 (no status column / NULL status).
+function pageStatus(row) {
+  if (row && (row.status === "published" || row.status === "draft")) return row.status;
+  return row && row.published ? "published" : "draft";
+}
+function pageMeta(row, withBlocks) {
+  let blocks = []; try { blocks = JSON.parse(row.blocks) || []; } catch (e) {}
+  const out = {
+    id: row.id, title: row.title, status: pageStatus(row), published: pageStatus(row) === "published",
+    description: row.description || "", navLabel: row.nav_label || "",
+    navOrder: row.nav_order == null ? null : row.nav_order,
+    updated_at: row.updated_at, created_at: row.created_at || row.updated_at
+  };
+  if (withBlocks) {
+    out.blocks = blocks;
+    // Autosaved working copy (migration 0020) — only meaningful to the builder.
+    if (row.draft_blocks != null) {
+      try { out.draftBlocks = JSON.parse(row.draft_blocks) || null; } catch (e) {}
+      out.draftTitle = row.draft_title || null;
+    }
+  } else out.blockCount = blocks.length;
+  return out;
+}
+// Public: one published page, rendered by visitors (signed-in or out).
 async function handleGetPage(env, slug) {
   try {
-    const row = await env.DB.prepare("SELECT id,title,blocks,published FROM pages WHERE id = ?").bind(String(slug)).first();
-    if (!row || !row.published) return err(404, "Page not found");
-    let blocks = []; try { blocks = JSON.parse(row.blocks) || []; } catch (e) {}
-    return json({ id: row.id, title: row.title, blocks: blocks, published: !!row.published });
+    const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+    if (!row || pageStatus(row) !== "published") return err(404, "Page not found");
+    return json(pageMeta(row, true));
+  } catch (e) { return err(404, "Page not found"); }
+}
+// Public: published pages that opted into the nav (nav_label set), for building links.
+async function handleGetNav(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM pages").all();
+    const nav = (rows.results || [])
+      .filter(function (r) { return pageStatus(r) === "published" && r.nav_label; })
+      .map(function (r) { return { id: r.id, label: String(r.nav_label), order: r.nav_order == null ? 0 : r.nav_order }; })
+      .sort(function (a, b) { return (a.order - b.order) || a.label.localeCompare(b.label); });
+    return json({ nav: nav });
+  } catch (e) { return json({ nav: [] }); }
+}
+// Super admin: full page row regardless of status (draft preview / builder editing).
+async function handleGetPageFull(env, slug) {
+  try {
+    const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+    if (!row) return err(404, "Page not found");
+    return json(pageMeta(row, true));
   } catch (e) { return err(404, "Page not found"); }
 }
 async function handleListPages(env) {
   try {
-    const rows = await env.DB.prepare("SELECT id,title,blocks,published,updated_at FROM pages ORDER BY id").all();
-    const pages = (rows.results || []).map(function (r) {
-      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
-      return { id: r.id, title: r.title, blocks: blocks, published: !!r.published, updated_at: r.updated_at };
-    });
+    const rows = await env.DB.prepare("SELECT * FROM pages ORDER BY id").all();
+    const pages = (rows.results || []).map(function (r) { return pageMeta(r, true); });
     return json({ pages: pages });
   } catch (e) { return json({ pages: [] }); }
 }
-async function handleSavePage(request, env, slug) {
+async function handleSavePage(session, request, env, slug) {
   const id = String(slug || "").trim().toLowerCase();
   if (!/^[a-z0-9-]{1,40}$/.test(id)) return err(400, "Invalid page slug");
   const b = await readBody(request);
   const title = cleanText(b.title, 120) || id;
   const blocks = sanitizeBlocks(b.blocks);
-  const published = b.published ? 1 : 0;
+  // Autosave: store only the working copy so a published page never changes publicly
+  // until the editor explicitly saves. Creates the row (as a draft) if it's a new page.
+  if (b.mode === "autosave") {
+    try {
+      const existing = await env.DB.prepare("SELECT id FROM pages WHERE id = ?").bind(id).first();
+      if (existing) {
+        await env.DB.prepare("UPDATE pages SET draft_title = ?, draft_blocks = ? WHERE id = ?")
+          .bind(title, JSON.stringify(blocks), id).run();
+      } else {
+        await env.DB.prepare(
+          "INSERT INTO pages (id,title,blocks,published,updated_at,status,created_at,draft_title,draft_blocks) VALUES (?,?,?,0,?,?,?,?,?)"
+        ).bind(id, title, "[]", nowSec(), "draft", nowSec(), title, JSON.stringify(blocks)).run();
+      }
+    } catch (e) { return err(500, "Couldn't autosave (is the pages table migrated?)"); }
+    return json({ ok: true, id: id, autosaved: true, at: nowSec() });
+  }
+  // status wins when provided; legacy callers that only send `published` still work.
+  const status = b.status === "published" || (b.status == null && b.published) ? "published" : "draft";
+  const published = status === "published" ? 1 : 0;
+  const description = cleanText(b.description, 300);
+  const navLabel = cleanText(b.navLabel, 40);
+  let navOrder = null;
+  if (b.navOrder != null && b.navOrder !== "") {
+    const n = parseInt(b.navOrder, 10);
+    if (!isNaN(n)) navOrder = Math.max(-999, Math.min(999, n));
+  }
+  // Explicit save: snapshot the page's previous state first (append-only history,
+  // pruned to the latest 20 per page), then upsert and clear any autosaved copy.
+  try {
+    const prev = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+    if (prev) {
+      await env.DB.batch([
+        env.DB.prepare("INSERT INTO page_revisions (page_id,title,blocks,status,saved_at,saved_by) VALUES (?,?,?,?,?,?)")
+          .bind(id, prev.title, prev.blocks, pageStatus(prev), nowSec(), (session && session.uid) || null),
+        env.DB.prepare(
+          "DELETE FROM page_revisions WHERE page_id = ? AND id NOT IN " +
+          "(SELECT id FROM page_revisions WHERE page_id = ? ORDER BY id DESC LIMIT 20)"
+        ).bind(id, id)
+      ]);
+    }
+  } catch (e) { /* revisions table not migrated yet — saving still works */ }
   try {
     await env.DB.prepare(
-      "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
-      "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
-    ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
-  } catch (e) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
-  return json({ ok: true, id: id, title: title, blocks: blocks, published: !!published });
+      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at,draft_title,draft_blocks) VALUES (?,?,?,?,?,?,?,?,?,?,NULL,NULL) " +
+      "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, " +
+      "updated_at = excluded.updated_at, status = excluded.status, description = excluded.description, " +
+      "nav_label = excluded.nav_label, nav_order = excluded.nav_order, draft_title = NULL, draft_blocks = NULL"
+    ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
+  } catch (e) {
+    // Self-heal for partial migrations first (0018 without 0020), then for a DB that
+    // predates 0018 entirely.
+    try {
+      await env.DB.prepare(
+        "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) " +
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, " +
+        "updated_at = excluded.updated_at, status = excluded.status, description = excluded.description, " +
+        "nav_label = excluded.nav_label, nav_order = excluded.nav_order"
+      ).bind(id, title, JSON.stringify(blocks), published, nowSec(), status, description, navLabel || null, navOrder, nowSec()).run();
+    } catch (e1) {
+      try {
+        await env.DB.prepare(
+        "INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,?,?) " +
+        "ON CONFLICT(id) DO UPDATE SET title = excluded.title, blocks = excluded.blocks, published = excluded.published, updated_at = excluded.updated_at"
+        ).bind(id, title, JSON.stringify(blocks), published, nowSec()).run();
+      } catch (e2) { return err(500, "Couldn't save page (is the pages table migrated?)"); }
+    }
+  }
+  const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+  return json(Object.assign({ ok: true }, pageMeta(row, true)));
+}
+// Super admin: a page's saved history, newest first, blocks included so the client
+// can restore a revision into the editor without another round trip.
+async function handleListRevisions(env, slug) {
+  const id = String(slug || "").trim().toLowerCase();
+  try {
+    const rows = await env.DB.prepare(
+      "SELECT r.*, u.name AS saved_by_name FROM page_revisions r LEFT JOIN users u ON u.id = r.saved_by " +
+      "WHERE r.page_id = ? ORDER BY r.id DESC LIMIT 20"
+    ).bind(id).all();
+    const revisions = (rows.results || []).map(function (r) {
+      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
+      return { id: r.id, title: r.title, status: r.status, blocks: blocks, saved_at: r.saved_at, saved_by: r.saved_by_name || "" };
+    });
+    return json({ revisions: revisions });
+  } catch (e) { return json({ revisions: [] }); }
+}
+async function handleDeletePage(env, slug) {
+  const id = String(slug || "").trim().toLowerCase();
+  try {
+    const res = await env.DB.prepare("DELETE FROM pages WHERE id = ?").bind(id).run();
+    if (!res.meta || !res.meta.changes) return err(404, "Page not found");
+  } catch (e) { return err(500, "Couldn't delete page"); }
+  try { await env.DB.prepare("DELETE FROM page_revisions WHERE page_id = ?").bind(id).run(); } catch (e) {}
+  return json({ ok: true, id: id });
+}
+// Copy an existing page to '<slug>-copy[-N]' as an unpublished draft.
+async function handleDuplicatePage(env, slug) {
+  const src = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(String(slug)).first();
+  if (!src) return err(404, "Page not found");
+  let base = (src.id + "-copy").slice(0, 36), id = base;
+  for (let n = 2; n < 50; n++) {
+    const hit = await env.DB.prepare("SELECT id FROM pages WHERE id = ?").bind(id).first();
+    if (!hit) break;
+    id = base + "-" + n;
+  }
+  try {
+    await env.DB.prepare(
+      "INSERT INTO pages (id,title,blocks,published,updated_at,status,description,nav_label,nav_order,created_at) VALUES (?,?,?,0,?,?,?,NULL,NULL,?)"
+    ).bind(id, cleanText(src.title + " (copy)", 120), src.blocks, nowSec(), "draft", src.description || "", nowSec()).run();
+  } catch (e) {
+    try {
+      await env.DB.prepare("INSERT INTO pages (id,title,blocks,published,updated_at) VALUES (?,?,?,0,?)")
+        .bind(id, cleanText(src.title + " (copy)", 120), src.blocks, nowSec()).run();
+    } catch (e2) { return err(500, "Couldn't duplicate page"); }
+  }
+  const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
+  return json(Object.assign({ ok: true }, pageMeta(row, true)));
+}
+
+/* ----------------------- CMS media library (R2) -----------------------
+ * Bytes live in the R2 bucket bound as MEDIA under 'media/<id>.<ext>'; D1's media
+ * table is the browsable index. Uploads are super-admin only, images only, capped at
+ * 10 MB (the client downscales large photos before uploading). Serving is public via
+ * the Worker's /media/* route with an immutable cache header — keys are random ids,
+ * so a changed image is always a new key and can be cached forever. */
+const MEDIA_MIMES = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"
+};
+const MEDIA_MAX_BYTES = 10 * 1024 * 1024;
+
+async function readRequestBodyLimited(request, maxBytes) {
+  if (!request.body) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const part = await reader.read();
+    if (part.done) break;
+    const chunk = part.value instanceof Uint8Array ? part.value : new Uint8Array(part.value || 0);
+    total += chunk.byteLength;
+    if (total > maxBytes) return null;
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  chunks.forEach(function (chunk) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  });
+  return out.buffer;
+}
+
+async function handleListMedia(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM media ORDER BY created_at DESC LIMIT 500").all();
+    return json({ media: rows.results || [] });
+  } catch (e) { return json({ media: [] }); }
+}
+async function handleUploadMedia(session, request, env, url) {
+  if (!env.MEDIA) return err(500, "Server not configured: R2 binding 'MEDIA' missing");
+  const mime = String(request.headers.get("Content-Type") || "").toLowerCase().split(";")[0].trim();
+  const ext = MEDIA_MIMES[mime];
+  if (!ext) return err(400, "Only JPEG, PNG, WebP or GIF images can be uploaded");
+  const declaredHeader = request.headers.get("Content-Length");
+  const declared = parseInt(declaredHeader || "", 10);
+  if (!declaredHeader || isNaN(declared) || declared <= 0) return err(411, "Content-Length header required and must be a positive number");
+  if (declared > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
+  const body = await readRequestBodyLimited(request, MEDIA_MAX_BYTES);
+  if (body == null) return err(413, "Images are capped at 10 MB — resize and try again");
+  if (!body.byteLength) return err(400, "Empty upload");
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+  const key = "media/" + id + "." + ext;
+  const filename = cleanText(url.searchParams.get("filename") || ("image." + ext), 160) || ("image." + ext);
+  const alt = cleanText(url.searchParams.get("alt") || "", 200);
+  try {
+    await env.MEDIA.put(key, body, { httpMetadata: { contentType: mime } });
+  } catch (e) { return err(500, "Couldn't store the image"); }
+  try {
+    await env.DB.prepare(
+      "INSERT INTO media (id,key,filename,mime,size,alt,created_at,created_by) VALUES (?,?,?,?,?,?,?,?)"
+    ).bind(id, key, filename, mime, body.byteLength, alt, nowSec(), session.uid).run();
+  } catch (e) {
+    try { await env.MEDIA.delete(key); } catch (e2) {}   // don't strand orphan objects
+    return err(500, "Couldn't save the image record (is the media table migrated?)");
+  }
+  return json({ ok: true, id: id, key: key, url: "/" + key, filename: filename, mime: mime, size: body.byteLength, alt: alt });
+}
+async function handleUpdateMedia(request, env, id) {
+  const b = await readBody(request);
+  const alt = cleanText(b.alt, 200);
+  try {
+    const res = await env.DB.prepare("UPDATE media SET alt = ? WHERE id = ?").bind(alt, String(id)).run();
+    if (!res.meta || !res.meta.changes) return err(404, "Image not found");
+  } catch (e) { return err(500, "Couldn't update the image"); }
+  return json({ ok: true, id: id, alt: alt });
+}
+async function handleDeleteMedia(env, id) {
+  let row = null;
+  try { row = await env.DB.prepare("SELECT * FROM media WHERE id = ?").bind(String(id)).first(); } catch (e) {}
+  if (!row) return err(404, "Image not found");
+  try { if (env.MEDIA) await env.MEDIA.delete(row.key); } catch (e) {}
+  try { await env.DB.prepare("DELETE FROM media WHERE id = ?").bind(String(id)).run(); }
+  catch (e) { return err(500, "Couldn't delete the image"); }
+  return json({ ok: true, id: id });
+}
+// Public: stream an R2 object for GET/HEAD /media/<key>. Exported for worker.js, which
+// routes /media/* here before falling through to static assets.
+export async function serveMedia(request, url, env) {
+  if (!env.MEDIA) return new Response("Not found", { status: 404 });
+  const key = url.pathname.replace(/^\//, "");
+  if (!/^media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(key)) return new Response("Not found", { status: 404 });
+  const obj = await env.MEDIA.get(key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  if (!headers.get("Content-Type")) headers.set("Content-Type", "application/octet-stream");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("etag", obj.httpEtag);
+  const ifNoneMatch = String(request.headers.get("If-None-Match") || "");
+  function normalizeEtag(tag) {
+    tag = String(tag || "").trim();
+    if (tag.slice(0, 2) === "W/") tag = tag.slice(2).trim();
+    if (tag[0] === '"' && tag[tag.length - 1] === '"') tag = tag.slice(1, -1);
+    return tag;
+  }
+  const currentEtag = normalizeEtag(obj.httpEtag);
+  if (ifNoneMatch && ifNoneMatch.split(",").some(function (tag) {
+    const normalized = normalizeEtag(tag);
+    return normalized === "*" || normalized === currentEtag;
+  })) {
+    return new Response(null, { status: 304, headers: headers });
+  }
+  return new Response(request.method === "HEAD" ? null : obj.body, { headers: headers });
 }
 
 /* One-time migration of a coach's exported localStorage store into D1. */
