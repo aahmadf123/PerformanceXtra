@@ -1428,3 +1428,18 @@
   .pb-rich .pb-rich-quote cite { display: block; margin-top: 6px; font-size: .82rem; font-style: normal; color: var(--muted); }
   .pb-rich-delimiter { text-align: center; letter-spacing: .5em; color: var(--muted); margin: 18px 0; }
   .pb-rich a { color: var(--accent); text-underline-offset: 3px; }
+
+  /* ----------------------------- Media library ----------------------------- */
+  .media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+  .media-card {
+    border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2);
+    overflow: hidden; display: flex; flex-direction: column; text-align: left;
+  }
+  .media-thumb { width: 100%; height: 120px; object-fit: cover; background: var(--surface); display: block; }
+  .media-meta { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+  .media-name { font-size: .78rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .media-meta input { font-size: .78rem; padding: 6px 8px; }
+  .media-card--pick { cursor: pointer; padding: 0; font: inherit; color: inherit; transition: border-color .15s ease; }
+  .media-card--pick:hover, .media-card--pick:focus-visible { border-color: var(--accent); }
+  .media-card--pick .media-name { padding: 8px 10px; }
+  .media-grid--picker { max-height: 50vh; overflow-y: auto; }

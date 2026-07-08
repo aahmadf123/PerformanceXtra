@@ -197,6 +197,20 @@ CREATE TABLE IF NOT EXISTS content_slots (
   updated_at INTEGER NOT NULL
 );
 
+-- CMS media library metadata (migration 0019). Image bytes live in the R2 bucket bound
+-- as MEDIA (key 'media/<id>.<ext>'); this table is the browsable index for the
+-- Appearance -> Media panel and image picker.
+CREATE TABLE IF NOT EXISTS media (
+  id         TEXT PRIMARY KEY,   -- random id; also the R2 key stem
+  key        TEXT NOT NULL,      -- full R2 object key, e.g. 'media/abc123.webp'
+  filename   TEXT NOT NULL,      -- original filename, for display
+  mime       TEXT NOT NULL,      -- image/jpeg | image/png | image/webp | image/gif
+  size       INTEGER NOT NULL,   -- bytes as stored
+  alt        TEXT,               -- default alt text
+  created_at INTEGER NOT NULL,
+  created_by TEXT                -- uploader's user id
+);
+
 -- Mental-performance check-ins + journaling (migration 0008). Athletes self-report a
 -- daily mood/energy/stress (each 1-5) + optional note (one row per athlete per local
 -- day), and free-form journal entries; their coach reads both read-only.

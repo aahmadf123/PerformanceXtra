@@ -587,6 +587,13 @@ async function route(method, path, request, env, url, secure) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     return handleSaveContent(request, env);
   }
+  if (head === "media") {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListMedia(env);
+    if (method === "POST" && seg.length === 1) return handleUploadMedia(session, request, env, url);
+    if (method === "POST" && seg.length === 2) return handleUpdateMedia(request, env, seg[1]);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteMedia(env, seg[1]);
+  }
   if (head === "pages") {
     // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
@@ -1996,6 +2003,12 @@ async function handleSaveContent(request, env) {
 function cleanText(v, max) {
   return String(v == null ? "" : v).replace(/[\x00-\x1F\x7F]/g, " ").slice(0, max || 2000);
 }
+// Image sources may be an absolute https URL or a media-library path (/media/<key>).
+function cleanImageSrc(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (/^\/media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(s)) return s;
+  return cleanUrl(s) || "";
+}
 // Allow only tight CSS length tokens used for image max-width.
 function cleanMaxWidth(v) {
   const s = String(v == null ? "" : v).trim();
@@ -2023,7 +2036,7 @@ function sanitizeBlock(raw, i) {
   } else if (type === "text") {
     props.text = cleanText(p.text, 4000);
   } else if (type === "image") {
-    props.src = cleanUrl(p.src) || "";
+    props.src = cleanImageSrc(p.src);
     props.alt = cleanText(p.alt, 200);
     props.width = cleanMaxWidth(p.width);
   } else if (type === "cards") {
@@ -2161,6 +2174,84 @@ async function handleDuplicatePage(env, slug) {
   }
   const row = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(id).first();
   return json(Object.assign({ ok: true }, pageMeta(row, true)));
+}
+
+/* ----------------------- CMS media library (R2) -----------------------
+ * Bytes live in the R2 bucket bound as MEDIA under 'media/<id>.<ext>'; D1's media
+ * table is the browsable index. Uploads are super-admin only, images only, capped at
+ * 10 MB (the client downscales large photos before uploading). Serving is public via
+ * the Worker's /media/* route with an immutable cache header — keys are random ids,
+ * so a changed image is always a new key and can be cached forever. */
+const MEDIA_MIMES = {
+  "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/gif": "gif"
+};
+const MEDIA_MAX_BYTES = 10 * 1024 * 1024;
+
+async function handleListMedia(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM media ORDER BY created_at DESC LIMIT 500").all();
+    return json({ media: rows.results || [] });
+  } catch (e) { return json({ media: [] }); }
+}
+async function handleUploadMedia(session, request, env, url) {
+  if (!env.MEDIA) return err(500, "Server not configured: R2 binding 'MEDIA' missing");
+  const mime = String(request.headers.get("Content-Type") || "").toLowerCase().split(";")[0].trim();
+  const ext = MEDIA_MIMES[mime];
+  if (!ext) return err(400, "Only JPEG, PNG, WebP or GIF images can be uploaded");
+  const declared = parseInt(request.headers.get("Content-Length") || "0", 10);
+  if (declared > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
+  const body = await request.arrayBuffer();
+  if (!body || !body.byteLength) return err(400, "Empty upload");
+  if (body.byteLength > MEDIA_MAX_BYTES) return err(413, "Images are capped at 10 MB — resize and try again");
+  const id = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+  const key = "media/" + id + "." + ext;
+  const filename = cleanText(url.searchParams.get("filename") || ("image." + ext), 160) || ("image." + ext);
+  const alt = cleanText(url.searchParams.get("alt") || "", 200);
+  try {
+    await env.MEDIA.put(key, body, { httpMetadata: { contentType: mime } });
+  } catch (e) { return err(500, "Couldn't store the image"); }
+  try {
+    await env.DB.prepare(
+      "INSERT INTO media (id,key,filename,mime,size,alt,created_at,created_by) VALUES (?,?,?,?,?,?,?,?)"
+    ).bind(id, key, filename, mime, body.byteLength, alt, nowSec(), session.uid).run();
+  } catch (e) {
+    try { await env.MEDIA.delete(key); } catch (e2) {}   // don't strand orphan objects
+    return err(500, "Couldn't save the image record (is the media table migrated?)");
+  }
+  return json({ ok: true, id: id, key: key, url: "/" + key, filename: filename, mime: mime, size: body.byteLength, alt: alt });
+}
+async function handleUpdateMedia(request, env, id) {
+  const b = await readBody(request);
+  const alt = cleanText(b.alt, 200);
+  try {
+    const res = await env.DB.prepare("UPDATE media SET alt = ? WHERE id = ?").bind(alt, String(id)).run();
+    if (!res.meta || !res.meta.changes) return err(404, "Image not found");
+  } catch (e) { return err(500, "Couldn't update the image"); }
+  return json({ ok: true, id: id, alt: alt });
+}
+async function handleDeleteMedia(env, id) {
+  let row = null;
+  try { row = await env.DB.prepare("SELECT * FROM media WHERE id = ?").bind(String(id)).first(); } catch (e) {}
+  if (!row) return err(404, "Image not found");
+  try { if (env.MEDIA) await env.MEDIA.delete(row.key); } catch (e) {}
+  try { await env.DB.prepare("DELETE FROM media WHERE id = ?").bind(String(id)).run(); }
+  catch (e) { return err(500, "Couldn't delete the image"); }
+  return json({ ok: true, id: id });
+}
+// Public: stream an R2 object for GET /media/<key>. Exported for worker.js, which
+// routes /media/* here before falling through to static assets.
+export async function serveMedia(url, env) {
+  if (!env.MEDIA) return new Response("Not found", { status: 404 });
+  const key = url.pathname.replace(/^\//, "");
+  if (!/^media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(key)) return new Response("Not found", { status: 404 });
+  const obj = await env.MEDIA.get(key);
+  if (!obj) return new Response("Not found", { status: 404 });
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  if (!headers.get("Content-Type")) headers.set("Content-Type", "application/octet-stream");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("etag", obj.httpEtag);
+  return new Response(obj.body, { headers: headers });
 }
 
 /* One-time migration of a coach's exported localStorage store into D1. */

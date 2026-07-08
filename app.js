@@ -4470,6 +4470,11 @@
   }
   function toHex(v) { v = String(v || "").trim(); return /^#[0-9a-fA-F]{6}$/.test(v) ? v : ""; }
   function safeUrl(u) { u = String(u || "").trim(); return /^https:\/\//i.test(u) ? u : ""; }
+  // Image sources may also be media-library paths (/media/<key>), not just https URLs.
+  function safeImageSrc(u) {
+    u = String(u || "").trim();
+    return /^\/media\/[a-z0-9]{1,40}\.(jpg|png|webp|gif)$/.test(u) ? u : safeUrl(u);
+  }
   function safeMaxWidth(v) {
     v = String(v == null ? "" : v).trim();
     var m = v.match(/^((?:[0-9]{1,3}|1[0-9]{3}|2000))(px|%)$/);
@@ -4649,12 +4654,13 @@
     if (!view) return;
     // The theme may already be loaded at boot (loadAndApplySiteTheme), but the page list
     // is fetched lazily here. Load whichever is still missing before rendering.
-    if (!state.site || !state.pages) {
+    if (!state.site || !state.pages || state.media == null) {
       view.textContent = "";
       view.appendChild(el("p", { class: "field-hint" }, "Loading appearance…"));
       Promise.all([
         state.site ? Promise.resolve({ data: state.site }) : api("/site"),
-        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages")
+        state.pages ? Promise.resolve({ data: { pages: state.pages } }) : api("/pages"),
+        state.media != null ? Promise.resolve() : loadMediaList()
       ]).then(function (out) {
         var s = out[0] && out[0].data, p = out[1] && out[1].data;
         state.site = (s && s.theme) ? s : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
@@ -4663,6 +4669,7 @@
       }).catch(function () {
         state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
         state.pages = state.pages || [];
+        state.media = state.media || [];
         renderAppearance();
       });
       return;
@@ -4674,6 +4681,7 @@
     ]));
     view.appendChild(renderThemeEditor());
     view.appendChild(renderSiteContentEditor());
+    view.appendChild(renderMediaLibrary());
     view.appendChild(renderPageBuilder());
   }
 
@@ -4811,6 +4819,143 @@
     }
     return "";
   }
+  /* ----------------------------- Appearance: media library (R2) -----------------------------
+   * Images upload through the Worker into R2 (10 MB cap server-side); big photos are
+   * downscaled in the browser first so uploads stay small and free-tier storage lasts.
+   * The grid lists everything with alt-text editing, copy-URL and delete; the image
+   * block's "Choose from library" picker reuses the same data. */
+  var MEDIA_UPLOAD_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"];
+  // Downscale to <=2000px on the long edge (webp when possible). GIFs upload untouched
+  // so animations survive; anything that fails to decode falls back to the raw file.
+  function downscaleImage(file) {
+    if (file.type === "image/gif") return Promise.resolve(file);
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        URL.revokeObjectURL(url);
+        var max = 2000, w = img.naturalWidth, h = img.naturalHeight;
+        if (w <= max && h <= max && file.size < 1.5 * 1024 * 1024) { resolve(file); return; }
+        var scale = Math.min(1, max / Math.max(w, h));
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(function (blob) { resolve(blob || file); }, "image/webp", 0.85);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+      img.src = url;
+    });
+  }
+  function uploadMedia(file, onDone) {
+    if (MEDIA_UPLOAD_TYPES.indexOf(file.type) === -1) { toast("Only JPEG, PNG, WebP or GIF images can be uploaded"); return; }
+    toast("Uploading " + file.name + "…");
+    downscaleImage(file).then(function (blob) {
+      if (blob.size > 10 * 1024 * 1024) { toast("That image is over 10 MB even after resizing"); return; }
+      return fetch("/api/media?filename=" + encodeURIComponent(file.name), {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": blob.type || file.type }, body: blob
+      }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); }).then(function (res) {
+        if (!res.ok) { toast((res.data && res.data.error) || "Upload failed"); return; }
+        state.media = state.media || [];
+        state.media.unshift(res.data);
+        toast("Image uploaded");
+        if (onDone) onDone(res.data);
+      });
+    }).catch(function () { toast("Upload failed"); });
+  }
+  function loadMediaList() {
+    return api("/media").then(function (res) {
+      state.media = (res.ok && res.data && res.data.media) || [];
+    }).catch(function () { state.media = state.media || []; });
+  }
+  function mediaUrl(m) { return "/" + m.key; }
+  function renderMediaLibrary() {
+    var panel = el("div", { class: "panel" });
+    var fileInput = el("input", { type: "file", accept: MEDIA_UPLOAD_TYPES.join(","), hidden: true });
+    fileInput.addEventListener("change", function () {
+      var f = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      if (f) uploadMedia(f, function () { renderAppearance(); });
+    });
+    panel.appendChild(fileInput);
+    panel.appendChild(el("div", { class: "section-head" }, [
+      el("h3", {}, "Media library"),
+      el("span", { class: "section-head-actions" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: function () { fileInput.click(); } }, "⬆ Upload image")
+      ])
+    ]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Images are stored in your site's own storage and served from /media/…. Large photos are automatically resized before upload. Use them in image blocks via “Choose from library”."));
+    var grid = el("div", { class: "media-grid" });
+    if (!(state.media || []).length) grid.appendChild(el("p", { class: "no-link" }, "No images yet. Upload your first one."));
+    (state.media || []).forEach(function (m) {
+      var alt = el("input", { type: "text", value: m.alt || "", placeholder: "Alt text (describe the image)" });
+      alt.addEventListener("change", function () {
+        api("/media/" + encodeURIComponent(m.id), { method: "POST", body: { alt: alt.value } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save alt text")); return; }
+          m.alt = alt.value; toast("Alt text saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      });
+      grid.appendChild(el("div", { class: "media-card" }, [
+        el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
+        el("div", { class: "media-meta" }, [
+          el("div", { class: "media-name", title: m.filename }, m.filename),
+          alt,
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+              try { navigator.clipboard.writeText(location.origin + mediaUrl(m)); toast("Image URL copied"); }
+              catch (e) { toast(mediaUrl(m)); }
+            } }, "Copy URL"),
+            el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
+              openModal("Delete image", el("p", {}, "Delete “" + m.filename + "”? Pages using it will show a broken image."), [
+                { label: "Cancel", onClick: closeModal },
+                { label: "Delete image", danger: true, onClick: function () {
+                  api("/media/" + encodeURIComponent(m.id), { method: "DELETE" }).then(function (res) {
+                    closeModal();
+                    if (!res.ok) { toast(apiError(res, "Couldn't delete image")); return; }
+                    state.media = (state.media || []).filter(function (x) { return x.id !== m.id; });
+                    renderAppearance(); toast("Image deleted");
+                  }).catch(function () { toast("Couldn't reach the server"); });
+                } }
+              ]);
+            } }, "Delete")
+          ])
+        ])
+      ]));
+    });
+    panel.appendChild(grid);
+    return panel;
+  }
+  // Grid picker used by the image block editor: choose an existing image or upload.
+  function openMediaPicker(onPick) {
+    function body() {
+      var wrap = el("div", {});
+      var fileInput = el("input", { type: "file", accept: MEDIA_UPLOAD_TYPES.join(","), hidden: true });
+      fileInput.addEventListener("change", function () {
+        var f = fileInput.files && fileInput.files[0];
+        fileInput.value = "";
+        if (f) uploadMedia(f, function (m) { closeModal(); onPick(m); });
+      });
+      wrap.appendChild(fileInput);
+      wrap.appendChild(el("div", { style: "margin-bottom:12px" }, [
+        el("button", { class: "btn btn--sm btn--accent", onclick: function () { fileInput.click(); } }, "⬆ Upload new image")
+      ]));
+      var grid = el("div", { class: "media-grid media-grid--picker" });
+      if (!(state.media || []).length) grid.appendChild(el("p", { class: "no-link" }, "No images in the library yet — upload one above."));
+      (state.media || []).forEach(function (m) {
+        var card = el("button", { class: "media-card media-card--pick", type: "button", onclick: function () { closeModal(); onPick(m); } }, [
+          el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
+          el("div", { class: "media-name", title: m.filename }, m.filename)
+        ]);
+        grid.appendChild(card);
+      });
+      wrap.appendChild(grid);
+      return wrap;
+    }
+    if (state.media == null) loadMediaList().then(function () { openModal("Choose an image", body(), [{ label: "Cancel", onClick: closeModal }]); });
+    else openModal("Choose an image", body(), [{ label: "Cancel", onClick: closeModal }]);
+  }
+
   // Pages manager: a list of every builder page (create / edit / duplicate / publish /
   // delete), or the block editor for the page currently being edited.
   function renderPageBuilder() {
@@ -5042,7 +5187,20 @@
     } else if (b.type === "text") {
       textField("text", "Text", true);
     } else if (b.type === "image") {
-      textField("src", "Image URL (https://…)"); textField("alt", "Alt text"); textField("width", "Max width (e.g. 480px)");
+      textField("src", "Image URL (https://… or /media/…)");
+      fields.appendChild(el("div", { class: "field" }, [
+        el("button", { class: "btn btn--sm", type: "button", onclick: function () {
+          // The picker replaces this modal, so commit in-progress edits first, then
+          // reopen the block editor with the chosen image filled in.
+          b.props = p;
+          openMediaPicker(function (m) {
+            b.props.src = "/" + m.key;
+            if (!b.props.alt && m.alt) b.props.alt = m.alt;
+            openBlockModal(i);
+          });
+        } }, "🖼 Choose from library")
+      ]));
+      textField("alt", "Alt text"); textField("width", "Max width (e.g. 480px)");
     } else if (b.type === "button") {
       textField("label", "Label"); textField("href", "Link (https://…)");
       selectField("style", "Style", [["primary", "Primary"], ["ember", "Secondary"], ["ghost", "Ghost"]]);
@@ -5263,7 +5421,7 @@
     },
     text: function (p) { return el("p", { class: "pb-text" }, p.text || ""); },
     image: function (p) {
-      var src = safeUrl(p.src);
+      var src = safeImageSrc(p.src);
       if (!src) return null;
       var width = safeMaxWidth(p.width);
       return el("img", { class: "pb-image", src: src, alt: p.alt || "", style: width ? ("max-width:" + width) : "" });

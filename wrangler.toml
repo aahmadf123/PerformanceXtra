@@ -15,5 +15,10 @@ binding = "DB"
 database_name = "performancextra"
 database_id = "a1c23e94-460d-482d-8c2b-d1b93375d9ce"
 
+# CMS media library (images uploaded by super admins, served at /media/*).
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "performancextra-media"
+
 # Set SESSION_SECRET in the Cloudflare Pages dashboard (Settings -> Environment variables),
 # NOT here — secrets should not be committed.
