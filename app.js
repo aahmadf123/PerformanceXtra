@@ -2004,7 +2004,7 @@
       nameKids.push(el("span", { class: "student-stat" }, stat));
       var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
       var actions = [
-        el("button", { class: "btn btn--sm btn--ghost", title: "Open this student's workspace", "aria-label": "Open workspace for " + s.name, onclick: function () { openStudentWorkspaceFromDirectory(s); } }, "Open workspace")
+        el("button", { class: "btn btn--sm btn--ghost", title: "Preview this student's workspace", "aria-label": "Preview workspace for " + s.name, onclick: function () { openStudentWorkspaceFromDirectory(s); } }, "Open workspace")
       ];
       if (isAtLeastAdmin()) {
         actions.push(el("button", { class: "btn btn--sm btn--ghost", title: "Assign work to this athlete", "aria-label": "Assign work to " + s.name, onclick: function () { openAssignForAnyStudent(s); } }, "Assign…"));
@@ -2028,15 +2028,31 @@
       if (!Array.isArray(a.journal)) a.journal = [];
       if (!Array.isArray(a.messages)) a.messages = [];
       if (typeof a.coachNote !== "string") a.coachNote = "";
-      a._viewerOnly = !!(SERVER && res.data && res.data.canManage === false);
-      a._workspaceOnly = true;   // opened from org directory; don't treat as roster ownership
-      state.tracking.students[s.id] = a;
-      state.tracking.activeStudentId = s.id;
-      state.studentTab = "mine";
-      state.allStudents = null;   // assignment/progress counts can change while this detail is open
-      renderAll();
-      if (opts.assign && !a._viewerOnly) openAssignBuilderModal(s.id);
-      if (a._viewerOnly) toast("Read-only workspace: this student is not on your roster");
+      var canManage = !!(SERVER && res.data && res.data.canManage);
+
+      // Assign flow (admin/super admin action) still opens the builder, but never flips
+      // the current workspace tab or active-student selection.
+      if (opts.assign) {
+        if (!canManage) { toast("This student can only be viewed here"); return; }
+        a._viewerOnly = false;
+        a._workspaceOnly = true;
+        state.tracking.students[s.id] = a;
+        openAssignBuilderModal(s.id);
+        return;
+      }
+
+      // Preview modal: read-only, dismissible, and side-effect free.
+      var body = el("div", { class: "form-stack" }, [
+        el("p", { class: "field-hint" }, (s.coachName ? ("Coach: " + s.coachName + " · ") : "") + "Read-only preview. Closing this window does not change your active workspace."),
+        el("h3", { style: "margin:4px 0 8px" }, a.name + " — Assignments")
+      ]);
+      appendAssignmentList(body, a, { admin: false, review: true });
+      body.appendChild(el("h3", { style: "margin:18px 0 10px" }, "Progress"));
+      appendProgress(body, a);
+      appendWellbeing(body, a);
+      openModal("Student workspace preview", body, [
+        { label: "Close", primary: true, onClick: closeModal }
+      ]);
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
