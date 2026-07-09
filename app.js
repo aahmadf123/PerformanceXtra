@@ -3278,7 +3278,7 @@
       { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
     if (isAtLeastAdmin()) tabs.push({ id: "manage", label: slot("nav.team") });
-    if (isSuperadmin()) tabs.push({ id: "appearance", label: slot("nav.cms") });
+    if (isSuperadmin() || (isAtLeastAdmin() && adminCmsAccess())) tabs.push({ id: "appearance", label: slot("nav.cms") });
     tabs.push({ id: "settings", label: slot("nav.settings") });
     return withNavPages(tabs);
   }
@@ -3317,7 +3317,7 @@
     state.tab = tab;
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
-    else if (tab === "appearance" && isSuperadmin()) renderAppearance();
+    else if (tab === "appearance" && isAtLeastAdmin()) renderAppearance();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
       b.classList.toggle("is-active", on);
@@ -4787,10 +4787,23 @@
       { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
       { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
       { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
-      { id: "access", label: "Access", minRole: "superadmin", soon: "Choose which roles (admins, coaches) can edit pages, content and media — multi-author editing." }
+      { id: "access", label: "Access", minRole: "superadmin", render: renderAccess }
     ];
   }
-  function visibleCmsSections() { return cmsSectionList().filter(function (s) { return isAtLeast(s.minRole); }); }
+  function cmsAccess() { return (state.site && state.site.access) || {}; }
+  function canEditCms(area) { return isSuperadmin() || !!cmsAccess()[area]; }
+  function adminCmsAccess() { var a = cmsAccess(); return !!(a.pages || a.content || a.media); }
+  function visibleCmsSections() {
+    var acc = cmsAccess();
+    return cmsSectionList().filter(function (s) {
+      if (!isAtLeast(s.minRole)) return false;
+      if (isSuperadmin()) return true;
+      // Admins see only the areas a super admin granted (Dashboard if any are granted).
+      if (s.id === "pages" || s.id === "content" || s.id === "media") return !!acc[s.id];
+      if (s.id === "dashboard") return !!(acc.pages || acc.content || acc.media);
+      return false;   // Design/Menus/Check-in/Settings/Access stay super-admin only
+    });
+  }
   function sectionDef(id) {
     var all = cmsSectionList();
     return all.filter(function (s) { return s.id === id; })[0] || all[0];
@@ -5013,6 +5026,47 @@
       infoRow("Media", ((state.media || []).length) + " image" + ((state.media || []).length === 1 ? "" : "s"))
     ]));
     wrap.appendChild(info);
+    return wrap;
+  }
+
+  /* ----------------------------- CMS: access (multi-author roles) ----------------------------- */
+  function renderAccess() {
+    var acc = Object.assign({ pages: false, content: false, media: false }, cmsAccess());
+    var wrap = el("div", { class: "cms-design" });
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Editing access")]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Super admins can always edit everything. Grant admins access to specific CMS areas below — they'll get a CMS tab with just those areas. Coaches never get the CMS. Design, Menus, Check-in, Settings and this page stay super-admin only."));
+    [["pages", "Pages", "Create and edit builder pages, and edit the site pages' text."],
+     ["content", "Content", "Edit all site copy — headings, intros and labels."],
+     ["media", "Media", "Upload and manage images."]].forEach(function (row) {
+      var cb = el("input", { type: "checkbox" }); cb.checked = !!acc[row[0]];
+      cb.addEventListener("change", function () { acc[row[0]] = cb.checked; });
+      panel.appendChild(el("label", { class: "access-row" }, [
+        cb, el("div", {}, [el("div", { class: "access-row-title" }, "Admins can edit " + row[1]), el("div", { class: "field-hint" }, row[2])])
+      ]));
+    });
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { access: acc } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save access")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          renderAppearance(); toast("Access saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save access")
+    ]));
+    wrap.appendChild(panel);
+
+    var matrix = el("div", { class: "panel" });
+    matrix.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "What each role can do")]));
+    var ml = el("div", { class: "form-stack" });
+    [["Super admin", "Everything — pages, design, content, media, menus, check-in, settings, access, plus managing admins and the global library."],
+     ["Admin", "Manage coaches and the global library. CMS editing only in the areas granted above."],
+     ["Coach", "Their own athletes and private content. No CMS access."]].forEach(function (r) {
+      ml.appendChild(el("div", { class: "setting-row" }, [el("span", { class: "detail-label" }, r[0]), el("span", {}, r[1])]));
+    });
+    matrix.appendChild(ml);
+    wrap.appendChild(matrix);
     return wrap;
   }
 
@@ -5586,20 +5640,90 @@
   function refreshNavAndTabs() {
     return loadNavPages().then(function () { if (state.session) renderTabs(); });
   }
+  // The app's built-in pages (the existing site). Their layout is fixed but their copy is
+  // editable via content slots — surfaced in the Pages section so a super admin edits
+  // existing pages here, not only new builder pages. `nav` = the in-app tab to preview it.
+  var BUILTIN_PAGES = [
+    { id: "landing", name: "Landing page", desc: "signed-out home, above the sign-in form", landing: true, slots: [
+      ["hero.kicker", "Hero kicker"], ["hero.title", "Hero headline", true], ["hero.copy", "Hero intro", true],
+      ["hero.role1", "Role line 1"], ["hero.role2", "Role line 2"], ["hero.role3", "Role line 3"],
+      ["hero.note_title", "Preview note title"], ["hero.note_copy", "Preview note copy"],
+      ["moment.morning_label", "Morning label"], ["moment.morning_copy", "Morning copy", true],
+      ["moment.midday_label", "Midday label"], ["moment.midday_copy", "Midday copy", true],
+      ["moment.evening_label", "Evening label"], ["moment.evening_copy", "Evening copy", true],
+      ["guide.title", "Start-guide title"], ["guide.meta", "Time estimate"],
+      ["guide.step1_title", "Step 1 title", true], ["guide.step1_copy", "Step 1 copy", true],
+      ["guide.step2_title", "Step 2 title", true], ["guide.step2_copy", "Step 2 copy", true],
+      ["guide.step3_title", "Step 3 title", true], ["guide.step3_copy", "Step 3 copy", true],
+      ["preview.kicker", "Library-preview kicker"], ["preview.title", "Library-preview title"], ["preview.copy", "Library-preview copy", true]
+    ] },
+    { id: "repo", name: "Repository", nav: "repo", slots: [["repo.heading", "Heading"], ["repo.intro", "Intro paragraph", true]] },
+    { id: "students", name: "Students", nav: "students", slots: [["students.heading", "Heading"], ["students.intro", "Intro paragraph", true]] },
+    { id: "content", name: "Content", nav: "content", slots: [["content.heading", "Heading"], ["content.intro", "Intro paragraph", true]] },
+    { id: "workouts", name: "My Workouts", nav: "workouts", slots: [["workouts.heading", "Heading"], ["workouts.intro", "Intro paragraph", true]] },
+    { id: "checkin", name: "Check-in", nav: "checkin", slots: [["checkin.heading", "Heading"], ["checkin.intro", "Intro paragraph", true]] },
+    { id: "messages", name: "Messages", nav: "messages", slots: [["messages.heading", "Heading"], ["messages.intro", "Intro paragraph", true]] },
+    { id: "progress", name: "My Progress", nav: "progress", slots: [["progress.heading", "Heading"], ["progress.intro", "Intro paragraph", true]] },
+    { id: "settings", name: "Settings", nav: "settings", slots: [["settings.heading", "Heading"], ["settings.intro", "Intro paragraph", true]] }
+  ];
+  function landingBuilderPage() { return (state.pages || []).filter(function (p) { return p.id === "landing"; })[0] || null; }
+  function openBuiltinPageEditor(pg) {
+    var inputs = {};
+    var body = el("div", { class: "form-stack" });
+    pg.slots.forEach(function (def) {
+      var key = def[0], label = def[1];
+      var input = def[2] ? el("textarea", { rows: 3 }) : el("input", { type: "text" });
+      input.value = slot(key);
+      inputs[key] = input;
+      body.appendChild(el("div", { class: "field" }, [el("label", {}, label), input]));
+    });
+    openModal("Edit “" + pg.name + "” text", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save", accent: true, onClick: function () {
+        saveContentSlots(Object.keys(inputs).map(function (k) { return [k, inputs[k].value]; }), closeModal);
+      } }
+    ]);
+  }
   function renderPagesList() {
+    var wrap = el("div", { class: "cms-design" });
+
+    /* Built-in site pages (existing) — editable copy + preview. */
+    var sitePanel = el("div", { class: "panel" });
+    sitePanel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Site pages")]));
+    sitePanel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Your existing built-in pages. Edit their text here, or open one to see it. For full block-based control of the landing page, use “Build with blocks”."));
+    var siteList = el("div", { class: "builder-canvas" });
+    BUILTIN_PAGES.forEach(function (pg) {
+      var actions = [];
+      if (canEditCms("content")) actions.push(el("button", { class: "btn btn--sm", onclick: function () { openBuiltinPageEditor(pg); } }, "Edit text"));
+      if (pg.nav) actions.push(el("button", { class: "btn btn--sm btn--ghost", onclick: function () { setTab(pg.nav); } }, "Open ↗"));
+      if (pg.landing) actions.push(el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+        var lp = landingBuilderPage();
+        openPageDraft(lp || { id: "landing", title: "Landing", blocks: [], status: "draft" });
+      } }, landingBuilderPage() ? "Edit blocks" : "Build with blocks"));
+      siteList.appendChild(el("div", { class: "builder-block" }, [
+        el("div", { class: "builder-block-head" }, [
+          el("span", { class: "chip" }, "built-in"),
+          el("span", { class: "builder-block-summary" }, [el("strong", {}, pg.name), pg.desc ? (" · " + pg.desc) : ""])
+        ]),
+        el("div", { class: "cms-actions" }, actions)
+      ]));
+    });
+    sitePanel.appendChild(siteList);
+    wrap.appendChild(sitePanel);
+
+    /* Custom builder pages. */
     var panel = el("div", { class: "panel" });
     panel.appendChild(el("div", { class: "section-head" }, [
-      el("h3", {}, "Pages"),
+      el("h3", {}, "Custom pages"),
       el("span", { class: "section-head-actions" }, [
         el("button", { class: "btn btn--sm btn--accent", onclick: openNewPageModal }, "+ New page")
       ])
     ]));
     panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
-      "Build as many pages as you like from content blocks. Published pages are visible to everyone at #/p/<slug>; give a page a nav label to add it to the site navigation. The special “landing” page also shows above the sign-in form for signed-out visitors."));
+      "Block-based pages you build from scratch. Published pages are visible at #/p/<slug>; give a page a nav label to add it to the navigation. A custom page with the slug “landing” replaces the built-in signed-out home."));
     var list = el("div", { class: "builder-canvas" });
-    if (!(state.pages || []).length) {
-      list.appendChild(el("p", { class: "no-link" }, "No pages yet. Create your first one."));
-    }
+    if (!(state.pages || []).length) list.appendChild(el("p", { class: "no-link" }, "No custom pages yet. Create your first one."));
     (state.pages || []).forEach(function (p) {
       var pub = (p.status || (p.published ? "published" : "draft")) === "published";
       list.appendChild(el("div", { class: "builder-block" }, [
@@ -5620,7 +5744,8 @@
       ]));
     });
     panel.appendChild(list);
-    return panel;
+    wrap.appendChild(panel);
+    return wrap;
   }
   function togglePagePublished(p) {
     var pub = (p.status || (p.published ? "published" : "draft")) === "published";
@@ -6643,7 +6768,7 @@
       renderStudents();
       renderContent();
       if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
-      if (state.tab === "appearance" && isSuperadmin()) renderAppearance();
+      if (state.tab === "appearance" && isAtLeastAdmin()) renderAppearance();
     } else {
       renderWorkoutsTab();
       renderCheckinTab();
@@ -6827,7 +6952,7 @@
     window.addEventListener("hashchange", function () {
       var h = (location.hash || "").replace("#", "");
       // Deep-link into a CMS section (#cms/<section>) for signed-in super admins.
-      if (h.indexOf("cms") === 0 && !$("#auth-gate") && isSuperadmin()) {
+      if (h.indexOf("cms") === 0 && !$("#auth-gate") && isAtLeastAdmin()) {
         state.cmsSection = h.split("/")[1] || "dashboard";
         setTab("appearance");
         return;

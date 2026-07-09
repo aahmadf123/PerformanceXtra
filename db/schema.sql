@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 --   'site'    -> brand config incl. logoUrl/faviconUrl
 --   'menus'   -> explicit navigation menu ({items:[...]}, migration-free)
 --   'checkin' -> athlete check-in dimensions/scales ({dimensions:[...]}, migration-free)
+--   'access'  -> which CMS areas admins may edit ({pages,content,media booleans})
 -- Applying theme/menus/checkin is a pure runtime override (no rebuild). All are super-admin
 -- edited and read publicly via GET /api/site so the signed-out page themes/renders too.
 CREATE TABLE IF NOT EXISTS site_settings (

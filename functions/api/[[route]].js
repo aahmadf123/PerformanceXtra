@@ -603,11 +603,11 @@ async function route(method, path, request, env, url, secure) {
     return handleSaveSite(request, env);
   }
   if (head === "content" && method === "POST" && seg.length === 1) {
-    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (!(await canEditArea(session, env, "content"))) return err(403, "Not allowed to edit content");
     return handleSaveContent(request, env);
   }
   if (head === "media") {
-    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (!(await canEditArea(session, env, "media"))) return err(403, "Not allowed to manage media");
     if (method === "GET" && seg.length === 1) return handleListMedia(env);
     if (method === "POST" && seg.length === 1) return handleUploadMedia(session, request, env, url);
     if (method === "POST" && seg.length === 2) return handleUpdateMedia(request, env, seg[1]);
@@ -615,7 +615,7 @@ async function route(method, path, request, env, url, secure) {
   }
   if (head === "pages") {
     // GET /pages/:slug (published) is public and handled above. Admin/builder ops below.
-    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (!(await canEditArea(session, env, "pages"))) return err(403, "Not allowed to edit pages");
     if (method === "GET" && seg.length === 1) return handleListPages(env);
     if (method === "GET" && seg.length === 3 && seg[2] === "full") return handleGetPageFull(env, seg[1]);
     if (method === "GET" && seg.length === 3 && seg[2] === "revisions") return handleListRevisions(env, seg[1]);
@@ -624,7 +624,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "DELETE" && seg.length === 2) return handleDeletePage(env, seg[1]);
   }
   if (head === "sections") {
-    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (!(await canEditArea(session, env, "pages"))) return err(403, "Not allowed to edit pages");
     if (method === "GET" && seg.length === 1) return handleListSections(env);
     if (method === "POST" && seg.length === 1) return handleSaveSection(request, env);
     if (method === "DELETE" && seg.length === 2) return handleDeleteSection(env, seg[1]);
@@ -1950,7 +1950,7 @@ function sanitizeRichDoc(raw) {
 async function loadSiteSettings(env) {
   // menus null = "no explicit menu; derive nav from published pages". checkin always a
   // valid config (default until customized) so the client's check-in never breaks.
-  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN) };
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS) };
   try {
     const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
     (rows.results || []).forEach(function (r) {
@@ -1960,6 +1960,7 @@ async function loadSiteSettings(env) {
       else if (r.key === "site") out.site = v;
       else if (r.key === "menus") { const m = sanitizeMenus(v); if (m.items.length) out.menus = m; }
       else if (r.key === "checkin") { const c = sanitizeCheckinConfig(v); if (c.dimensions.length) out.checkin = c; }
+      else if (r.key === "access") out.access = sanitizeAccess(v);
     });
   } catch (e) { /* table not migrated yet — return defaults */ }
   return out;
@@ -2018,6 +2019,27 @@ async function loadCheckinConfig(env) {
   } catch (e) {}
   return sanitizeCheckinConfig(DEFAULT_CHECKIN);
 }
+// Multi-author access (site_settings key 'access'): whether ADMINS may edit each CMS area.
+// Super admins always can; coaches never. Default: nothing granted (admins have no CMS).
+const DEFAULT_ACCESS = { pages: false, content: false, media: false };
+function sanitizeAccess(raw) {
+  const src = (raw && typeof raw === "object") ? raw : {};
+  return { pages: !!src.pages, content: !!src.content, media: !!src.media };
+}
+async function loadAccess(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM site_settings WHERE key='access'").first();
+    if (row && row.value) return sanitizeAccess(JSON.parse(row.value));
+  } catch (e) {}
+  return Object.assign({}, DEFAULT_ACCESS);
+}
+// May this session edit a CMS area? Super admin always; admin only where granted; else no.
+async function canEditArea(session, env, area) {
+  if (atLeast(session, "superadmin")) return true;
+  if (!atLeast(session, "admin")) return false;
+  const acc = await loadAccess(env);
+  return !!acc[area];
+}
 async function handleGetSite(env) {
   return json(await loadSiteSettings(env));
 }
@@ -2063,6 +2085,12 @@ async function handleSaveSite(request, env) {
       "INSERT INTO site_settings (key,value,updated_at) VALUES ('checkin',?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).bind(JSON.stringify(sanitizeCheckinConfig(b.checkin)), nowSec()));
+  }
+  if (b.access != null) {
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('access',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(sanitizeAccess(b.access)), nowSec()));
   }
   if (!stmts.length) return err(400, "Nothing to save");
   try { await env.DB.batch(stmts); }
