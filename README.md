@@ -27,6 +27,7 @@ data.js                 # generated dataset: window.PX_DATA + window.PX_TAXONOMY
 worker.js               # Cloudflare Worker entrypoint (serves assets + API)
 functions/api/[[route]].js  # API logic used by the Worker entrypoint
 db/schema.sql           # D1 schema (kept for version control / reproducibility)
+db/seed_activities.sql  # generated base-activity seed (from data.js)
 wrangler.toml           # Worker config + asset + D1 binding
 build/
   generate_data.py      # regenerates data.js from the spreadsheet
@@ -43,15 +44,16 @@ with the role.
   **add** custom activities, **edit or hide** any activity, manage athletes, manage their
   **own** private content (Content tab), and export rosters/assignments.
 - **Admin** can do everything a coach can, **plus create and manage coach accounts** (from the
-  **Team** tab). Admins work in their **own** private content only — the shared **global
-  library** and the site's **Appearance** are super-admin-only.
+  **Team** tab). Admins work in their **own** private activity content by default. A super admin
+  can optionally grant admins CMS access to specific **Appearance** areas (**Pages**, **Content**,
+  **Media**) from **Appearance → Access**.
 - **Super admin** can do everything an admin can, **plus**: **create and manage admins and
   other super admins** (alongside coaches, all from the **Team** tab); curate the **global
   content library** — a shared set of activities and taxonomy that every coach and athlete sees,
   edited from the Content tab's **Global library** scope; and control the site's **Appearance** —
   a built-in CMS to change colors, fonts and sizes (saved to the database and applied site-wide)
-  and build the landing page from drag-ordered content blocks (hero, heading, text, image,
-  cards, button, spacer). The production super admin is seeded by a migration (see Deploy).
+  and manage landing/site pages from ordered, sanitized content blocks with draft/publish,
+  autosave and revisions. The production super admin is seeded by a migration (see Deploy).
 
 Internally, admin and super admin are flag columns (`is_admin` / `is_superadmin`) on a
 `role='coach'` row — the FK-referenced `role` column is never changed (see `db/schema.sql`).
@@ -88,12 +90,18 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   a stale check-in, a low recent mood, or unread messages), save any assignment as a reusable
   **template** and **bulk-assign** one template to several athletes at once, see at-a-glance
   per-athlete **completion % + streak** on the roster, track per-athlete progress, and
-  **export the roster to
-  CSV** or a single assignment to a printable PDF. Progress is measured **out of what's assigned**
+  use **My students / All students** views (org-wide directory in server mode) so admins can
+  open any athlete workspace, assign across rosters, and reassign athletes to the right coach,
+  **export the roster to CSV** plus assignment exports for athlete workspaces:
+  **download all assignments as PDF or TXT**, and export a single assignment as TXT. Progress is
+  measured **out of what's assigned**
   to each athlete. Assignment notes support **clickable links** — both bare URLs and
   `[label](https://…)` markdown — and any activity can be given a **student-level custom link**
   (e.g. a doc in that athlete's private folder): set it once per student and it overrides the
-  activity's default link for that student across **every** assignment.
+  activity's default link for that student across **every** assignment. Athletes can now save
+  **per-activity reflections** from every item in a set (autosaved), and coaches get a cleaner
+  review flow where fully completed assignments are grouped under one collapsible
+  **Completed assignments** section.
 - **Content** *(coach / admin / super admin)* — a built-in CMS to manage the activity library
   **and** the Topic / Subtopic / Content-type vocabularies entirely in-app: add, edit, hide, or
   delete activities, and add / rename / merge / remove taxonomy values (renames cascade across
@@ -103,17 +111,22 @@ the coach uses **Reset passcode** on the athlete's row to issue a fresh one.
   library). Each coach still sees the global library **merged** with their own private items, and
   a coach's private edit always wins over the global one. Everything is stored in D1, so it
   survives redeploys — no spreadsheet edit or developer needed.
-- **Appearance** *(super admin)* — change the site's **colors, fonts, text size, spacing and
-  corner radius** (mapped to the CSS variables in `styles.css`, saved to D1 and applied
-  site-wide for everyone, including the signed-out login page), and a **page builder** to
-  assemble the landing page from ordered content blocks with a live preview and draft/publish.
-  Block text renders as plain text and links are forced to `https://`, so builder content can't
-  inject script.
+- **Appearance** *(super admin, with optional admin access grants)* — change the site's
+  **colors, fonts, text size, spacing and corner radius** (mapped to CSS variables in
+  `styles.css`, saved to D1 and applied site-wide, including signed-out screens), control
+  **brand assets** (logo/favicon), edit **site copy slots**, configure **navigation menus**,
+  configure athlete **check-in dimensions/scales**, manage CMS **editing access** for admins,
+  and use a full **page builder** (draft/publish, autosave working copy, revision history,
+  duplicate page, reusable saved sections, and insert-from-section flow). The builder supports
+  sanitized block types including hero/heading/text/image/cards/button/spacer plus
+  richtext/columns/gallery/embed/quote/divider/cta. Uploaded images are stored in the R2-backed
+  media library and served from `/media/*` with immutable caching.
 - **My Workouts** *(athlete)* — assigned activities with a progress bar, inline instructions,
   and a **Mark done** button on each item. Assignments with a **due date** show an **Overdue** or
   **Due soon** badge so nothing is missed.
-- **Check-in** *(athlete)* — a calm daily **mood / energy / stress** check-in (each 1–5, plus an
-  optional note), a running **streak**, and a free-form **journal**. It's deliberately low-pressure
+- **Check-in** *(athlete)* — a calm daily check-in with configurable dimensions/scales
+  (default: **mood / energy / stress**, plus an optional note), a running **streak**, and a
+  free-form **journal**. It's deliberately low-pressure
   and supportive — a mindset tool, not a clinical form. The coach sees it read-only in a per-athlete
   **Wellbeing** panel (recent check-ins, 14-day averages, streak, and journal entries), so patterns
   surface without anyone exchanging emails.
@@ -193,11 +206,18 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    wrangler d1 execute performancextra --file db/migrations/0012_login_attempts.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0013_security.sql --remote
    wrangler d1 execute performancextra --file db/migrations/0014_promote_global_content.sql --remote
-   wrangler d1 execute performancextra --file db/migrations/0015_completions_per_assignment.sql --remote
-   wrangler d1 execute performancextra --file db/migrations/0016_taxonomy_typo.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0015_completions_per_assignment.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0016_taxonomy_typo.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0017_content_slots.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0018_pages_v2.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0019_media.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0020_revisions.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0021_checkin_scores.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0022_media_folders.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0023_page_sections.sql --remote
    ```
 
-   `0003` adds the super-admin role, `0004` seeds the super-admin login (generate a password
+  `0003` adds the super-admin role, `0004` seeds the super-admin login (generate a password
    hash with `node build/hash_password.mjs "your-password"` and paste it into the migration
    before applying — **never commit the real hash or password**; the credential committed in
    an early version of that file is treated as compromised, and any account still using it is
@@ -209,17 +229,28 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
    table, `0011` renames the "Extra Activities" progression to "Advanced", `0012` adds the
    login-throttling table (the API also self-creates it if missing), `0013` adds session
    revocation (`users.token_version` — password/passcode changes sign out every other device),
-   `0014` is a one-time repair that publishes super-admin content stranded in a private scope
-   into the shared global library, `0015` rebuilds `completions` so the same activity can be
+    `0014` is a one-time repair that publishes super-admin content stranded in a private scope
+    into the shared global library, `0015` rebuilds `completions` so the same activity can be
    completed once **per assignment** (re-assigned drills start fresh), and `0016` fixes the
-   "Competitve Mindset" subtopic typo in stored activity data.
+    "Competitve Mindset" subtopic typo in stored activity data. `0017` adds editable content
+    slots, `0018` upgrades pages with status/metadata/navigation fields, `0019` adds the media
+    library index table, `0020` adds page revisions + autosave support fields, `0021` adds
+    JSON check-in dimension scores, `0022` adds media folders, and `0023` adds reusable page
+    sections.
    Validate the role migrations against a local copy (`--local`) first.
-3. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
+3. Create and bind the R2 bucket used by CMS media uploads:
+
+    - binding name: `MEDIA`
+    - bucket name: `performancextra-media` (or your own bucket name, matching `wrangler.toml`)
+
+    The app can run without R2, but media upload/picker features will return config errors until
+    this binding exists.
+4. In **Worker → Settings → Environment variables**, set `SESSION_SECRET` to a long random
    string (used to sign session cookies). **Do not commit it.**
   If unset, the app auto-provisions a strong random secret once and stores it in D1, so
   sign-in still works securely — but setting your own `SESSION_SECRET` is recommended for
   production so the secret is under your control and survives a database reset.
-4. Push to `main` → Cloudflare builds and deploys the Worker. Sign in as the seeded super
+5. Push to `main` → Cloudflare builds and deploys the Worker. Sign in as the seeded super
   admin, change the password, then create coach accounts; each coach adds their own athletes,
   who sign in with the email + passcode the coach sends them.
 
