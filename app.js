@@ -2121,7 +2121,14 @@
         var days = Math.floor((Date.now() - new Date(latest.day + "T12:00:00").getTime()) / 864e5);
         if (days >= 7) reasons.push("no check-in " + days + "d");
       }
-      if (latest && latest.mood != null && latest.mood <= 2) reasons.push("low mood");
+      // Config-aware concern flags: a normal dimension near its floor, or an inverted one
+      // (higher = worse) near its ceiling.
+      if (latest) checkinDims().forEach(function (d) {
+        var v = checkinScore(latest, d.key);
+        if (v == null) return;
+        if (d.invert) { if (v >= d.max - 1) reasons.push("high " + d.label.toLowerCase()); }
+        else if (v <= d.min + 1) reasons.push("low " + d.label.toLowerCase());
+      });
       var unread = threadUnread(s, "athlete");
       if (unread) reasons.push(unread + " unread");
       if (reasons.length) items.push({ s: s, reasons: reasons });
@@ -2666,11 +2673,26 @@
   }
 
   /* ----------------------------- Check-ins & journal ----------------------------- */
-  var CHECKIN_DIMS = [
-    { key: "mood", label: "Mood", low: "Tough", high: "Great" },
-    { key: "energy", label: "Energy", low: "Drained", high: "Energized" },
-    { key: "stress", label: "Stress", low: "Calm", high: "Stressed" }
-  ];
+  // Client mirror of the server DEFAULT_CHECKIN (used until a super admin customizes the
+  // check-in via the CMS). The effective config arrives in state.site.checkin (/site payload).
+  var DEFAULT_CHECKIN_C = { dimensions: [
+    { key: "mood", label: "Mood", low: "Tough", high: "Great", min: 1, max: 5, active: true, invert: false },
+    { key: "energy", label: "Energy", low: "Drained", high: "Energized", min: 1, max: 5, active: true, invert: false },
+    { key: "stress", label: "Stress", low: "Calm", high: "Stressed", min: 1, max: 5, active: true, invert: true }
+  ] };
+  function checkinConfig() {
+    var c = state.site && state.site.checkin;
+    return (c && Array.isArray(c.dimensions) && c.dimensions.length) ? c : DEFAULT_CHECKIN_C;
+  }
+  function checkinDims() { return checkinConfig().dimensions.filter(function (d) { return d.active !== false; }); }
+  // Read a dimension's value from a check-in row: prefer the flexible `scores` map, then
+  // fall back to the three legacy columns for rows written before migration 0021.
+  function checkinScore(c, key) {
+    if (!c) return null;
+    if (c.scores && c.scores[key] != null) return c.scores[key];
+    if ((key === "mood" || key === "energy" || key === "stress") && c[key] != null) return c[key];
+    return null;
+  }
   function todayKey() {
     var d = new Date();
     function p(n) { return (n < 10 ? "0" : "") + n; }
@@ -2699,17 +2721,18 @@
     return n;
   }
   function checkinAverages(list) {
-    function avg(key) {
-      var vals = list.map(function (c) { return c[key]; }).filter(function (v) { return v != null; });
-      if (!vals.length) return "—";
-      return (vals.reduce(function (a, b) { return a + b; }, 0) / vals.length).toFixed(1);
-    }
-    return { mood: avg("mood"), energy: avg("energy"), stress: avg("stress") };
+    var out = {};
+    checkinDims().forEach(function (d) {
+      var vals = list.map(function (c) { return checkinScore(c, d.key); }).filter(function (v) { return v != null; });
+      out[d.key] = vals.length ? (vals.reduce(function (a, b) { return a + b; }, 0) / vals.length).toFixed(1) : "—";
+    });
+    return out;
   }
   function checkinRow(c) {
+    var parts = checkinDims().map(function (d) { return d.label + " " + scoreText(checkinScore(c, d.key)); }).join(" · ");
     return el("div", { class: "checkin-history-row" }, [
       el("span", { class: "ch-date" }, fmtDay(c.day)),
-      el("span", { class: "ch-scores" }, "Mood " + scoreText(c.mood) + " · Energy " + scoreText(c.energy) + " · Stress " + scoreText(c.stress)),
+      el("span", { class: "ch-scores" }, parts),
       c.note ? el("span", { class: "ch-note" }, c.note) : null
     ]);
   }
@@ -2728,26 +2751,30 @@
       return;
     }
     var today = todaysCheckin(s);
-    var picked = { mood: today ? today.mood : null, energy: today ? today.energy : null, stress: today ? today.stress : null };
+    var dims = checkinDims();
+    var picked = {};
+    dims.forEach(function (d) { picked[d.key] = today ? checkinScore(today, d.key) : null; });
 
     var card = el("div", { class: "panel checkin-card" });
     card.appendChild(el("h3", {}, today ? "Update today’s check-in" : "How are you today?"));
-    CHECKIN_DIMS.forEach(function (dim) {
+    dims.forEach(function (dim) {
       var scale = el("div", { class: "checkin-scale" });
-      [1, 2, 3, 4, 5].forEach(function (n) {
-        // The high end of the Stress scale is the tough end — selecting it shouldn't
-        // light up in the same celebratory lime as Mood 5. It gets a warm, calm tone.
-        var warm = dim.key === "stress" && n >= 4 ? " checkin-dot--warm" : "";
-        var btn = el("button", { type: "button", class: "checkin-dot" + warm + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of 5", "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
+      var range = [];
+      for (var v = dim.min; v <= dim.max; v++) range.push(v);
+      range.forEach(function (n) {
+        // An "inverted" dimension (higher = worse, e.g. Stress) shouldn't light its top end
+        // in the celebratory lime — the high end gets a warm, calm tone instead.
+        var warm = dim.invert && n >= dim.max - 1 ? " checkin-dot--warm" : "";
+        var btn = el("button", { type: "button", class: "checkin-dot" + warm + (picked[dim.key] === n ? " is-on" : ""), "aria-label": dim.label + " " + n + " of " + dim.max, "aria-pressed": picked[dim.key] === n ? "true" : "false", onclick: function () {
           picked[dim.key] = (picked[dim.key] === n ? null : n);
-          $all(".checkin-dot", scale).forEach(function (b, i) { var on = picked[dim.key] === (i + 1); b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
+          $all(".checkin-dot", scale).forEach(function (b) { var bn = parseInt(b.textContent, 10); var on = picked[dim.key] === bn; b.classList.toggle("is-on", on); b.setAttribute("aria-pressed", on ? "true" : "false"); });
         } }, String(n));
         scale.appendChild(btn);
       });
       card.appendChild(el("div", { class: "checkin-dim" }, [
         el("div", { class: "checkin-dim-head" }, [
           el("span", { class: "checkin-dim-label" }, dim.label),
-          el("span", { class: "checkin-dim-ends" }, dim.low + " → " + dim.high)
+          (dim.low || dim.high) ? el("span", { class: "checkin-dim-ends" }, (dim.low || "") + " → " + (dim.high || "")) : null
         ]),
         scale
       ]));
@@ -2756,7 +2783,7 @@
     if (today && today.note) note.value = today.note;
     card.appendChild(el("div", { class: "field" }, [el("label", {}, "Note (optional)"), note]));
     card.appendChild(el("button", { class: "btn btn--accent", onclick: function () {
-      saveCheckin({ mood: picked.mood, energy: picked.energy, stress: picked.stress, note: note.value.trim() });
+      saveCheckin({ scores: picked, note: note.value.trim() });
     } }, today ? "Update check-in" : "Save check-in"));
     panel.appendChild(card);
 
@@ -2803,9 +2830,12 @@
     container.appendChild(el("h3", { style: "margin:24px 0 14px" }, "Wellbeing"));
     if (checkins.length) {
       var latest = checkins[0], avg = checkinAverages(checkins.slice(0, 14)), streak = checkinStreak(checkins);
+      var wbDims = checkinDims();
+      var latestStr = wbDims.map(function (d) { return d.label + " " + scoreText(checkinScore(latest, d.key)); }).join(" · ");
+      var avgStr = wbDims.map(function (d) { return d.label + " " + avg[d.key]; }).join(" · ");
       var head = el("div", { class: "wellbeing-summary" }, [
-        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + ": Mood " + scoreText(latest.mood) + " · Energy " + scoreText(latest.energy) + " · Stress " + scoreText(latest.stress)),
-        el("span", { class: "wb-chip" }, "14-day average: Mood " + avg.mood + " · Energy " + avg.energy + " · Stress " + avg.stress),
+        el("span", { class: "wb-chip" }, "Latest " + fmtDay(latest.day) + ": " + latestStr),
+        el("span", { class: "wb-chip" }, "14-day average: " + avgStr),
         streak > 1 ? el("span", { class: "wb-chip" }, "🔥 " + streak + "-day streak") : null
       ]);
       container.appendChild(head);
@@ -2826,18 +2856,20 @@
     }
   }
 
-  function saveCheckin(scores) {
+  function saveCheckin(payload) {
     var s = activeStudent(); if (!s) return;
     var day = todayKey();
+    var scores = payload.scores || {};
     if (SERVER) {
-      api("/checkins", { method: "POST", body: { day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note } }).then(function (res) {
+      api("/checkins", { method: "POST", body: { day: day, scores: scores, note: payload.note } }).then(function (res) {
         if (!res.ok) { toast(apiError(res, "Couldn't save check-in")); return; }
         refreshFromServer().then(function () { renderAll(); toast("Check-in saved. Thanks for checking in."); });
       }).catch(function () { toast("Couldn't reach the server"); });
       return;
     }
     s.checkins = (s.checkins || []).filter(function (c) { return c.day !== day; });
-    s.checkins.unshift({ day: day, mood: scores.mood, energy: scores.energy, stress: scores.stress, note: scores.note, updatedAt: new Date().toISOString() });
+    // Store the scores map; mirror the three canonical dims into flat fields for any legacy reader.
+    s.checkins.unshift({ day: day, scores: scores, mood: scores.mood != null ? scores.mood : null, energy: scores.energy != null ? scores.energy : null, stress: scores.stress != null ? scores.stress : null, note: payload.note, updatedAt: new Date().toISOString() });
     saveStore(); renderAll(); toast("Check-in saved");
   }
   function addJournalEntry(body) {
@@ -3221,29 +3253,33 @@
 
   /* ----------------------------- Tabs / role ----------------------------- */
   function currentTabs() {
-    // Published builder pages with a nav label appear as extra tabs for everyone.
+    // The explicit menu (or, as a fallback, published pages with a nav label) appears as
+    // extra tabs for everyone — page tabs switch views; custom links open in a new tab.
     function withNavPages(tabs) {
-      (state.navPages || []).forEach(function (p) { tabs.push({ id: "page:" + p.id, label: p.label }); });
+      (state.navPages || []).forEach(function (p) {
+        if (p.href) tabs.push({ id: "ext:" + p.href, label: p.label, href: p.href });
+        else tabs.push({ id: "page:" + p.id, label: p.label });
+      });
       return tabs;
     }
     if (!isAdminView()) {
       var meS = activeStudent();
       var unread = meS ? threadUnread(meS, "coach") : 0;
       return withNavPages([
-        { id: "workouts", label: "My Workouts" },
-        { id: "checkin", label: "Check-in" },
-        { id: "messages", label: "Messages" + (unread ? " (" + unread + ")" : "") },
-        { id: "progress", label: "My Progress" }
+        { id: "workouts", label: slot("nav.workouts") },
+        { id: "checkin", label: slot("nav.checkin") },
+        { id: "messages", label: slot("nav.messages") + (unread ? " (" + unread + ")" : "") },
+        { id: "progress", label: slot("nav.progress") }
       ]);
     }
     // Coach base tabs; each higher tier adds tabs so the set is a visible superset.
     var tabs = [
-      { id: "repo", label: "Repository" },
-      { id: "students", label: "Students" }, { id: "content", label: "Content" }
+      { id: "repo", label: slot("nav.repo") },
+      { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
-    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: "Team" });
-    if (isSuperadmin()) tabs.push({ id: "appearance", label: "CMS" });
-    tabs.push({ id: "settings", label: "Settings" });
+    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: slot("nav.team") });
+    if (isSuperadmin()) tabs.push({ id: "appearance", label: slot("nav.cms") });
+    tabs.push({ id: "settings", label: slot("nav.settings") });
     return withNavPages(tabs);
   }
 
@@ -3251,7 +3287,11 @@
     var nav = $("#tabs");
     nav.textContent = "";
     currentTabs().forEach(function (t) {
-      nav.appendChild(el("button", { class: "tab", "data-tab": t.id, onclick: function () { setTab(t.id); } }, t.label));
+      if (t.href) {
+        nav.appendChild(el("a", { class: "tab", href: safeUrl(t.href) || "#", target: "_blank", rel: "noopener noreferrer" }, t.label));
+      } else {
+        nav.appendChild(el("button", { class: "tab", "data-tab": t.id, onclick: function () { setTab(t.id); } }, t.label));
+      }
     });
   }
 
@@ -4524,6 +4564,26 @@
     if (!m) return "";
     return String(Number(m[1])) + m[2];
   }
+  // Embed blocks: only allow iframes to these well-known players (kept in sync with the
+  // server's EMBED_HOSTS). toEmbedSrc normalizes a pasted watch/share URL to an embed src.
+  var EMBED_HOSTS_C = ["youtube.com", "www.youtube.com", "youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com", "player.vimeo.com", "vimeo.com", "www.loom.com", "loom.com"];
+  function safeEmbedUrl(u) {
+    u = safeUrl(u);
+    if (!u) return "";
+    try { if (EMBED_HOSTS_C.indexOf(new URL(u).hostname.toLowerCase()) !== -1) return u; } catch (e) {}
+    return "";
+  }
+  function toEmbedSrc(u) {
+    u = safeEmbedUrl(u);
+    if (!u) return "";
+    try {
+      var url = new URL(u), host = url.hostname.toLowerCase();
+      if (host === "youtu.be") { var yid = url.pathname.replace(/^\//, ""); return yid ? "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(yid) : ""; }
+      if (host.indexOf("youtube") !== -1 && host.indexOf("nocookie") === -1) { var v = url.searchParams.get("v") || url.pathname.split("/").pop(); return v ? "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(v) : ""; }
+      if (host === "vimeo.com") { var vid = url.pathname.split("/").filter(Boolean).pop(); return /^\d+$/.test(vid || "") ? "https://player.vimeo.com/video/" + vid : ""; }
+    } catch (e) {}
+    return u;
+  }
 
   /* ----------------------------- Editable site copy ("content slots") -----------------------------
    * Every previously hardcoded piece of user-facing text has a stable slot key. These
@@ -4576,7 +4636,13 @@
     "settings.heading": "Settings",
     "settings.intro": "Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.",
     "footer.text": "PerformanceXtra — Mental Workout Repository",
-    "footer.tagline": "catalog items (and growing)"
+    "footer.tagline": "catalog items (and growing)",
+    "nav.repo": "Repository", "nav.students": "Students", "nav.content": "Content",
+    "nav.team": "Team", "nav.cms": "CMS", "nav.settings": "Settings",
+    "nav.workouts": "My Workouts", "nav.checkin": "Check-in", "nav.messages": "Messages", "nav.progress": "My Progress",
+    "banner.storage": "Browser storage is unavailable, so student progress can’t be saved on this device. Changes will be lost when you close the tab.",
+    "banner.preview": "👀 Coach preview: you’re seeing the student view.",
+    "banner.default_pass": "⚠️ You’re still using the default admin passcode. Anyone who knows it can open your coaching tools."
   };
   // Groups drive the Appearance → Site content panel layout (and inline-editor labels).
   var CONTENT_GROUPS = [
@@ -4610,7 +4676,17 @@
       ["progress.heading", "My Progress heading"], ["progress.intro", "My Progress intro", true],
       ["settings.heading", "Settings heading"], ["settings.intro", "Settings intro", true]
     ] },
-    { title: "Footer", keys: [["footer.text", "Footer text"], ["footer.tagline", "Catalog tagline"]] }
+    { title: "Footer", keys: [["footer.text", "Footer text"], ["footer.tagline", "Catalog tagline"]] },
+    { title: "Navigation labels", keys: [
+      ["nav.repo", "Repository tab"], ["nav.students", "Students tab"], ["nav.content", "Content tab"],
+      ["nav.team", "Team tab"], ["nav.cms", "CMS tab"], ["nav.settings", "Settings tab"],
+      ["nav.workouts", "My Workouts tab"], ["nav.checkin", "Check-in tab"], ["nav.messages", "Messages tab"], ["nav.progress", "My Progress tab"]
+    ] },
+    { title: "Banners", keys: [
+      ["banner.storage", "Storage-unavailable warning", true],
+      ["banner.preview", "Coach-preview banner"],
+      ["banner.default_pass", "Default-passcode warning", true]
+    ] }
   ];
   function slotLabel(key) {
     for (var g = 0; g < CONTENT_GROUPS.length; g++) {
@@ -4651,6 +4727,7 @@
     $all("[data-slot]").forEach(function (n) {
       var key = n.getAttribute("data-slot");
       if (CONTENT_DEFAULTS[key] == null) return;
+      if (key.indexOf("banner.") === 0) return;     // banners are often hidden — edit via the panel
       if (n.closest("#view-appearance")) return;   // the panel edits copy via its own form
       if (n.closest(".brand") || n.closest(".auth-head")) return;   // header brand is too tight for a button — edit via the panel
       n.classList.add("slot-editable");
@@ -4687,6 +4764,7 @@
       if (!res.ok) { toast(apiError(res, "Couldn't save site copy")); return; }
       state.content = (res.data && res.data.content) || {};
       applySiteContent();
+      if (state.session) renderTabs();   // nav-label slots feed the tabs
       toast("Site copy saved");
       if (onDone) onDone();
     }).catch(function () { toast("Couldn't reach the server"); });
@@ -4706,10 +4784,10 @@
       { id: "design", label: "Design", minRole: "superadmin", render: renderThemeEditor },
       { id: "content", label: "Content", minRole: "admin", render: renderSiteContentEditor },
       { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
-      { id: "menus", label: "Menus", minRole: "superadmin", soon: "Build your site navigation — order links, add custom URLs, and choose exactly what shows up in the nav (instead of it being derived automatically from published pages)." },
-      { id: "checkin", label: "Check-in", minRole: "superadmin", soon: "Configure the athlete daily check-in — rename the dimensions (Mood, Energy, Stress…), add your own, and set each 1–5 scale and its end labels." },
-      { id: "access", label: "Access", minRole: "superadmin", soon: "Choose which roles (admins, coaches) can edit pages, content and media — multi-author editing." },
-      { id: "settings", label: "Settings", minRole: "superadmin", soon: "Site-wide options and defaults gathered in one place." }
+      { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
+      { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
+      { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
+      { id: "access", label: "Access", minRole: "superadmin", soon: "Choose which roles (admins, coaches) can edit pages, content and media — multi-author editing." }
     ];
   }
   function visibleCmsSections() { return cmsSectionList().filter(function (s) { return isAtLeast(s.minRole); }); }
@@ -4730,9 +4808,10 @@
     renderAppearance();
   }
   // Which data each section needs (lazy — a section never blocks on data it doesn't use).
+  function cmsNeedsPages(section) { return section === "pages" || section === "dashboard" || section === "menus"; }
   function cmsDataReady(section) {
     if (!state.site) return false;
-    if ((section === "pages" || section === "dashboard") && !state.pages) return false;
+    if (cmsNeedsPages(section) && !state.pages) return false;
     if ((section === "media" || section === "dashboard") && state.media == null) return false;
     return true;
   }
@@ -4741,7 +4820,7 @@
     if (!state.site) jobs.push(api("/site").then(function (r) {
       state.site = (r && r.data && r.data.theme) ? r.data : { theme: Object.assign({}, DEFAULT_THEME_C), site: {} };
     }).catch(function () { state.site = state.site || { theme: Object.assign({}, DEFAULT_THEME_C), site: {} }; }));
-    if ((section === "pages" || section === "dashboard") && !state.pages) jobs.push(api("/pages").then(function (r) {
+    if (cmsNeedsPages(section) && !state.pages) jobs.push(api("/pages").then(function (r) {
       state.pages = (r && r.data && r.data.pages) ? r.data.pages : [];
     }).catch(function () { state.pages = state.pages || []; }));
     if ((section === "media" || section === "dashboard") && state.media == null) jobs.push(loadMediaList());
@@ -4846,6 +4925,160 @@
     }
     wrap.appendChild(recent);
     return wrap;
+  }
+
+  /* ----------------------------- CMS: navigation menu ----------------------------- */
+  function renderMenus() {
+    var pages = (state.pages || []).filter(function (p) { return (p.status || (p.published ? "published" : "draft")) === "published"; });
+    var items = ((((state.site || {}).menus) || {}).items || []).map(function (it) { return Object.assign({}, it); });
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Navigation menu")]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Control which pages appear in the top navigation and in what order. Leave this empty to auto-show every published page that has a nav label (the default). Add a custom link to point at any https:// address."));
+    var list = el("div", { class: "builder-canvas" });
+    function swap(i, j) { var t = items[i]; items[i] = items[j]; items[j] = t; redraw(); }
+    function redraw() {
+      list.textContent = "";
+      if (!items.length) list.appendChild(el("p", { class: "no-link" }, "No menu items — navigation is auto-derived from published pages. Add an item to take manual control."));
+      items.forEach(function (it, idx) {
+        var label = el("input", { type: "text", value: it.label || "", placeholder: it.type === "link" ? "Link label" : "Nav label (defaults to the page's)" });
+        label.addEventListener("input", function () { it.label = label.value; });
+        var target;
+        if (it.type === "link") {
+          target = el("input", { type: "text", value: it.href || "", placeholder: "https://…" });
+          target.addEventListener("input", function () { it.href = target.value; });
+        } else {
+          target = el("select", {});
+          if (!pages.length) target.appendChild(el("option", { value: "" }, "(no published pages yet)"));
+          pages.forEach(function (p) { var op = el("option", { value: p.id }, (p.title || p.id) + " (#/p/" + p.id + ")"); if (it.pageId === p.id) op.selected = true; target.appendChild(op); });
+          if (!it.pageId && pages.length) it.pageId = pages[0].id;
+          target.addEventListener("change", function () { it.pageId = target.value; });
+        }
+        list.appendChild(el("div", { class: "menu-row" }, [
+          el("span", { class: "chip" }, it.type === "link" ? "link" : "page"),
+          el("div", { class: "menu-row-fields" }, [label, target]),
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm btn--ghost", disabled: idx === 0, onclick: function () { swap(idx, idx - 1); } }, "↑"),
+            el("button", { class: "btn btn--sm btn--ghost", disabled: idx === items.length - 1, onclick: function () { swap(idx, idx + 1); } }, "↓"),
+            el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { items.splice(idx, 1); redraw(); } }, "×")
+          ])
+        ]));
+      });
+    }
+    redraw();
+    panel.appendChild(list);
+    panel.appendChild(el("div", { class: "builder-palette", style: "margin-top:12px" }, [
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () { items.push({ type: "page", pageId: pages.length ? pages[0].id : "", label: "" }); redraw(); } }, "+ Add page"),
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () { items.push({ type: "link", href: "", label: "" }); redraw(); } }, "+ Add link")
+    ]));
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { menus: { items: items } } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save menu")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          loadNavPages().then(function () { if (state.session) renderTabs(); });
+          renderAppearance();
+          toast("Menu saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save menu")
+    ]));
+    return panel;
+  }
+
+  /* ----------------------------- CMS: settings ----------------------------- */
+  function renderSettings() {
+    var wrap = el("div", { class: "cms-design" });
+    var brand = el("div", { class: "panel" });
+    brand.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Brand identity")]));
+    brand.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" }, "The site name and tagline shown in the header and browser tab. Colors, fonts, logo and favicon live in Design."));
+    var nameI = el("input", { type: "text", value: slot("brand.name") });
+    var tagI = el("input", { type: "text", value: slot("brand.tag") });
+    brand.appendChild(el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Site name"), nameI]),
+      el("div", { class: "field" }, [el("label", {}, "Tagline"), tagI])
+    ]));
+    brand.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        saveContentSlots([["brand.name", nameI.value], ["brand.tag", tagI.value]]);
+      } }, "Save brand")
+    ]));
+    wrap.appendChild(brand);
+
+    var info = el("div", { class: "panel" });
+    info.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace")]));
+    function infoRow(label, value) { return el("div", { class: "setting-row" }, [el("span", { class: "detail-label" }, label), el("span", {}, value)]); }
+    info.appendChild(el("div", { class: "form-stack" }, [
+      infoRow("Signed in as", (state.session && state.session.name) || "—"),
+      infoRow("Pages", String((state.pages || []).length)),
+      infoRow("Media", ((state.media || []).length) + " image" + ((state.media || []).length === 1 ? "" : "s"))
+    ]));
+    wrap.appendChild(info);
+    return wrap;
+  }
+
+  /* ----------------------------- CMS: check-in configuration ----------------------------- */
+  function renderCheckinConfig() {
+    var cfg = { dimensions: checkinConfig().dimensions.map(function (d) { return Object.assign({}, d); }) };
+    var panel = el("div", { class: "panel" });
+    panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Daily check-in")]));
+    panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
+      "Configure what athletes report each day. Rename a dimension, change its scale range and end labels, add your own, or turn one off. Turn on “Higher is worse” for things like Stress (it flips the warm color and the coach warning). Renaming keeps old check-ins; a dimension's key is fixed once created, to preserve history."));
+    var list = el("div", { class: "builder-canvas" });
+    function swap(i, j) { var t = cfg.dimensions[i]; cfg.dimensions[i] = cfg.dimensions[j]; cfg.dimensions[j] = t; redraw(); }
+    function redraw() {
+      list.textContent = "";
+      if (!cfg.dimensions.length) list.appendChild(el("p", { class: "no-link" }, "No dimensions — the built-in default (Mood, Energy, Stress) will be used until you add one."));
+      cfg.dimensions.forEach(function (d, idx) {
+        var labelI = el("input", { type: "text", value: d.label || "" }); labelI.addEventListener("input", function () { d.label = labelI.value; });
+        var lowI = el("input", { type: "text", value: d.low || "", placeholder: "e.g. Tough" }); lowI.addEventListener("input", function () { d.low = lowI.value; });
+        var highI = el("input", { type: "text", value: d.high || "", placeholder: "e.g. Great" }); highI.addEventListener("input", function () { d.high = highI.value; });
+        var minI = el("input", { type: "number", value: d.min, min: "1", max: "9" }); minI.addEventListener("input", function () { d.min = parseInt(minI.value, 10); });
+        var maxI = el("input", { type: "number", value: d.max, min: "2", max: "10" }); maxI.addEventListener("input", function () { d.max = parseInt(maxI.value, 10); });
+        var activeI = el("input", { type: "checkbox" }); activeI.checked = d.active !== false; activeI.addEventListener("change", function () { d.active = activeI.checked; });
+        var invertI = el("input", { type: "checkbox" }); invertI.checked = !!d.invert; invertI.addEventListener("change", function () { d.invert = invertI.checked; });
+        list.appendChild(el("div", { class: "checkin-cfg-row" }, [
+          el("div", { class: "checkin-cfg-head" }, [
+            el("span", { class: "chip" }, d.key),
+            el("div", { class: "cms-actions" }, [
+              el("button", { class: "btn btn--sm btn--ghost", disabled: idx === 0, onclick: function () { swap(idx, idx - 1); } }, "↑"),
+              el("button", { class: "btn btn--sm btn--ghost", disabled: idx === cfg.dimensions.length - 1, onclick: function () { swap(idx, idx + 1); } }, "↓"),
+              el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { cfg.dimensions.splice(idx, 1); redraw(); } }, "Remove")
+            ])
+          ]),
+          el("div", { class: "field" }, [el("label", {}, "Label"), labelI]),
+          el("div", { class: "appearance-grid" }, [
+            el("label", { class: "appearance-field" }, [el("span", {}, "Low-end label"), lowI]),
+            el("label", { class: "appearance-field" }, [el("span", {}, "High-end label"), highI]),
+            el("label", { class: "appearance-field" }, [el("span", {}, "Min"), minI]),
+            el("label", { class: "appearance-field" }, [el("span", {}, "Max"), maxI])
+          ]),
+          el("div", { class: "checkin-cfg-flags" }, [
+            el("label", { class: "check" }, [activeI, el("span", {}, " Active")]),
+            el("label", { class: "check" }, [invertI, el("span", {}, " Higher is worse")])
+          ])
+        ]));
+      });
+    }
+    redraw();
+    panel.appendChild(list);
+    panel.appendChild(el("div", { class: "builder-palette", style: "margin-top:12px" }, [
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+        cfg.dimensions.push({ key: "dim" + (cfg.dimensions.length + 1) + "_" + Math.random().toString(36).slice(2, 5), label: "New dimension", low: "Low", high: "High", min: 1, max: 5, active: true, invert: false });
+        redraw();
+      } }, "+ Add dimension")
+    ]));
+    panel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--ghost", onclick: function () { cfg = { dimensions: DEFAULT_CHECKIN_C.dimensions.map(function (d) { return Object.assign({}, d); }) }; redraw(); } }, "Reset to default"),
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { checkin: cfg } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save check-in")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          renderAppearance();
+          toast("Check-in configuration saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save check-in")
+    ]));
+    return panel;
   }
 
   /* ----------------------------- Appearance: site content panel -----------------------------
@@ -5049,6 +5282,12 @@
     else if (type === "button") props = { label: "Button", href: "", style: "primary" };
     else if (type === "spacer") props = { size: "md" };
     else if (type === "richtext") props = { doc: { blocks: [{ type: "paragraph", data: { text: "Write anything — bold, links, lists, quotes…" } }] } };
+    else if (type === "columns") props = { cols: [{ heading: "Column one", text: "Text for the first column." }, { heading: "Column two", text: "Text for the second column." }] };
+    else if (type === "gallery") props = { items: [] };
+    else if (type === "embed") props = { url: "", caption: "" };
+    else if (type === "quote") props = { text: "A memorable quote goes here.", cite: "" };
+    else if (type === "divider") props = { style: "line" };
+    else if (type === "cta") props = { heading: "Ready to start?", sub: "A short line of encouragement.", label: "Get started", href: "", style: "primary" };
     return { id: id, type: type, props: props };
   }
   function addBlock(type) { state.pageDraft.blocks.push(newBlock(type)); markPageDirty(); renderAppearance(); }
@@ -5066,6 +5305,12 @@
     if (b.type === "cards") return (p.items || []).length + " card" + ((p.items || []).length === 1 ? "" : "s");
     if (b.type === "button") return p.label || "(button)";
     if (b.type === "spacer") return p.size || "md";
+    if (b.type === "columns") return (p.cols || []).length + " column" + ((p.cols || []).length === 1 ? "" : "s");
+    if (b.type === "gallery") return (p.items || []).length + " image" + ((p.items || []).length === 1 ? "" : "s");
+    if (b.type === "embed") return p.url || "(no embed URL)";
+    if (b.type === "quote") return (p.text || "").slice(0, 60) || "(quote)";
+    if (b.type === "divider") return p.style || "line";
+    if (b.type === "cta") return p.heading || "(call to action)";
     if (b.type === "richtext") {
       var n = ((p.doc || {}).blocks || []).length;
       var first = (((p.doc || {}).blocks || [])[0] || {}).data || {};
@@ -5101,12 +5346,14 @@
       img.src = url;
     });
   }
-  function uploadMedia(file, onDone) {
+  function uploadMedia(file, onDone, folder) {
     if (MEDIA_UPLOAD_TYPES.indexOf(file.type) === -1) { toast("Only JPEG, PNG, WebP or GIF images can be uploaded"); return; }
     toast("Uploading " + file.name + "…");
     downscaleImage(file).then(function (blob) {
       if (blob.size > 10 * 1024 * 1024) { toast("That image is over 10 MB even after resizing"); return; }
-      return fetch("/api/media?filename=" + encodeURIComponent(file.name), {
+      var qs = "/api/media?filename=" + encodeURIComponent(file.name);
+      if (folder) qs += "&folder=" + encodeURIComponent(folder);
+      return fetch(qs, {
         method: "POST", credentials: "same-origin",
         headers: { "Content-Type": blob.type || file.type }, body: blob
       }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, data: d }; }); }).then(function (res) {
@@ -5125,12 +5372,14 @@
   }
   function mediaUrl(m) { return "/" + m.key; }
   function renderMediaLibrary() {
+    state.mediaFilter = state.mediaFilter || { q: "", folder: "" };
+    var filter = state.mediaFilter;
     var panel = el("div", { class: "panel" });
     var fileInput = el("input", { type: "file", accept: MEDIA_UPLOAD_TYPES.join(","), hidden: true });
     fileInput.addEventListener("change", function () {
       var f = fileInput.files && fileInput.files[0];
       fileInput.value = "";
-      if (f) uploadMedia(f, function () { renderAppearance(); });
+      if (f) uploadMedia(f, function () { renderAppearance(); }, filter.folder || "");
     });
     panel.appendChild(fileInput);
     panel.appendChild(el("div", { class: "section-head" }, [
@@ -5140,45 +5389,75 @@
       ])
     ]));
     panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
-      "Images are stored in your site's own storage and served from /media/…. Large photos are automatically resized before upload. Use them in image blocks via “Choose from library”."));
+      "Images are stored in your site's own storage and served from /media/…. Large photos are resized before upload. Use them in image blocks via “Choose from library”. Uploads go into the selected folder; type a new folder name on any image to create one."));
+
+    var folders = [];
+    (state.media || []).forEach(function (m) { if (m.folder && folders.indexOf(m.folder) === -1) folders.push(m.folder); });
+    folders.sort();
+    var search = el("input", { type: "search", class: "cms-search", placeholder: "Search by name or alt text…", value: filter.q });
+    search.addEventListener("input", function () { filter.q = search.value; drawGrid(); });
+    var folderSel = el("select", {});
+    folderSel.appendChild(el("option", { value: "" }, "All folders"));
+    folders.forEach(function (fo) { var op = el("option", { value: fo }, fo); if (filter.folder === fo) op.selected = true; folderSel.appendChild(op); });
+    folderSel.addEventListener("change", function () { filter.folder = folderSel.value; drawGrid(); });
+    panel.appendChild(el("div", { class: "cms-toolbar" }, [search, folderSel]));
+
     var grid = el("div", { class: "media-grid" });
-    if (!(state.media || []).length) grid.appendChild(el("p", { class: "no-link" }, "No images yet. Upload your first one."));
-    (state.media || []).forEach(function (m) {
-      var alt = el("input", { type: "text", value: m.alt || "", placeholder: "Alt text (describe the image)" });
-      alt.addEventListener("change", function () {
-        api("/media/" + encodeURIComponent(m.id), { method: "POST", body: { alt: alt.value } }).then(function (res) {
-          if (!res.ok) { toast(apiError(res, "Couldn't save alt text")); return; }
-          m.alt = alt.value; toast("Alt text saved");
-        }).catch(function () { toast("Couldn't reach the server"); });
-      });
-      grid.appendChild(el("div", { class: "media-card" }, [
-        el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
-        el("div", { class: "media-meta" }, [
-          el("div", { class: "media-name", title: m.filename }, m.filename),
-          alt,
-          el("div", { class: "cms-actions" }, [
-            el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
-              try { navigator.clipboard.writeText(location.origin + mediaUrl(m)); toast("Image URL copied"); }
-              catch (e) { toast(mediaUrl(m)); }
-            } }, "Copy URL"),
-            el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
-              openModal("Delete image", el("p", {}, "Delete “" + m.filename + "”? Pages using it will show a broken image."), [
-                { label: "Cancel", onClick: closeModal },
-                { label: "Delete image", danger: true, onClick: function () {
-                  api("/media/" + encodeURIComponent(m.id), { method: "DELETE" }).then(function (res) {
-                    closeModal();
-                    if (!res.ok) { toast(apiError(res, "Couldn't delete image")); return; }
-                    state.media = (state.media || []).filter(function (x) { return x.id !== m.id; });
-                    renderAppearance(); toast("Image deleted");
-                  }).catch(function () { toast("Couldn't reach the server"); });
-                } }
-              ]);
-            } }, "Delete")
-          ])
-        ])
-      ]));
-    });
     panel.appendChild(grid);
+    function matches(m) {
+      if (filter.folder && (m.folder || "") !== filter.folder) return false;
+      if (filter.q) {
+        var q = filter.q.toLowerCase();
+        if ((m.filename || "").toLowerCase().indexOf(q) === -1 && (m.alt || "").toLowerCase().indexOf(q) === -1) return false;
+      }
+      return true;
+    }
+    function drawGrid() {
+      grid.textContent = "";
+      if (!(state.media || []).length) { grid.appendChild(el("p", { class: "no-link" }, "No images yet. Upload your first one.")); return; }
+      var shown = (state.media || []).filter(matches);
+      if (!shown.length) { grid.appendChild(el("p", { class: "no-link" }, "No images match your search.")); return; }
+      shown.forEach(function (m) {
+        var altI = el("input", { type: "text", value: m.alt || "", placeholder: "Alt text (describe the image)" });
+        var folderI = el("input", { type: "text", value: m.folder || "", placeholder: "Folder (optional)" });
+        function saveMeta(okMsg, refresh) {
+          api("/media/" + encodeURIComponent(m.id), { method: "POST", body: { alt: altI.value, folder: folderI.value } }).then(function (res) {
+            if (!res.ok) { toast(apiError(res, "Couldn't save")); return; }
+            m.alt = altI.value; m.folder = folderI.value; toast(okMsg || "Saved");
+            if (refresh) renderAppearance();
+          }).catch(function () { toast("Couldn't reach the server"); });
+        }
+        altI.addEventListener("change", function () { saveMeta("Alt text saved"); });
+        folderI.addEventListener("change", function () { saveMeta("Folder saved", true); });
+        grid.appendChild(el("div", { class: "media-card" }, [
+          el("img", { class: "media-thumb", src: mediaUrl(m), alt: m.alt || m.filename, loading: "lazy" }),
+          el("div", { class: "media-meta" }, [
+            el("div", { class: "media-name", title: m.filename }, m.filename),
+            altI, folderI,
+            el("div", { class: "cms-actions" }, [
+              el("button", { class: "btn btn--sm btn--ghost", onclick: function () {
+                try { navigator.clipboard.writeText(location.origin + mediaUrl(m)); toast("Image URL copied"); }
+                catch (e) { toast(mediaUrl(m)); }
+              } }, "Copy URL"),
+              el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
+                openModal("Delete image", el("p", {}, "Delete “" + m.filename + "”? Pages using it will show a broken image."), [
+                  { label: "Cancel", onClick: closeModal },
+                  { label: "Delete image", danger: true, onClick: function () {
+                    api("/media/" + encodeURIComponent(m.id), { method: "DELETE" }).then(function (res) {
+                      closeModal();
+                      if (!res.ok) { toast(apiError(res, "Couldn't delete image")); return; }
+                      state.media = (state.media || []).filter(function (x) { return x.id !== m.id; });
+                      renderAppearance(); toast("Image deleted");
+                    }).catch(function () { toast("Couldn't reach the server"); });
+                  } }
+                ]);
+              } }, "Delete")
+            ])
+          ])
+        ]));
+      });
+    }
+    drawGrid();
     return panel;
   }
   // Grid picker used by the image block editor: choose an existing image or upload.
@@ -5215,6 +5494,64 @@
   // delete), or the block editor for the page currently being edited.
   function renderPageBuilder() {
     return state.pageDraft ? renderPageEditor() : renderPagesList();
+  }
+  /* Reusable sections: save the current page's blocks as a named section, and insert a
+   * saved section's blocks into any page (fresh block ids; re-sanitized on page save). */
+  function loadSections() {
+    return api("/sections").then(function (res) { state.sections = (res.ok && res.data && res.data.sections) || []; })
+      .catch(function () { state.sections = state.sections || []; });
+  }
+  function saveAsSection() {
+    var draft = state.pageDraft; if (!draft) return;
+    if (!draft.blocks.length) { toast("Add some blocks to the page first"); return; }
+    var nameI = el("input", { type: "text", placeholder: "e.g. Footer call-to-action" });
+    openModal("Save as reusable section", el("div", { class: "form-stack" }, [
+      el("div", { class: "field" }, [el("label", {}, "Section name"), nameI]),
+      el("p", { class: "field-hint" }, "Saves the " + draft.blocks.length + " block" + (draft.blocks.length === 1 ? "" : "s") + " on this page as a section you can insert into any page.")
+    ]), [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save section", accent: true, onClick: function () {
+        api("/sections", { method: "POST", body: { name: nameI.value, blocks: draft.blocks } }).then(function (res) {
+          closeModal();
+          if (!res.ok) { toast(apiError(res, "Couldn't save section")); return; }
+          state.sections = state.sections || []; state.sections.unshift(res.data);
+          toast("Section saved");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }
+    ]);
+    setTimeout(function () { try { nameI.focus(); } catch (e) {} }, 40);
+  }
+  function openInsertSectionModal() {
+    function body() {
+      var wrap = el("div", { class: "form-stack" });
+      var secs = state.sections || [];
+      if (!secs.length) wrap.appendChild(el("p", { class: "no-link" }, "No saved sections yet. Build a page, then use “Save page as section”."));
+      secs.forEach(function (sec) {
+        wrap.appendChild(el("div", { class: "builder-block" }, [
+          el("div", { class: "builder-block-head" }, [
+            el("span", { class: "chip" }, (sec.blocks || []).length + " block" + ((sec.blocks || []).length === 1 ? "" : "s")),
+            el("span", { class: "builder-block-summary" }, el("strong", {}, sec.name))
+          ]),
+          el("div", { class: "cms-actions" }, [
+            el("button", { class: "btn btn--sm btn--accent", onclick: function () {
+              var draft = state.pageDraft; if (!draft) return;
+              (sec.blocks || []).forEach(function (b) { draft.blocks.push(Object.assign({}, b, { id: "b" + Math.random().toString(36).slice(2, 8) })); });
+              markPageDirty(); closeModal(); renderAppearance(); toast("Section inserted");
+            } }, "Insert"),
+            el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () {
+              api("/sections/" + encodeURIComponent(sec.id), { method: "DELETE" }).then(function (res) {
+                if (!res.ok) { toast(apiError(res, "Couldn't delete section")); return; }
+                state.sections = (state.sections || []).filter(function (x) { return x.id !== sec.id; });
+                closeModal(); openInsertSectionModal(); toast("Section deleted");
+              }).catch(function () { toast("Couldn't reach the server"); });
+            } }, "Delete")
+          ])
+        ]));
+      });
+      return wrap;
+    }
+    if (state.sections == null) loadSections().then(function () { openModal("Insert saved section", body(), [{ label: "Close", onClick: closeModal }]); });
+    else openModal("Insert saved section", body(), [{ label: "Close", onClick: closeModal }]);
   }
   function slugify(s) {
     return String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -5371,10 +5708,16 @@
     ]));
 
     var palette = el("div", { class: "builder-palette" });
-    [["richtext", "Rich text"], ["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["cards", "Cards"], ["button", "Button"], ["spacer", "Spacer"]].forEach(function (pair) {
+    [["richtext", "Rich text"], ["hero", "Hero"], ["heading", "Heading"], ["text", "Text"], ["image", "Image"], ["gallery", "Gallery"], ["cards", "Cards"], ["columns", "Columns"], ["quote", "Quote"], ["embed", "Embed"], ["button", "Button"], ["cta", "Call to action"], ["divider", "Divider"], ["spacer", "Spacer"]].forEach(function (pair) {
       palette.appendChild(el("button", { class: "btn btn--sm btn--ghost", onclick: function () { addBlock(pair[0]); } }, "+ " + pair[1]));
     });
     panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Add a block"), palette]));
+
+    var sectionsBar = el("div", { class: "builder-palette" }, [
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: openInsertSectionModal }, "⧉ Insert saved section"),
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: saveAsSection }, "💾 Save page as section")
+    ]);
+    panel.appendChild(el("div", { class: "builder-section" }, [el("div", { class: "detail-label" }, "Reusable sections"), sectionsBar]));
 
     var canvas = el("div", { class: "builder-canvas" });
     if (!draft.blocks.length) canvas.appendChild(el("p", { class: "no-link" }, "No blocks yet. Add one above to start building the page."));
@@ -5423,6 +5766,52 @@
     fields.appendChild(el("div", { class: "field" }, [
       el("label", {}, "Cards"), list,
       el("button", { class: "btn btn--sm btn--ghost", onclick: function () { p.items.push({ title: "Card", body: "", icon: "★" }); draw(); } }, "+ Add card")
+    ]));
+  }
+  function renderColumnsEditor(fields, p) {
+    if (!Array.isArray(p.cols)) p.cols = [];
+    var list = el("div", { class: "form-stack" });
+    function draw() {
+      list.textContent = "";
+      p.cols.forEach(function (c, idx) {
+        var h = el("input", { type: "text", placeholder: "Column heading", value: c.heading || "" });
+        h.addEventListener("input", function () { c.heading = h.value; });
+        var t = el("textarea", { rows: 3, placeholder: "Column text" }); t.value = c.text || "";
+        t.addEventListener("input", function () { c.text = t.value; });
+        list.appendChild(el("div", { class: "builder-col-edit" }, [
+          h, t, el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { p.cols.splice(idx, 1); draw(); } }, "× Remove column")
+        ]));
+      });
+    }
+    draw();
+    fields.appendChild(el("div", { class: "field" }, [
+      el("label", {}, "Columns (up to 4)"), list,
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () { if (p.cols.length < 4) { p.cols.push({ heading: "", text: "" }); draw(); } } }, "+ Add column")
+    ]));
+  }
+  function renderGalleryEditor(fields, p, i, b) {
+    if (!Array.isArray(p.items)) p.items = [];
+    var list = el("div", { class: "form-stack" });
+    function draw() {
+      list.textContent = "";
+      if (!p.items.length) list.appendChild(el("p", { class: "no-link" }, "No images yet — add one below."));
+      p.items.forEach(function (it, idx) {
+        var alt = el("input", { type: "text", placeholder: "Alt text", value: it.alt || "" });
+        alt.addEventListener("input", function () { it.alt = alt.value; });
+        list.appendChild(el("div", { class: "builder-card-row" }, [
+          el("img", { class: "media-thumb media-thumb--sm", src: safeImageSrc(it.src) || "", alt: "" }),
+          alt,
+          el("button", { class: "btn btn--sm btn--ghost btn--danger", onclick: function () { p.items.splice(idx, 1); draw(); } }, "×")
+        ]));
+      });
+    }
+    draw();
+    fields.appendChild(el("div", { class: "field" }, [
+      el("label", {}, "Images"), list,
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: function () {
+        b.props = p;   // commit before the picker replaces this modal, then reopen
+        openMediaPicker(function (m) { b.props.items = b.props.items || []; b.props.items.push({ src: "/" + m.key, alt: m.alt || "" }); openBlockModal(i); });
+      } }, "+ Add image")
     ]));
   }
   function openBlockModal(i) {
@@ -5480,6 +5869,21 @@
       selectField("size", "Size", [["sm", "Small"], ["md", "Medium"], ["lg", "Large"]]);
     } else if (b.type === "cards") {
       renderCardsEditor(fields, p);
+    } else if (b.type === "columns") {
+      renderColumnsEditor(fields, p);
+    } else if (b.type === "gallery") {
+      renderGalleryEditor(fields, p, i, b);
+    } else if (b.type === "embed") {
+      textField("url", "Video URL (YouTube, Vimeo or Loom)");
+      textField("caption", "Caption (optional)");
+    } else if (b.type === "quote") {
+      textField("text", "Quote", true); textField("cite", "Attribution (optional)");
+    } else if (b.type === "divider") {
+      selectField("style", "Style", [["line", "Line"], ["dots", "Dots"]]);
+    } else if (b.type === "cta") {
+      textField("heading", "Heading"); textField("sub", "Subheading", true);
+      textField("label", "Button label"); textField("href", "Button link (https://…)");
+      selectField("style", "Button style", [["primary", "Primary"], ["ember", "Secondary"], ["ghost", "Ghost"]]);
     } else if (b.type === "richtext") {
       // WordPress-style editor: block-based rich text (Editor.js), loaded on demand.
       var holder = el("div", { class: "richtext-holder" });
@@ -5790,6 +6194,56 @@
       if (window.DOMPurify) renderRichDoc(p.doc, wrap);
       else ensureDomPurify().then(function () { renderRichDoc(p.doc, wrap); }).catch(function () {});
       return wrap;
+    },
+    columns: function (p) {
+      var cols = (p.cols || []);
+      var grid = el("div", { class: "pb-columns pb-cols-" + Math.min(4, Math.max(1, cols.length || 1)) });
+      cols.forEach(function (c) {
+        grid.appendChild(el("div", { class: "pb-column" }, [
+          c.heading ? el("h3", { class: "pb-col-h" }, c.heading) : null,
+          c.text ? el("p", {}, c.text) : null
+        ]));
+      });
+      return grid;
+    },
+    gallery: function (p) {
+      var items = (p.items || []).filter(function (it) { return safeImageSrc(it.src); });
+      if (!items.length) return null;
+      var grid = el("div", { class: "pb-gallery" });
+      items.forEach(function (it) {
+        grid.appendChild(el("img", { class: "pb-gallery-img", src: safeImageSrc(it.src), alt: it.alt || "", loading: "lazy" }));
+      });
+      return grid;
+    },
+    embed: function (p) {
+      var src = toEmbedSrc(p.url);
+      if (!src) return null;
+      var wrap = el("div", { class: "pb-embed" }, [
+        el("div", { class: "pb-embed-frame" }, [
+          el("iframe", { src: src, loading: "lazy", allowfullscreen: "", frameborder: "0", referrerpolicy: "strict-origin-when-cross-origin", allow: "accelerometer; clipboard-write; encrypted-media; gyroscope; picture-in-picture" })
+        ])
+      ]);
+      if (p.caption) wrap.appendChild(el("p", { class: "pb-embed-cap" }, p.caption));
+      return wrap;
+    },
+    quote: function (p) {
+      if (!p.text) return null;
+      var q = el("blockquote", { class: "pb-quote" }, [el("p", {}, p.text)]);
+      if (p.cite) q.appendChild(el("cite", {}, p.cite));
+      return q;
+    },
+    divider: function (p) {
+      return el("div", { class: "pb-divider pb-divider--" + (p.style === "dots" ? "dots" : "line"), "aria-hidden": "true" }, p.style === "dots" ? "• • •" : null);
+    },
+    cta: function (p) {
+      var kids = [el("h2", { class: "pb-cta-h" }, p.heading || "")];
+      if (p.sub) kids.push(el("p", { class: "pb-cta-sub" }, p.sub));
+      var href = safeUrl(p.href);
+      if (p.label && href) {
+        var cls = "btn " + (p.style === "ghost" ? "btn--ghost" : (p.style === "ember" ? "btn--ember" : "btn--primary"));
+        kids.push(el("a", { class: cls, href: href }, p.label));
+      }
+      return el("section", { class: "pb-cta" }, kids);
     }
   };
 

@@ -1244,6 +1244,41 @@
   .pb-card { padding: 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
   .pb-card-icon { font-size: 1.6rem; margin-bottom: 6px; }
   .pb-button { margin: 12px 0; }
+  /* New block types (Phase 4) */
+  .pb-columns { display: grid; gap: 18px; margin: 14px 0; }
+  .pb-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pb-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pb-cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .pb-col-h { font-family: var(--display); font-size: 1.1rem; margin: 0 0 6px; }
+  .pb-column p { color: var(--ink-soft); margin: 0; }
+  .pb-gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 14px 0; }
+  .pb-gallery-img { width: 100%; height: 140px; object-fit: cover; border-radius: var(--radius-sm); border: 1px solid var(--line); }
+  .pb-embed { margin: 16px 0; }
+  .pb-embed-frame { position: relative; width: 100%; padding-top: 56.25%; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--line); background: #000; }
+  .pb-embed-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .pb-embed-cap { color: var(--muted); font-size: .82rem; margin: 6px 0 0; text-align: center; }
+  .pb-quote { border-left: 3px solid var(--accent); margin: 16px 0; padding: 6px 0 6px 16px; }
+  .pb-quote p { font-family: var(--display); font-size: 1.2rem; color: var(--ink); margin: 0 0 6px; }
+  .pb-quote cite { color: var(--muted); font-size: .85rem; font-style: normal; }
+  .pb-divider { margin: 22px 0; }
+  .pb-divider--line { border-top: 1px solid var(--line); }
+  .pb-divider--dots { text-align: center; letter-spacing: .5em; color: var(--muted); }
+  .pb-cta { text-align: center; padding: 28px 18px; margin: 16px 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: linear-gradient(180deg, var(--surface), var(--surface-2)); }
+  .pb-cta-h { font-family: var(--display); font-size: clamp(1.4rem, 3vw, 2rem); margin: 0 0 8px; }
+  .pb-cta-sub { color: var(--ink-soft); margin: 0 0 16px; }
+  .builder-col-edit { display: flex; flex-direction: column; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+  .media-thumb--sm { width: 44px; height: 44px; object-fit: cover; border-radius: 6px; flex: none; }
+
+  /* Menu builder (Phase 2) */
+  .menu-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); }
+  .menu-row-fields { display: flex; gap: 8px; flex: 1 1 260px; min-width: 0; flex-wrap: wrap; }
+  .menu-row-fields > * { flex: 1 1 120px; min-width: 0; }
+
+  /* Check-in config (Phase 3) */
+  .checkin-cfg-row { padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-2); margin-bottom: 10px; }
+  .checkin-cfg-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+  .checkin-cfg-flags { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; }
+  .setting-row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
 
   /* ===================== Check-ins, journal & wellbeing ===================== */
   .checkin-card .checkin-dim { margin: 14px 0; }

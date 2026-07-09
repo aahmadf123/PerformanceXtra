@@ -15,7 +15,7 @@
 <body>
 
 <div id="storage-warning" class="warning-banner" hidden>
-  Browser storage is unavailable, so student progress can’t be saved on this device. Changes will be lost when you close the tab.
+  <span data-slot="banner.storage">Browser storage is unavailable, so student progress can’t be saved on this device. Changes will be lost when you close the tab.</span>
 </div>
 
 <header class="app-header">
@@ -48,12 +48,12 @@
 </header>
 
 <div class="preview-banner" id="preview-banner" hidden>
-  <span>👀 Coach preview: you’re seeing the student view.</span>
+  <span data-slot="banner.preview">👀 Coach preview: you’re seeing the student view.</span>
   <button class="btn btn--sm" id="back-to-admin-btn">← Back to admin view</button>
 </div>
 
 <div class="nudge-banner admin-only local-only" id="default-pass-banner" hidden>
-  <span>⚠️ You’re still using the default admin passcode. Anyone who knows it can open your coaching tools.</span>
+  <span data-slot="banner.default_pass">⚠️ You’re still using the default admin passcode. Anyone who knows it can open your coaching tools.</span>
   <button class="btn btn--sm" id="goto-passcode-btn">Change passcode</button>
 </div>
 

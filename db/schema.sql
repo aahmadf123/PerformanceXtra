@@ -162,9 +162,13 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 -- by a super admin and applied site-wide; the GET endpoints are public so the
 -- signed-out login page themes too.
 
--- Theme tokens + brand/site config. value is a JSON blob keyed by `key` ('theme','site').
--- Theme keys map 1:1 to the CSS custom properties in styles.css :root, so applying a
--- saved theme is a pure CSS-variable override at runtime (no rebuild).
+-- Site configuration. value is a JSON blob keyed by `key`:
+--   'theme'   -> design tokens (map 1:1 to CSS custom properties in styles.css :root)
+--   'site'    -> brand config incl. logoUrl/faviconUrl
+--   'menus'   -> explicit navigation menu ({items:[...]}, migration-free)
+--   'checkin' -> athlete check-in dimensions/scales ({dimensions:[...]}, migration-free)
+-- Applying theme/menus/checkin is a pure runtime override (no rebuild). All are super-admin
+-- edited and read publicly via GET /api/site so the signed-out page themes/renders too.
 CREATE TABLE IF NOT EXISTS site_settings (
   key        TEXT PRIMARY KEY,
   value      TEXT NOT NULL,                 -- JSON blob
@@ -203,6 +207,15 @@ CREATE TABLE IF NOT EXISTS page_revisions (
 );
 CREATE INDEX IF NOT EXISTS idx_page_revisions_page ON page_revisions(page_id, id);
 
+-- Reusable page sections (migration 0023): a super admin saves a named group of builder
+-- blocks and inserts it into any page. blocks is the same sanitized JSON shape as pages.blocks.
+CREATE TABLE IF NOT EXISTS page_sections (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  blocks     TEXT NOT NULL DEFAULT '[]',
+  updated_at INTEGER NOT NULL
+);
+
 -- Editable site copy overrides (migration 0017). Each previously hardcoded piece of
 -- user-facing text has a stable slot key; the original copy stays in the client as the
 -- default, so this table stores only overrides (empty table = original site).
@@ -223,20 +236,26 @@ CREATE TABLE IF NOT EXISTS media (
   size       INTEGER NOT NULL,   -- bytes as stored
   alt        TEXT,               -- default alt text
   created_at INTEGER NOT NULL,
-  created_by TEXT                -- uploader's user id
+  created_by TEXT,               -- uploader's user id
+  folder     TEXT                -- optional folder label for grouping/filtering (migration 0022)
 );
 
 -- Mental-performance check-ins + journaling (migration 0008). Athletes self-report a
 -- daily mood/energy/stress (each 1-5) + optional note (one row per athlete per local
 -- day), and free-form journal entries; their coach reads both read-only.
+-- The check-in dimensions/scales are super-admin configurable (site_settings key 'checkin').
+-- `scores` (migration 0021) is a JSON object keyed by dimension key, e.g.
+-- {"mood":4,"energy":3,"stress":2}. The mood/energy/stress columns are kept and dual-written
+-- for the three built-in dimensions so a rollback to a pre-0021 Worker still shows data.
 CREATE TABLE IF NOT EXISTS checkins (
   athlete_id TEXT NOT NULL REFERENCES users(id),
   day        TEXT NOT NULL,                 -- 'YYYY-MM-DD' in the athlete's local time
-  mood       INTEGER,                       -- 1..5 (nullable)
-  energy     INTEGER,                       -- 1..5
-  stress     INTEGER,                       -- 1..5 (higher = more stress)
+  mood       INTEGER,                       -- 1..5 (nullable) — legacy mirror of scores.mood
+  energy     INTEGER,                       -- 1..5           — legacy mirror of scores.energy
+  stress     INTEGER,                       -- 1..5           — legacy mirror of scores.stress
   note       TEXT,
   updated_at INTEGER NOT NULL,
+  scores     TEXT,                          -- JSON {dimKey: value, ...} (migration 0021)
   PRIMARY KEY (athlete_id, day)
 );
 CREATE INDEX IF NOT EXISTS idx_checkins_athlete ON checkins(athlete_id);

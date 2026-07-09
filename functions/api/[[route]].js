@@ -347,15 +347,34 @@ async function assembleAthlete(env, row, opts) {
 
   // Mental-performance check-ins + journal (migration 0008). Tolerate a DB where the
   // tables don't exist yet by degrading to empty lists.
+  // Read the flexible `scores` JSON (migration 0021), coalescing to the legacy columns for
+  // rows written before it. Each row carries both `scores` and the three legacy fields.
+  function checkinRowShape(r) {
+    let scores = null;
+    try { if (r.scores) scores = JSON.parse(r.scores); } catch (e) {}
+    if (!scores || typeof scores !== "object") {
+      scores = {};
+      if (r.mood != null) scores.mood = r.mood;
+      if (r.energy != null) scores.energy = r.energy;
+      if (r.stress != null) scores.stress = r.stress;
+    }
+    return { day: r.day, mood: r.mood, energy: r.energy, stress: r.stress, scores: scores, note: r.note || "", updatedAt: epochToIso(r.updated_at || nowSec()) };
+  }
   let checkins = [];
   try {
     const ci = await env.DB.prepare(
-      "SELECT day, mood, energy, stress, note, updated_at FROM checkins WHERE athlete_id = ? ORDER BY day DESC LIMIT 60"
+      "SELECT day, mood, energy, stress, note, updated_at, scores FROM checkins WHERE athlete_id = ? ORDER BY day DESC LIMIT 60"
     ).bind(row.id).all();
-    checkins = (ci.results || []).map(function (r) {
-      return { day: r.day, mood: r.mood, energy: r.energy, stress: r.stress, note: r.note || "", updatedAt: epochToIso(r.updated_at || nowSec()) };
-    });
-  } catch (e) { checkins = []; }
+    checkins = (ci.results || []).map(checkinRowShape);
+  } catch (e) {
+    // DB without the scores column (pre-0021) — fall back to the legacy columns only.
+    try {
+      const ci = await env.DB.prepare(
+        "SELECT day, mood, energy, stress, note, updated_at FROM checkins WHERE athlete_id = ? ORDER BY day DESC LIMIT 60"
+      ).bind(row.id).all();
+      checkins = (ci.results || []).map(checkinRowShape);
+    } catch (e2) { checkins = []; }
+  }
   let journal = [];
   try {
     const jr = await env.DB.prepare(
@@ -603,6 +622,12 @@ async function route(method, path, request, env, url, secure) {
     if (method === "POST" && seg.length === 3 && seg[2] === "duplicate") return handleDuplicatePage(env, seg[1]);
     if (method === "POST" && seg.length === 2) return handleSavePage(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeletePage(env, seg[1]);
+  }
+  if (head === "sections") {
+    if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
+    if (method === "GET" && seg.length === 1) return handleListSections(env);
+    if (method === "POST" && seg.length === 1) return handleSaveSection(request, env);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteSection(env, seg[1]);
   }
 
   /* -------- admin & super admin: manage coach accounts -------- */
@@ -1520,26 +1545,50 @@ async function handleReflections(session, request, env) {
 
 // Mental-performance check-ins + journal (Phase 3). Athletes write their own; their
 // coach reads them via assembleAthlete in the bootstrap.
-function clampScore(v) {
+function clampScore(v, min, max) {
   if (v == null || v === "") return null;
   const n = Math.round(Number(v));
   if (!isFinite(n)) return null;
-  return n < 1 ? 1 : (n > 5 ? 5 : n);
+  const lo = (min == null) ? 1 : min, hi = (max == null) ? 5 : max;
+  return n < lo ? lo : (n > hi ? hi : n);
 }
 async function handleSaveCheckin(session, request, env) {
   if (session.role !== "athlete") return err(403, "Only athletes can check in");
   const b = await readBody(request);
   let day = String(b.day || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) day = new Date(nowSec() * 1000).toISOString().slice(0, 10);
-  const mood = clampScore(b.mood), energy = clampScore(b.energy), stress = clampScore(b.stress);
+  const cfg = await loadCheckinConfig(env);
+  // Accept the new { scores: {...} } shape and the legacy flat { mood, energy, stress }.
+  const raw = (b.scores && typeof b.scores === "object") ? b.scores : b;
+  const scores = {};
+  cfg.dimensions.forEach(function (d) {
+    if (d.active === false) return;
+    const val = clampScore(raw[d.key], d.min, d.max);
+    if (val != null) scores[d.key] = val;
+  });
   const note = String(b.note || "").trim().slice(0, 2000);
+  // Mirror the three canonical dimensions into the legacy columns so an emergency revert
+  // to a pre-0021 Worker still shows recent check-ins (same idea as pages.published).
+  const mood = scores.mood != null ? scores.mood : null;
+  const energy = scores.energy != null ? scores.energy : null;
+  const stress = scores.stress != null ? scores.stress : null;
+  const scoresJson = JSON.stringify(scores);
   try {
     await env.DB.prepare(
-      "INSERT INTO checkins (athlete_id,day,mood,energy,stress,note,updated_at) VALUES (?,?,?,?,?,?,?) " +
-      "ON CONFLICT(athlete_id,day) DO UPDATE SET mood=excluded.mood, energy=excluded.energy, stress=excluded.stress, note=excluded.note, updated_at=excluded.updated_at"
-    ).bind(session.uid, day, mood, energy, stress, note, nowSec()).run();
+      "INSERT INTO checkins (athlete_id,day,mood,energy,stress,note,updated_at,scores) VALUES (?,?,?,?,?,?,?,?) " +
+      "ON CONFLICT(athlete_id,day) DO UPDATE SET mood=excluded.mood, energy=excluded.energy, stress=excluded.stress, note=excluded.note, updated_at=excluded.updated_at, scores=excluded.scores"
+    ).bind(session.uid, day, mood, energy, stress, note, nowSec(), scoresJson).run();
   } catch (e) {
-    return err(500, "Couldn't save your check-in (is the checkins table migrated?)");
+    // Self-heal for a DB that predates migration 0021 (no scores column): custom dimensions
+    // can't persist until it's applied, but the three built-ins still save.
+    try {
+      await env.DB.prepare(
+        "INSERT INTO checkins (athlete_id,day,mood,energy,stress,note,updated_at) VALUES (?,?,?,?,?,?,?) " +
+        "ON CONFLICT(athlete_id,day) DO UPDATE SET mood=excluded.mood, energy=excluded.energy, stress=excluded.stress, note=excluded.note, updated_at=excluded.updated_at"
+      ).bind(session.uid, day, mood, energy, stress, note, nowSec()).run();
+    } catch (e2) {
+      return err(500, "Couldn't save your check-in (is the checkins table migrated?)");
+    }
   }
   return json({ ok: true, day: day });
 }
@@ -1831,7 +1880,20 @@ const THEME_KEYS = Object.keys(DEFAULT_THEME);
 // brandName/brandTag: reserved copy overrides. logoUrl/faviconUrl: media-library image
 // paths (or https URLs), sanitized with cleanImageSrc below so a save can't inject markup.
 const SITE_KEYS = ["brandName", "brandTag", "logoUrl", "faviconUrl"];
-const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer", "richtext"];
+const BLOCK_TYPES = ["hero", "heading", "text", "image", "cards", "button", "spacer", "richtext", "columns", "gallery", "embed", "quote", "divider", "cta"];
+// Hosts allowed in an "embed" block iframe. Kept tight — only well-known players.
+const EMBED_HOSTS = ["youtube.com", "www.youtube.com", "youtu.be", "youtube-nocookie.com", "www.youtube-nocookie.com", "player.vimeo.com", "vimeo.com", "www.loom.com", "loom.com"];
+
+// Default athlete check-in configuration (migration 0021). Dimensions and their 1..N scales
+// are super-admin editable via site_settings key 'checkin'; this is the built-in fallback,
+// mirrored client-side by DEFAULT_CHECKIN_C. `invert` = "higher is worse" (e.g. stress).
+const DEFAULT_CHECKIN = {
+  dimensions: [
+    { key: "mood", label: "Mood", low: "Tough", high: "Great", min: 1, max: 5, active: true, invert: false },
+    { key: "energy", label: "Energy", low: "Drained", high: "Energized", min: 1, max: 5, active: true, invert: false },
+    { key: "stress", label: "Stress", low: "Calm", high: "Stressed", min: 1, max: 5, active: true, invert: true }
+  ]
+};
 
 /* Rich text (Editor.js) sanitization. A richtext page block stores an Editor.js
  * document: { doc: { blocks: [{type, data}, ...] } }. Only these inner block types
@@ -1886,7 +1948,9 @@ function sanitizeRichDoc(raw) {
 }
 
 async function loadSiteSettings(env) {
-  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {} };
+  // menus null = "no explicit menu; derive nav from published pages". checkin always a
+  // valid config (default until customized) so the client's check-in never breaks.
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN) };
   try {
     const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
     (rows.results || []).forEach(function (r) {
@@ -1894,9 +1958,65 @@ async function loadSiteSettings(env) {
       if (!v || typeof v !== "object") return;
       if (r.key === "theme") out.theme = Object.assign({}, DEFAULT_THEME, v);
       else if (r.key === "site") out.site = v;
+      else if (r.key === "menus") { const m = sanitizeMenus(v); if (m.items.length) out.menus = m; }
+      else if (r.key === "checkin") { const c = sanitizeCheckinConfig(v); if (c.dimensions.length) out.checkin = c; }
     });
   } catch (e) { /* table not migrated yet — return defaults */ }
   return out;
+}
+// One super-admin-editable check-in config. Dimensions cap at 8; keys are slug-safe and
+// unique; each scale is min<max within 1..10. Empty/invalid input yields no dimensions
+// (callers fall back to DEFAULT_CHECKIN).
+function sanitizeCheckinConfig(raw) {
+  const src = (raw && Array.isArray(raw.dimensions)) ? raw.dimensions : [];
+  const seen = {};
+  const dims = [];
+  src.slice(0, 8).forEach(function (d, i) {
+    if (!d || typeof d !== "object") return;
+    let key = String(d.key || "").toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20);
+    if (!/^[a-z]/.test(key)) key = "dim" + (i + 1);
+    if (seen[key]) return;
+    seen[key] = true;
+    let min = parseInt(d.min, 10); if (!isFinite(min)) min = 1;
+    let max = parseInt(d.max, 10); if (!isFinite(max)) max = 5;
+    min = Math.max(1, Math.min(9, min));
+    max = Math.max(min + 1, Math.min(10, max));
+    dims.push({
+      key: key,
+      label: cleanText(d.label, 40) || key,
+      low: cleanText(d.low, 24),
+      high: cleanText(d.high, 24),
+      min: min, max: max,
+      active: d.active !== false,
+      invert: !!d.invert
+    });
+  });
+  return { dimensions: dims };
+}
+// Explicit navigation menu (super-admin editable). Items are page references (resolved to
+// published pages at read time) or custom https links. Empty items = auto-derive nav.
+function sanitizeMenus(raw) {
+  const src = (raw && Array.isArray(raw.items)) ? raw.items : [];
+  const items = [];
+  src.slice(0, 30).forEach(function (it) {
+    if (!it || typeof it !== "object") return;
+    const label = cleanText(it.label, 40);
+    if (it.type === "link") {
+      const href = cleanUrl(it.href);
+      if (href) items.push({ type: "link", href: href, label: label || href });
+    } else {
+      const pageId = String(it.pageId || "").trim().toLowerCase();
+      if (/^[a-z0-9-]{1,40}$/.test(pageId)) items.push({ type: "page", pageId: pageId, label: label });
+    }
+  });
+  return { items: items };
+}
+async function loadCheckinConfig(env) {
+  try {
+    const row = await env.DB.prepare("SELECT value FROM site_settings WHERE key='checkin'").first();
+    if (row && row.value) { const c = sanitizeCheckinConfig(JSON.parse(row.value)); if (c.dimensions.length) return c; }
+  } catch (e) {}
+  return sanitizeCheckinConfig(DEFAULT_CHECKIN);
 }
 async function handleGetSite(env) {
   return json(await loadSiteSettings(env));
@@ -1932,6 +2052,18 @@ async function handleSaveSite(request, env) {
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).bind(JSON.stringify(site), nowSec()));
   }
+  if (b.menus != null) {
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('menus',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(sanitizeMenus(b.menus)), nowSec()));
+  }
+  if (b.checkin != null) {
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('checkin',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(sanitizeCheckinConfig(b.checkin)), nowSec()));
+  }
   if (!stmts.length) return err(400, "Nothing to save");
   try { await env.DB.batch(stmts); }
   catch (e) { return err(500, "Couldn't save appearance (is the site_settings table migrated?)"); }
@@ -1965,7 +2097,10 @@ const CONTENT_SLOTS = {
   "messages.heading": 80, "messages.intro": 500,
   "progress.heading": 80, "progress.intro": 500,
   "settings.heading": 80, "settings.intro": 500,
-  "footer.text": 200, "footer.tagline": 120
+  "footer.text": 200, "footer.tagline": 120,
+  "nav.repo": 40, "nav.students": 40, "nav.content": 40, "nav.team": 40, "nav.cms": 40, "nav.settings": 40,
+  "nav.workouts": 40, "nav.checkin": 40, "nav.messages": 40, "nav.progress": 40,
+  "banner.storage": 300, "banner.preview": 200, "banner.default_pass": 300
 };
 
 async function handleGetContent(env) {
@@ -2022,6 +2157,14 @@ function cleanMaxWidth(v) {
   if (!m) return "";
   return String(Number(m[1])) + m[2];
 }
+// An embed URL must be https AND on the tight EMBED_HOSTS allowlist (it becomes an iframe
+// src), so a save can't point the frame at an arbitrary origin.
+function cleanEmbedUrl(v) {
+  const u = cleanUrl(v);
+  if (!u) return "";
+  try { if (EMBED_HOSTS.indexOf(new URL(u).hostname.toLowerCase()) !== -1) return u; } catch (e) {}
+  return "";
+}
 // One sanitized block. Unknown types/props are dropped; links must be absolute https.
 function sanitizeBlock(raw, i) {
   if (!raw || typeof raw !== "object") return null;
@@ -2058,6 +2201,30 @@ function sanitizeBlock(raw, i) {
     props.size = (p.size === "sm" || p.size === "lg") ? p.size : "md";
   } else if (type === "richtext") {
     props.doc = sanitizeRichDoc(p.doc);
+  } else if (type === "columns") {
+    props.cols = (Array.isArray(p.cols) ? p.cols : []).slice(0, 4).map(function (c) {
+      c = c || {};
+      return { heading: cleanText(c.heading, 120), text: cleanText(c.text, 1200) };
+    });
+  } else if (type === "gallery") {
+    props.items = (Array.isArray(p.items) ? p.items : []).slice(0, 12).map(function (it) {
+      it = it || {};
+      return { src: cleanImageSrc(it.src), alt: cleanText(it.alt, 200) };
+    }).filter(function (it) { return it.src; });
+  } else if (type === "embed") {
+    props.url = cleanEmbedUrl(p.url);
+    props.caption = cleanText(p.caption, 200);
+  } else if (type === "quote") {
+    props.text = cleanText(p.text, 800);
+    props.cite = cleanText(p.cite, 120);
+  } else if (type === "divider") {
+    props.style = (p.style === "dots") ? "dots" : "line";
+  } else if (type === "cta") {
+    props.heading = cleanText(p.heading, 160);
+    props.sub = cleanText(p.sub, 400);
+    props.label = cleanText(p.label, 60);
+    props.href = cleanUrl(p.href) || "";
+    props.style = (p.style === "ghost" || p.style === "ember") ? p.style : "primary";
   }
   return { id: id, type: type, props: props };
 }
@@ -2095,14 +2262,35 @@ async function handleGetPage(env, slug) {
     return json(pageMeta(row, true));
   } catch (e) { return err(404, "Page not found"); }
 }
-// Public: published pages that opted into the nav (nav_label set), for building links.
+// Public: the site navigation. An explicit menu (site_settings 'menus') wins — page items
+// are resolved to published pages and dropped if unpublished/deleted; link items pass a
+// custom https URL through. With no explicit menu we derive the nav from every published
+// page that has a nav_label (the original behavior).
 async function handleGetNav(env) {
   try {
+    let menus = null;
+    try {
+      const mrow = await env.DB.prepare("SELECT value FROM site_settings WHERE key='menus'").first();
+      if (mrow && mrow.value) { const m = sanitizeMenus(JSON.parse(mrow.value)); if (m.items.length) menus = m; }
+    } catch (e) { /* no menus table/row — derive below */ }
     const rows = await env.DB.prepare("SELECT * FROM pages").all();
-    const nav = (rows.results || [])
-      .filter(function (r) { return pageStatus(r) === "published" && r.nav_label; })
-      .map(function (r) { return { id: r.id, label: String(r.nav_label), order: r.nav_order == null ? 0 : r.nav_order }; })
-      .sort(function (a, b) { return (a.order - b.order) || a.label.localeCompare(b.label); });
+    const pub = {};
+    (rows.results || []).forEach(function (r) { if (pageStatus(r) === "published") pub[r.id] = r; });
+    let nav;
+    if (menus) {
+      nav = [];
+      menus.items.forEach(function (it, i) {
+        if (it.type === "link") { nav.push({ href: it.href, label: it.label, order: i, external: true }); return; }
+        const p = pub[it.pageId];
+        if (!p) return;   // drop links to pages that aren't published anymore
+        nav.push({ id: p.id, label: it.label || String(p.nav_label || p.title || p.id), order: i });
+      });
+    } else {
+      nav = Object.keys(pub).map(function (id) { return pub[id]; })
+        .filter(function (r) { return r.nav_label; })
+        .map(function (r) { return { id: r.id, label: String(r.nav_label), order: r.nav_order == null ? 0 : r.nav_order }; })
+        .sort(function (a, b) { return (a.order - b.order) || a.label.localeCompare(b.label); });
+    }
     return json({ nav: nav });
   } catch (e) { return json({ nav: [] }); }
 }
@@ -2301,22 +2489,39 @@ async function handleUploadMedia(session, request, env, url) {
   const key = "media/" + id + "." + ext;
   const filename = cleanText(url.searchParams.get("filename") || ("image." + ext), 160) || ("image." + ext);
   const alt = cleanText(url.searchParams.get("alt") || "", 200);
+  const folder = cleanText(url.searchParams.get("folder") || "", 40).trim();
   try {
     await env.MEDIA.put(key, body, { httpMetadata: { contentType: mime } });
   } catch (e) { return err(500, "Couldn't store the image"); }
   try {
     await env.DB.prepare(
-      "INSERT INTO media (id,key,filename,mime,size,alt,created_at,created_by) VALUES (?,?,?,?,?,?,?,?)"
-    ).bind(id, key, filename, mime, body.byteLength, alt, nowSec(), session.uid).run();
+      "INSERT INTO media (id,key,filename,mime,size,alt,created_at,created_by,folder) VALUES (?,?,?,?,?,?,?,?,?)"
+    ).bind(id, key, filename, mime, body.byteLength, alt, nowSec(), session.uid, folder || null).run();
   } catch (e) {
-    try { await env.MEDIA.delete(key); } catch (e2) {}   // don't strand orphan objects
-    return err(500, "Couldn't save the image record (is the media table migrated?)");
+    // Self-heal for a DB predating migration 0022 (no folder column) — store without it.
+    try {
+      await env.DB.prepare(
+        "INSERT INTO media (id,key,filename,mime,size,alt,created_at,created_by) VALUES (?,?,?,?,?,?,?,?)"
+      ).bind(id, key, filename, mime, body.byteLength, alt, nowSec(), session.uid).run();
+    } catch (e2) {
+      try { await env.MEDIA.delete(key); } catch (e3) {}   // don't strand orphan objects
+      return err(500, "Couldn't save the image record (is the media table migrated?)");
+    }
   }
-  return json({ ok: true, id: id, key: key, url: "/" + key, filename: filename, mime: mime, size: body.byteLength, alt: alt });
+  return json({ ok: true, id: id, key: key, url: "/" + key, filename: filename, mime: mime, size: body.byteLength, alt: alt, folder: folder });
 }
 async function handleUpdateMedia(request, env, id) {
   const b = await readBody(request);
   const alt = cleanText(b.alt, 200);
+  const folder = cleanText(b.folder, 40).trim();
+  // Update alt (+ folder when the column exists, migration 0022). Fall back to alt-only.
+  if (b.folder != null) {
+    try {
+      const res = await env.DB.prepare("UPDATE media SET alt = ?, folder = ? WHERE id = ?").bind(alt, folder || null, String(id)).run();
+      if (!res.meta || !res.meta.changes) return err(404, "Image not found");
+      return json({ ok: true, id: id, alt: alt, folder: folder });
+    } catch (e) { /* no folder column — fall through */ }
+  }
   try {
     const res = await env.DB.prepare("UPDATE media SET alt = ? WHERE id = ?").bind(alt, String(id)).run();
     if (!res.meta || !res.meta.changes) return err(404, "Image not found");
@@ -2330,6 +2535,41 @@ async function handleDeleteMedia(env, id) {
   try { if (env.MEDIA) await env.MEDIA.delete(row.key); } catch (e) {}
   try { await env.DB.prepare("DELETE FROM media WHERE id = ?").bind(String(id)).run(); }
   catch (e) { return err(500, "Couldn't delete the image"); }
+  return json({ ok: true, id: id });
+}
+
+/* ----------------------- Reusable page sections (migration 0023) -----------------------
+ * A super admin saves a named group of blocks and inserts it into any page. Blocks use the
+ * same sanitized shape as pages.blocks and are re-sanitized when the page itself is saved. */
+async function handleListSections(env) {
+  try {
+    const rows = await env.DB.prepare("SELECT * FROM page_sections ORDER BY updated_at DESC LIMIT 100").all();
+    const sections = (rows.results || []).map(function (r) {
+      let blocks = []; try { blocks = JSON.parse(r.blocks) || []; } catch (e) {}
+      return { id: r.id, name: r.name, blocks: blocks, updated_at: r.updated_at };
+    });
+    return json({ sections: sections });
+  } catch (e) { return json({ sections: [] }); }
+}
+async function handleSaveSection(request, env) {
+  const b = await readBody(request);
+  const name = cleanText(b.name, 80) || "Untitled section";
+  const blocks = sanitizeBlocks(b.blocks);
+  if (!blocks.length) return err(400, "A section needs at least one block");
+  const id = (b.id && /^[a-zA-Z0-9_-]{1,40}$/.test(String(b.id))) ? String(b.id) : ("sec" + crypto.randomUUID().replace(/-/g, "").slice(0, 16));
+  try {
+    await env.DB.prepare(
+      "INSERT INTO page_sections (id,name,blocks,updated_at) VALUES (?,?,?,?) " +
+      "ON CONFLICT(id) DO UPDATE SET name = excluded.name, blocks = excluded.blocks, updated_at = excluded.updated_at"
+    ).bind(id, name, JSON.stringify(blocks), nowSec()).run();
+  } catch (e) { return err(500, "Couldn't save the section (is the page_sections table migrated?)"); }
+  return json({ ok: true, id: id, name: name, blocks: blocks });
+}
+async function handleDeleteSection(env, id) {
+  try {
+    const res = await env.DB.prepare("DELETE FROM page_sections WHERE id = ?").bind(String(id)).run();
+    if (!res.meta || !res.meta.changes) return err(404, "Section not found");
+  } catch (e) { return err(500, "Couldn't delete the section"); }
   return json({ ok: true, id: id });
 }
 // Public: stream an R2 object for GET/HEAD /media/<key>. Exported for worker.js, which
