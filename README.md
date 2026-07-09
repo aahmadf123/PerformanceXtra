@@ -1,5 +1,7 @@
 # PerformanceXtra — Mental Workout Repository
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/aahmadf123/PerformanceXtra)
+
 A web app that consolidates PerformanceXtra's mental-performance training resources
 into one tagged, searchable repository — with assignment building, per-athlete completion
 tracking, and **super-admin / admin / coach / athlete** roles.
