@@ -596,6 +596,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "GET" && seg.length === 1) return handleListUsers(env, url);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url);
     if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "any");
+    if (method === "PATCH" && seg.length === 2) return handleUpdateUser(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "admin");
   }
   if (head === "site" && method === "POST" && seg.length === 1) {
@@ -1243,6 +1244,49 @@ async function handleDeleteUser(session, env, userId, scope) {
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId)
   ]);
   return json({ ok: true });
+}
+
+// Edit an account's name and/or email (super-admin-only /users route; the Users screen).
+// Works on ANY account — athlete or staff — since typos happen at creation time and were
+// previously unfixable without delete + recreate (losing all the account's data). Only
+// the provided fields change; an email change revokes the account's other sessions so
+// nothing keeps running under the old identity.
+async function handleUpdateUser(session, request, env, userId) {
+  if (userId === GLOBAL_OWNER_ID) return err(404, "Account not found");
+  const row = await env.DB.prepare(
+    "SELECT id,name,email,role,is_admin,is_superadmin,coach_id FROM users WHERE id = ?"
+  ).bind(userId).first();
+  if (!row) return err(404, "Account not found");
+  const b = await readBody(request);
+  const updates = {};
+  if (b.name != null) {
+    const name = String(b.name).trim().slice(0, 120);
+    if (!name) return err(400, "Name can't be empty");
+    updates.name = name;
+  }
+  if (b.email != null) {
+    const email = String(b.email).trim().toLowerCase();
+    if (!email) return err(400, "Email can't be empty");
+    if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+    const dupe = await env.DB.prepare("SELECT id FROM users WHERE lower(email) = ? AND id != ?").bind(email, userId).first();
+    if (dupe) return err(409, "A user with that email already exists");
+    updates.email = email;
+  }
+  const keys = Object.keys(updates);
+  if (!keys.length) return err(400, "Nothing to update");
+  await env.DB.prepare(
+    "UPDATE users SET " + keys.map(function (k) { return k + " = ?"; }).join(", ") + " WHERE id = ?"
+  ).bind(...keys.map(function (k) { return updates[k]; }), userId).run();
+  const emailChanged = updates.email != null && updates.email !== row.email;
+  if (emailChanged) await bumpTokenVersion(env, userId);
+  const out = {
+    id: row.id,
+    name: updates.name || row.name,
+    email: updates.email || row.email,
+    role: effectiveRole(row),
+    coachId: row.coach_id || null
+  };
+  return json({ user: out, emailChanged: emailChanged });
 }
 
 // Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)

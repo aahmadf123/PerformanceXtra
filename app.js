@@ -4235,6 +4235,7 @@
           return;
         }
         closeModal();
+        state.allStudents = null;   // the All-students directory and Users screen re-fetch
         refreshFromServer().then(function () { renderAll(); showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
@@ -4301,6 +4302,7 @@
         if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
       }
       if (state.tab === "manage") renderManage();
+      else if (state.tab === "appearance") renderAppearance();   // the CMS Users screen lists staff too
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
@@ -4799,6 +4801,7 @@
       { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
       { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
       { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
+      { id: "users", label: "Users", minRole: "superadmin", render: renderCmsUsers },
       { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
       { id: "access", label: "Access", minRole: "superadmin", render: renderAccess }
     ];
@@ -5070,6 +5073,132 @@
     ]));
     wrap.appendChild(info);
     return wrap;
+  }
+
+  /* ----------------------------- CMS: users (all accounts) ----------------------------- */
+  // WordPress-style Users screen: every account — students and staff — in one searchable
+  // list. Actions reuse the same flows as the Students and Team tabs (reset code, move,
+  // delete); Edit is new here and fixes name/email typos in place via PATCH /users/:id.
+  function renderCmsUsers() {
+    var wrap = el("div", { class: "cms-design" });
+    var panel = el("div", { class: "panel" });
+    var searchI = el("input", { type: "search", placeholder: "Search by name, email, coach or role…", "aria-label": "Search users" });
+    var countEl = el("span", { class: "cms-count" }, "");
+    var listBox = el("div", { class: "student-list" });
+
+    var headActions = [countEl, el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddAthleteModal(); } }, "+ Add student")];
+    if (!soloMode()) headActions.push(el("button", { class: "btn btn--sm", onclick: function () { openAddStaffModal("coach"); } }, "+ Add coach"));
+    panel.appendChild(el("div", { class: "section-head section-head--stacked" }, [
+      el("div", { class: "section-head-copy" }, [
+        el("h3", {}, "Users"),
+        el("p", { class: "section-head-note" }, "Everyone with an account, in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
+      ]),
+      el("div", { class: "section-head-actions" }, headActions)
+    ]));
+    panel.appendChild(el("div", { class: "field", style: "margin: 4px 0 12px" }, [searchI]));
+    panel.appendChild(listBox);
+    wrap.appendChild(panel);
+
+    function accountRows() {
+      var rows = [];
+      (state.allStudents || []).forEach(function (s) {
+        rows.push({ tier: "student", label: "Student", data: s, meta: s.coachName ? ("Coach: " + s.coachName) : "" });
+      });
+      (state.coaches || []).forEach(function (c) {
+        rows.push({ tier: "coach", label: "Coach", data: c, meta: (c.studentCount || 0) + " student" + (c.studentCount === 1 ? "" : "s") });
+      });
+      (state.admins || []).forEach(function (c) { rows.push({ tier: "admin", label: "Admin", data: c, meta: "" }); });
+      (state.superadmins || []).forEach(function (c) { rows.push({ tier: "superadmin", label: "Super admin", data: c, meta: "" }); });
+      return rows;
+    }
+
+    function paint() {
+      var q = norm(searchI.value).trim();
+      var rows = accountRows();
+      var total = rows.length;
+      if (q) rows = rows.filter(function (r) {
+        return norm(r.data.name).indexOf(q) >= 0 || norm(r.data.email || "").indexOf(q) >= 0
+          || norm(r.meta).indexOf(q) >= 0 || norm(r.label).indexOf(q) >= 0;
+      });
+      countEl.textContent = total ? (rows.length + " of " + total + " account" + (total === 1 ? "" : "s")) : "";
+      listBox.textContent = "";
+      if (state.allStudents == null) { listBox.appendChild(el("p", { class: "no-link" }, "Loading students…")); return; }
+      if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, total ? "No accounts match." : "No accounts yet.")); return; }
+      rows.forEach(function (r) {
+        var u = r.data;
+        var nameKids = [
+          el("span", { class: "name" }, u.name),
+          el("span", { class: "chip", title: "Account role" }, r.label)
+        ];
+        if (u.email) nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, u.email));
+        if (r.meta) nameKids.push(el("span", { class: "dupe-coach" }, r.meta));
+        var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+        var actions = el("div", { class: "student-row-actions" });
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Edit name or email", onclick: function () { openEditUserModal(u, r.tier); } }, "✎ Edit"));
+        if (r.tier === "student") {
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetPasscode(u); } }, "↻ Reset sign-in code"));
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Move this student to a different coach", onclick: function () { openReassignStudent(u); } }, "Move…"));
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this student and all their data", onclick: function () { deleteAllStudent(u); } }, "✕ Delete"));
+        } else {
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetStaffPasscode(u, r.tier); } }, "↻ Reset sign-in code"));
+          // Same rules as the Team tab: super admins are never deletable, nor is your own account.
+          if (r.tier !== "superadmin" && u.id !== (state.session && state.session.id)) {
+            actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + r.tier, onclick: function () { deleteStaff(u, r.tier); } }, "✕ Delete"));
+          }
+        }
+        row.appendChild(actions);
+        listBox.appendChild(row);
+      });
+    }
+
+    if (state.allStudents == null) {
+      api("/all-athletes").then(function (res) {
+        state.allStudents = (res.ok && res.data && res.data.athletes) || [];
+        paint();
+      }).catch(function () {
+        listBox.textContent = "";
+        listBox.appendChild(el("p", { class: "no-link" }, "Couldn't load students."));
+      });
+    }
+    searchI.addEventListener("input", paint);
+    paint();
+    return wrap;
+  }
+
+  // Edit an account's name/email in place (super admin only; PATCH /users/:id). An email
+  // change signs the account's other sessions out — the modal says so up front.
+  function openEditUserModal(u, tier) {
+    var nameI = el("input", { type: "text", value: u.name || "" });
+    var emailI = el("input", { type: "email", value: u.email || "", autocomplete: "off" });
+    var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "Changes apply immediately. If you change the email, they'll sign in with the new address (their password or sign-in code stays the same) and any open sessions are signed out."),
+      el("div", { class: "field" }, [el("label", {}, "Name"), nameI]),
+      el("div", { class: "field" }, [el("label", {}, "Email"), emailI]),
+      errBox
+    ]);
+    function submit() {
+      errBox.hidden = true;
+      var nm = nameI.value.trim(), em = emailI.value.trim();
+      if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
+      var payload = {};
+      if (nm !== (u.name || "")) payload.name = nm;
+      if (em.toLowerCase() !== (u.email || "").toLowerCase()) payload.email = em;
+      if (!Object.keys(payload).length) { closeModal(); return; }
+      api("/users/" + encodeURIComponent(u.id), { method: "PATCH", body: payload }).then(function (res) {
+        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't save changes."); errBox.hidden = false; return; }
+        closeModal();
+        toast("Saved " + (res.data && res.data.user ? res.data.user.name : nm));
+        state.allStudents = null;
+        refreshFromServer().then(function () { renderAll(); });
+        refreshStaff();
+      }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
+    }
+    openModal("Edit " + (tier === "student" ? "student" : tier), body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save changes", accent: true, onClick: submit }
+    ]);
+    setTimeout(function () { nameI.focus(); }, 30);
   }
 
   /* ----------------------------- CMS: access (multi-author roles) ----------------------------- */
