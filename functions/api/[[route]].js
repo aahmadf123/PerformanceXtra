@@ -596,6 +596,7 @@ async function route(method, path, request, env, url, secure) {
     if (method === "GET" && seg.length === 1) return handleListUsers(env, url);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url);
     if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "any");
+    if (method === "PATCH" && seg.length === 2) return handleUpdateUser(session, request, env, seg[1]);
     if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "admin");
   }
   if (head === "site" && method === "POST" && seg.length === 1) {
@@ -644,6 +645,7 @@ async function route(method, path, request, env, url, secure) {
     const sub = seg[1] || "";
     if (sub === "custom-activities") {
       if (method === "GET" && seg.length === 2) return json({ customActivities: await loadCustom(env, GLOBAL_OWNER_ID) });
+      if (method === "POST" && seg.length === 3 && seg[2] === "bulk") return handleBulkSaveCustom(session, request, env, GLOBAL_OWNER_ID);
       if (method === "POST" && seg.length === 2) return handleSaveCustom(session, request, env, GLOBAL_OWNER_ID);
       if (method === "DELETE" && seg.length === 3) return handleDeleteCustom(session, env, seg[2], GLOBAL_OWNER_ID);
     }
@@ -671,6 +673,7 @@ async function route(method, path, request, env, url, secure) {
   }
   if (head === "custom-activities") {
     if (method === "GET" && seg.length === 1) return handleListCustom(session, env);
+    if (method === "POST" && seg.length === 2 && seg[1] === "bulk") return handleBulkSaveCustom(session, request, env);
     if (method === "POST" && seg.length === 1) return handleSaveCustom(session, request, env);
     if (method === "DELETE" && seg.length === 2) return handleDeleteCustom(session, env, seg[1]);
   }
@@ -1043,7 +1046,12 @@ async function handleCreateAthlete(session, request, env, url) {
 }
 
 async function handleResetPasscode(session, env, athleteId, url) {
-  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  // Same ownership rule as every other athlete write: a coach manages their own
+  // roster, an admin/super admin manages anyone (previously this hard-coded
+  // coach_id = session.uid and 404'd admins on other coaches' athletes).
+  const owns = await canManageAthlete(session, athleteId, env);
+  if (!owns) return err(404, "Athlete not found");
+  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
   if (!row) return err(404, "Athlete not found");
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
@@ -1089,10 +1097,12 @@ async function handleReassignAthlete(session, request, env, athleteId) {
   const raw = b.coachId;
   const targetId = (raw == null || String(raw).trim() === "") ? null : String(raw).trim();
   if (!targetId) return err(400, "Pick a coach — every student needs one so they always appear in a roster");
-  // Only a pure coach is a valid target (mirrors listCoaches) — never an admin/super admin
+  // Any staff account is a valid target — a pure coach, an admin, or a super admin
+  // (an admin+ who takes an athlete simply coaches them directly; this is how a solo
+  // super admin consolidates every student under themselves). Never the athlete tier
   // or the global-library sentinel.
   const coach = await env.DB.prepare(
-    "SELECT id,name FROM users WHERE id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ?"
+    "SELECT id,name FROM users WHERE id = ? AND role='coach' AND id != ?"
   ).bind(targetId, GLOBAL_OWNER_ID).first();
   if (!coach) return err(404, "Coach not found");
   if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
@@ -1236,6 +1246,49 @@ async function handleDeleteUser(session, env, userId, scope) {
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId)
   ]);
   return json({ ok: true });
+}
+
+// Edit an account's name and/or email (super-admin-only /users route; the Users screen).
+// Works on ANY account — athlete or staff — since typos happen at creation time and were
+// previously unfixable without delete + recreate (losing all the account's data). Only
+// the provided fields change; an email change revokes the account's other sessions so
+// nothing keeps running under the old identity.
+async function handleUpdateUser(session, request, env, userId) {
+  if (userId === GLOBAL_OWNER_ID) return err(404, "Account not found");
+  const row = await env.DB.prepare(
+    "SELECT id,name,email,role,is_admin,is_superadmin,coach_id FROM users WHERE id = ?"
+  ).bind(userId).first();
+  if (!row) return err(404, "Account not found");
+  const b = await readBody(request);
+  const updates = {};
+  if (b.name != null) {
+    const name = String(b.name).trim().slice(0, 120);
+    if (!name) return err(400, "Name can't be empty");
+    updates.name = name;
+  }
+  if (b.email != null) {
+    const email = String(b.email).trim().toLowerCase();
+    if (!email) return err(400, "Email can't be empty");
+    if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+    const dupe = await env.DB.prepare("SELECT id FROM users WHERE lower(email) = ? AND id != ?").bind(email, userId).first();
+    if (dupe) return err(409, "A user with that email already exists");
+    updates.email = email;
+  }
+  const keys = Object.keys(updates);
+  if (!keys.length) return err(400, "Nothing to update");
+  await env.DB.prepare(
+    "UPDATE users SET " + keys.map(function (k) { return k + " = ?"; }).join(", ") + " WHERE id = ?"
+  ).bind(...keys.map(function (k) { return updates[k]; }), userId).run();
+  const emailChanged = updates.email != null && updates.email !== row.email;
+  if (emailChanged) await bumpTokenVersion(env, userId);
+  const out = {
+    id: row.id,
+    name: updates.name || row.name,
+    email: updates.email || row.email,
+    role: effectiveRole(row),
+    coachId: row.coach_id || null
+  };
+  return json({ user: out, emailChanged: emailChanged });
 }
 
 // Set/clear a student-level custom link for one activity. Scoped to (athlete, activity)
@@ -1705,6 +1758,55 @@ async function handleSaveCustom(session, request, env, targetCoachId) {
   }
   return json({ id: id });
 }
+// Bulk-create custom activities (the CSV import). The CSV itself is parsed client-side;
+// rows arrive here as JSON in the same payload shape handleSaveCustom stores, so no
+// multipart handling is needed. Same owner rule as handleSaveCustom: private by default,
+// GLOBAL_OWNER_ID via the /global route publishes to the shared library.
+// Body { activities: [...], skipDuplicates?: true } → { ok, created, skipped, errors }.
+async function handleBulkSaveCustom(session, request, env, targetCoachId) {
+  const owner = targetCoachId || session.uid;
+  const b = await readBody(request);
+  const rows = Array.isArray(b.activities) ? b.activities : [];
+  if (!rows.length) return err(400, "No activities to import");
+  if (rows.length > 500) return err(400, "Too many rows for one import (max 500) — split the file and import in parts");
+  const skipDuplicates = b.skipDuplicates !== false;
+
+  // Names this owner already has (custom layer only — collisions with the 190 base
+  // activities are surfaced client-side in the preview, where that list already lives).
+  const existing = await env.DB.prepare("SELECT payload FROM custom_activities WHERE coach_id = ?").bind(owner).all();
+  const names = {};
+  (existing.results || []).forEach(function (r) {
+    try {
+      const p = JSON.parse(r.payload);
+      if (p && p.name) names[String(p.name).trim().toLowerCase()] = true;
+    } catch (e) {}
+  });
+
+  const stmts = [];
+  const errors = [];
+  let created = 0, skipped = 0;
+  const ts = nowSec();
+  rows.forEach(function (raw, i) {
+    const store = (raw && typeof raw === "object") ? Object.assign({}, raw) : {};
+    delete store.id;      // import always mints fresh ids — never overwrites by id
+    delete store.scope;   // transient provenance tag, never stored (same as handleSaveCustom)
+    const name = String(store.name || "").trim();
+    if (!name) { errors.push({ row: i + 1, error: "Missing name" }); return; }
+    store.name = name;
+    const key = name.toLowerCase();
+    if (names[key] && skipDuplicates) { skipped++; return; }
+    const blob = JSON.stringify(store);
+    if (blob.length > 32000) { errors.push({ row: i + 1, error: "Too large to save — shorten its text" }); return; }
+    names[key] = true;    // also dedupes repeats within the same file
+    stmts.push(env.DB.prepare("INSERT INTO custom_activities (id,coach_id,payload,created_at) VALUES (?,?,?,?)").bind(custId(), owner, blob, ts));
+    created++;
+  });
+  // Chunked batch writes, same pattern as handleImport.
+  for (let i = 0; i < stmts.length; i += 40) {
+    await env.DB.batch(stmts.slice(i, i + 40));
+  }
+  return json({ ok: true, created: created, skipped: skipped, errors: errors });
+}
 async function handleDeleteCustom(session, env, id, targetCoachId) {
   const owner = targetCoachId || session.uid;
   await env.DB.batch([
@@ -1950,7 +2052,7 @@ function sanitizeRichDoc(raw) {
 async function loadSiteSettings(env) {
   // menus null = "no explicit menu; derive nav from published pages". checkin always a
   // valid config (default until customized) so the client's check-in never breaks.
-  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS) };
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS), mode: Object.assign({}, DEFAULT_MODE) };
   try {
     const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
     (rows.results || []).forEach(function (r) {
@@ -1961,6 +2063,7 @@ async function loadSiteSettings(env) {
       else if (r.key === "menus") { const m = sanitizeMenus(v); if (m.items.length) out.menus = m; }
       else if (r.key === "checkin") { const c = sanitizeCheckinConfig(v); if (c.dimensions.length) out.checkin = c; }
       else if (r.key === "access") out.access = sanitizeAccess(v);
+      else if (r.key === "mode") out.mode = sanitizeMode(v);
     });
   } catch (e) { /* table not migrated yet — return defaults */ }
   return out;
@@ -2025,6 +2128,15 @@ const DEFAULT_ACCESS = { pages: false, content: false, media: false };
 function sanitizeAccess(raw) {
   const src = (raw && typeof raw === "object") ? raw : {};
   return { pages: !!src.pages, content: !!src.content, media: !!src.media };
+}
+// Workspace mode (site_settings key 'mode'). solo=true means one person (the super
+// admin) runs the whole program: the client hides the Team tab and staff creation.
+// UI-only — no permission gate reads this flag, so flipping it back restores the
+// multi-coach workflow with nothing lost.
+const DEFAULT_MODE = { solo: false };
+function sanitizeMode(raw) {
+  const src = (raw && typeof raw === "object") ? raw : {};
+  return { solo: !!src.solo };
 }
 async function loadAccess(env) {
   try {
@@ -2091,6 +2203,12 @@ async function handleSaveSite(request, env) {
       "INSERT INTO site_settings (key,value,updated_at) VALUES ('access',?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).bind(JSON.stringify(sanitizeAccess(b.access)), nowSec()));
+  }
+  if (b.mode != null) {
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('mode',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(sanitizeMode(b.mode)), nowSec()));
   }
   if (!stmts.length) return err(400, "Nothing to save");
   try { await env.DB.batch(stmts); }

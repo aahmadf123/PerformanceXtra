@@ -1236,13 +1236,11 @@
     // The Repository is the shared activity catalog (coach-only tab). Completion is a
     // per-student, per-assignment fact, so it is NOT shown here — it lives in the
     // student's My Workouts and the admin's per-student Students/Progress views.
-    var foot = el("div", { class: "card-foot" });
     if (a.link) {
+      var foot = el("div", { class: "card-foot" });
       foot.appendChild(el("a", { class: "btn btn--sm btn--primary", href: a.link, target: "_blank", rel: "noopener" }, "Open resource ↗"));
-    } else {
-      foot.appendChild(el("span", { class: "no-link" }, "No link (on-court)"));
+      card.appendChild(foot);
     }
-    card.appendChild(foot);
 
     if (isAdminView()) {
       var admin = el("div", { class: "card-admin" }, [
@@ -1445,16 +1443,17 @@
       var meta = [a.type || "—", a.time || ""].filter(Boolean).join(", ");
       lines.push((idx + 1) + ". " + a.name + " [" + meta + "]");
       lines.push("   Status: " + (completionAt(student, asg.id, id) ? "Completed" : "Pending"));
-      lines.push("   Link: " + (itemLink(asg, id) || "No link (on-court)"));
+      var txtLink = itemLink(asg, id);
+      if (txtLink) lines.push("   Link: " + txtLink);
       if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
       if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
 
       lines.push("");
     });
     var asgRefl = getReflectionEntry(student, asg.id, "__assignment__");
-    if (asgRefl && asgRefl.text) {
-      lines.push("ASSIGNMENT REFLECTION:");
-      lines.push(asgRefl.text.replace(/\n/g, "\n   "));
+    if (asgRefl && asgRefl.text && asgRefl.text.trim()) {
+      lines.push("ASSIGNMENT REFLECTION (from an earlier version):");
+      lines.push(asgRefl.text.trim().replace(/\n/g, "\n   "));
       lines.push("Submitted: " + fmtDateTime(asgRefl.updatedAt));
       lines.push("");
     }
@@ -1546,17 +1545,17 @@
         a.frequency || null,
         a.time || null
       ].filter(Boolean).join("  |  ");
-      var linkText = itemLink(asg, id) || "No external link (coach-led or on-court activity)";
+      var pdfLink = itemLink(asg, id);
       var instructionText = a.instructions || "No additional instructions provided.";
       var existing = getReflectionEntry(student, asg.id, id);
-      var submittedLines = (existing && existing.text)
-        ? doc.splitTextToSize("Existing reflection: " + existing.text, headerWidth - 42)
+      var submittedLines = (existing && existing.text && existing.text.trim())
+        ? doc.splitTextToSize("Existing reflection: " + existing.text.trim(), headerWidth - 42)
         : [];
 
       var itemTitleLines = doc.splitTextToSize(itemTitle, headerWidth - 42);
       var metaLines = doc.splitTextToSize(meta, headerWidth - 42);
       var statusLines = doc.splitTextToSize("Status: " + doneText, headerWidth - 42);
-      var linkLines = doc.splitTextToSize("Resource link: " + linkText, headerWidth - 42);
+      var linkLines = pdfLink ? doc.splitTextToSize("Resource link: " + pdfLink, headerWidth - 42) : [];
       var instLabel = ["Instructions:"];
       var instLines = doc.splitTextToSize(instructionText, headerWidth - 42);
       var promptLabel = ["Reflection prompt:"];
@@ -1591,7 +1590,7 @@
       ty += 1;
       ty = textBlock(statusLines, marginX + 12, ty, { font: "bold", size: 8.7, color: done ? [21, 128, 61] : [180, 83, 9] });
       ty += 1;
-      ty = textBlock(linkLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [37, 99, 235] });
+      if (linkLines.length) ty = textBlock(linkLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [37, 99, 235] });
       ty += 4;
       ty = textBlock(instLabel, marginX + 12, ty, { font: "bold", size: 9.3 });
       ty = textBlock(instLines, marginX + 12, ty, { font: "normal", size: 8.8 });
@@ -1611,24 +1610,26 @@
       yRef.value = iy + itemHeight + 8;
     });
 
+    // Legacy whole-set reflection: athletes now answer per activity (each item above has
+    // its own writing box), so this block only appears when old data exists — no more
+    // permanently-empty "Assignment-level reflection" box on every export.
     var asgReflection = getReflectionEntry(student, asg.id, "__assignment__");
-    var asgReflectionText = asgReflection && asgReflection.text
-      ? doc.splitTextToSize("Existing assignment reflection: " + asgReflection.text, headerWidth - 24)
+    var asgReflectionText = (asgReflection && asgReflection.text && asgReflection.text.trim())
+      ? doc.splitTextToSize("From an earlier version: " + asgReflection.text.trim(), headerWidth - 24)
       : [];
-    var assignmentBoxH = 92 + (asgReflectionText.length ? (asgReflectionText.length * lineH + 8) : 0);
-    ensureSpace(assignmentBoxH + 10);
-    var ay = yRef.value;
-    doc.setDrawColor(251, 146, 60);
-    doc.setFillColor(255, 247, 237);
-    doc.roundedRect(marginX, ay, headerWidth, assignmentBoxH, 8, 8, "FD");
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9.8);
-    doc.text("Assignment-level reflection", marginX + 12, ay + 16);
     if (asgReflectionText.length) {
+      var assignmentBoxH = 30 + asgReflectionText.length * lineH + 12;
+      ensureSpace(assignmentBoxH + 10);
+      var ay = yRef.value;
+      doc.setDrawColor(251, 146, 60);
+      doc.setFillColor(255, 247, 237);
+      doc.roundedRect(marginX, ay, headerWidth, assignmentBoxH, 8, 8, "FD");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.8);
+      doc.text("Assignment-level reflection", marginX + 12, ay + 16);
       textBlock(asgReflectionText, marginX + 12, ay + 30, { font: "normal", size: 8.5, color: [124, 45, 18] });
+      yRef.value = ay + assignmentBoxH + 14;
     }
-    drawLinedBox(marginX + 12, ay + assignmentBoxH - 58, headerWidth - 24, 44);
-    yRef.value = ay + assignmentBoxH + 14;
 
     ensureSpace(18);
     doc.setDrawColor(226, 232, 240);
@@ -1801,6 +1802,188 @@
     var csv = rows.map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
     downloadFile("performancextra-roster-" + new Date().toISOString().slice(0, 10) + ".csv", csv, "text/csv");
     toast("Roster exported");
+  }
+
+  /* ----------------------------- CSV import (activity library) -----------------------------
+   * Bulk-add activities from a spreadsheet: parse the CSV here in the browser, preview
+   * what will happen (valid / duplicate / broken rows), then POST the rows as JSON to
+   * /custom-activities/bulk (or the /global variant via cmsRoute, so the Shared/Private
+   * switch decides who sees them). No upload handling, no dependencies. */
+
+  // Minimal spec-correct CSV parser: quoted cells, "" escapes, embedded commas and
+  // newlines, CRLF/CR/LF endings, leading BOM. Returns rows of cells; fully empty
+  // rows (trailing newlines, spacer lines) are dropped.
+  function parseCSV(text) {
+    var rows = [], row = [], cell = "", inQuotes = false;
+    var s = String(text || "");
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (s[i + 1] === '"') { cell += '"'; i++; }
+          else inQuotes = false;
+        } else cell += ch;
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        row.push(cell); cell = "";
+      } else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && s[i + 1] === "\n") i++;
+        row.push(cell); cell = "";
+        rows.push(row); row = [];
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (c) { return String(c).trim() !== ""; }); });
+  }
+
+  // Recognized CSV headers (case-insensitive) → activity fields. Friendly aliases match
+  // how the columns are usually labelled in a spreadsheet.
+  var CSV_HEADER_MAP = {
+    "name": "name", "activity": "name", "activity name": "name", "title": "name",
+    "topic": "topic",
+    "subtopic": "subtopics", "subtopics": "subtopics", "sub-topic": "subtopics", "sub-topics": "subtopics", "sub topics": "subtopics",
+    "type": "type", "content type": "type",
+    "progression": "progression",
+    "week": "week",
+    "month": "month",
+    "frequency": "frequency",
+    "time": "time",
+    "timeminutes": "timeMinutes", "time in minutes": "timeMinutes", "minutes": "timeMinutes",
+    "link": "link", "url": "link",
+    "instructions": "instructions",
+    "reflection": "reflection", "reflection prompt": "reflection"
+  };
+
+  function downloadActivityCsvTemplate() {
+    var headers = ["name", "topic", "subtopics", "type", "progression", "week", "frequency", "time", "timeMinutes", "link", "instructions", "reflection"];
+    var examples = [
+      ["Wheel of Excellence — Commitment", "Mental Toughness", "Commitment, Focus", "Reading", "Week 1", "1", "Once", "10 min", "10", "https://example.com/reading", "Read the chapter, then note the two ideas that apply to your sport.", "Which commitment habit will you practice this week?"],
+      ["Journal: Best Performance", "Self-Awareness", "Reflection", "Journal Prompt", "Advanced", "", "Weekly", "5 min", "5", "", "Think back to your best performance this season.", "What did you do before and during it that you can repeat?"]
+    ];
+    var csv = [headers].concat(examples).map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
+    downloadFile("performancextra-activities-template.csv", csv, "text/csv");
+    toast("Template downloaded — fill it in, then use Import CSV");
+  }
+
+  // Parse a picked CSV file into { activities, errors, unknownHeaders } using the header
+  // map + normalizeActivity (the same coercion the one-at-a-time form uses).
+  function csvToActivities(text) {
+    var rows = parseCSV(text);
+    if (rows.length < 2) return { error: rows.length ? "The file only has a header row — add at least one activity row." : "The file is empty." };
+    var headers = rows[0].map(function (h) { return CSV_HEADER_MAP[String(h || "").trim().toLowerCase()] || null; });
+    if (headers.indexOf("name") === -1) return { error: "No “name” column found. Download the CSV template to see the expected headings." };
+    var unknown = rows[0].filter(function (h, i) { return String(h).trim() && !headers[i]; });
+    var activities = [], errors = [];
+    rows.slice(1).forEach(function (r, idx) {
+      var obj = {};
+      headers.forEach(function (field, i) { if (field && r[i] != null) obj[field] = String(r[i]); });
+      var a = normalizeActivity(obj, null);
+      delete a.id;
+      if (!a.name) { errors.push({ row: idx + 2, error: "Missing name" }); return; }   // +2: 1-based + header row
+      activities.push(a);
+    });
+    return { activities: activities, errors: errors, unknownHeaders: unknown };
+  }
+
+  // The import dialog: pick a file → see what will happen → import. Duplicates (same
+  // name as an existing activity, or repeated within the file) are skipped unless the
+  // user opts in.
+  function openCsvImportModal() {
+    if (cmsGlobal() && !globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
+    var fileI = el("input", { type: "file", accept: ".csv,text/csv" });
+    var preview = el("div", { class: "form-stack" });
+    var dupCheck = el("input", { type: "checkbox" });
+    var dupLabel = el("label", { class: "check" }, [dupCheck, " Also import duplicates as copies"]); dupLabel.hidden = true;
+    var parsed = null;   // { activities, errors, dupes }
+
+    var existingNames = {};
+    cmsActivityRows(true).forEach(function (a) { if (a.name) existingNames[String(a.name).trim().toLowerCase()] = true; });
+
+    function refreshPreview() {
+      preview.textContent = "";
+      dupLabel.hidden = true;
+      if (!parsed) return;
+      if (parsed.error) { preview.appendChild(el("div", { class: "warn" }, parsed.error)); return; }
+      var seen = {};
+      var fresh = [], dupes = [];
+      parsed.activities.forEach(function (a) {
+        var key = a.name.toLowerCase();
+        if (existingNames[key] || seen[key]) dupes.push(a); else fresh.push(a);
+        seen[key] = true;
+      });
+      parsed.fresh = fresh; parsed.dupes = dupes;
+      var bits = [fresh.length + " new activit" + (fresh.length === 1 ? "y" : "ies") + " ready to import"];
+      if (dupes.length) bits.push(dupes.length + " duplicate name" + (dupes.length === 1 ? "" : "s") + " (skipped unless you tick the box)");
+      if (parsed.errors.length) bits.push(parsed.errors.length + " row" + (parsed.errors.length === 1 ? "" : "s") + " with problems");
+      preview.appendChild(el("p", {}, bits.join(" · ") + "."));
+      if (dupes.length) {
+        var dl = el("details", { class: "detail" }, el("summary", {}, "Duplicate names"));
+        dupes.slice(0, 30).forEach(function (a) { dl.appendChild(el("div", { class: "field-hint" }, a.name)); });
+        if (dupes.length > 30) dl.appendChild(el("div", { class: "field-hint" }, "…and " + (dupes.length - 30) + " more"));
+        preview.appendChild(dl);
+        dupLabel.hidden = false;
+      }
+      if (parsed.errors.length) {
+        var elx = el("details", { class: "detail", open: true }, el("summary", {}, "Rows with problems (won't import)"));
+        parsed.errors.slice(0, 30).forEach(function (e2) { elx.appendChild(el("div", { class: "field-hint" }, "Row " + e2.row + ": " + e2.error)); });
+        preview.appendChild(elx);
+      }
+      if (parsed.unknownHeaders && parsed.unknownHeaders.length) {
+        preview.appendChild(el("p", { class: "field-hint" }, "Ignored column" + (parsed.unknownHeaders.length === 1 ? "" : "s") + ": " + parsed.unknownHeaders.join(", ")));
+      }
+      if (fresh.length || dupes.length) {
+        var sample = el("details", { class: "detail" }, el("summary", {}, "Preview first rows"));
+        (fresh.concat(dupes)).slice(0, 5).forEach(function (a) {
+          sample.appendChild(el("div", { class: "field-hint" }, a.name + " — " + [a.topic, a.type, a.progression].filter(Boolean).join(" · ")));
+        });
+        preview.appendChild(sample);
+      }
+    }
+
+    fileI.addEventListener("change", function () {
+      var f = fileI.files && fileI.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { parsed = csvToActivities(String(reader.result || "")); refreshPreview(); };
+      reader.onerror = function () { parsed = { error: "Couldn't read that file." }; refreshPreview(); };
+      reader.readAsText(f);
+    });
+
+    var scopeNote = cmsGlobal()
+      ? "Importing into the Shared library — every coach and athlete will see these."
+      : "Importing into My library — private to you. Use the scope switch above the activity list to publish for everyone instead.";
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, scopeNote + " Need the column headings? "),
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: downloadActivityCsvTemplate }, "⬇ Download CSV template"),
+      el("div", { class: "field" }, [el("label", {}, "CSV file"), fileI]),
+      preview,
+      dupLabel
+    ]);
+
+    function submit() {
+      if (!parsed || parsed.error) { toast("Pick a CSV file first"); return; }
+      var send = dupCheck.checked ? parsed.fresh.concat(parsed.dupes) : parsed.fresh;
+      if (!send.length) { toast("Nothing to import" + (parsed.dupes.length ? " — every row already exists" : "")); return; }
+      if (send.length > 500) { toast("Max 500 rows per import — split the file and import in parts"); return; }
+      api(cmsRoute("/custom-activities/bulk"), { method: "POST", body: { activities: send, skipDuplicates: !dupCheck.checked } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't import")); return; }
+        closeModal();
+        var d = res.data || {};
+        var msg = "Imported " + (d.created || 0) + " activit" + (d.created === 1 ? "y" : "ies");
+        if (d.skipped) msg += " · " + d.skipped + " duplicate" + (d.skipped === 1 ? "" : "s") + " skipped";
+        if (d.errors && d.errors.length) msg += " · " + d.errors.length + " failed";
+        afterCmsWrite(function () { renderAll(); toast(msg); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+    }
+
+    openModal("Import activities from CSV", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Import", accent: true, onClick: submit }
+    ]);
   }
 
   /* ----------------------------- Students ----------------------------- */
@@ -2327,7 +2510,7 @@
         // Coach read-only view of the athlete's per-activity reflection / observation.
         if (canReview) {
           var itemRefl = getReflectionEntry(s, asg.id, id);
-          if (itemRefl && itemRefl.text) {
+          if (itemRefl && itemRefl.text && itemRefl.text.trim()) {
             item.appendChild(el("div", { class: "reflection-read", style: "width:100%; margin-top:6px;" }, [
               el("div", { class: "detail-label" }, "Student reflection"),
               el("div", { class: "detail-text" }, itemRefl.text),
@@ -2341,14 +2524,21 @@
 
       // Legacy assignment-level reflection (the old end-of-set textbox, replaced by the
       // per-activity fields above). Shown read-only to the coach ONLY when an athlete
-      // actually wrote one back then \u2014 no empty "not submitted" noise on new work.
+      // actually wrote one back then \u2014 no empty "not submitted" noise on new work \u2014
+      // and only when the text isn't already covered by a per-activity answer above
+      // (athletes sometimes re-typed the old note into the new boxes).
       var ASSIGN_REFL_KEY = "__assignment__";
       if (canReview) {
         var asgReflAdmin = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
-        if (asgReflAdmin && asgReflAdmin.text) {
+        var legacyText = asgReflAdmin && asgReflAdmin.text ? asgReflAdmin.text.trim() : "";
+        var duplicated = legacyText && asg.items.some(function (id) {
+          var r = getReflectionEntry(s, asg.id, id);
+          return r && r.text && r.text.trim() === legacyText;
+        });
+        if (legacyText && !duplicated) {
           card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
-            el("div", { class: "detail-label" }, "Student reflection (whole set)"),
-            el("div", { class: "detail-text" }, asgReflAdmin.text),
+            el("div", { class: "detail-label" }, "Student reflection (from an earlier version)"),
+            el("div", { class: "detail-text" }, legacyText),
             asgReflAdmin.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(asgReflAdmin.updatedAt)) : null
           ]));
         }
@@ -3277,7 +3467,7 @@
       { id: "repo", label: slot("nav.repo") },
       { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
-    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: slot("nav.team") });
+    if (isAtLeastAdmin() && !soloMode()) tabs.push({ id: "manage", label: slot("nav.team") });
     if (isSuperadmin() || (isAtLeastAdmin() && adminCmsAccess())) tabs.push({ id: "appearance", label: slot("nav.cms") });
     tabs.push({ id: "settings", label: slot("nav.settings") });
     return withNavPages(tabs);
@@ -3318,6 +3508,9 @@
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
     else if (tab === "appearance" && isAtLeastAdmin()) renderAppearance();
+    // Content renders at boot while the shared-library snapshot may still be loading;
+    // re-render on entry so the pane doesn't sit on "Loading…" until the next sync tick.
+    else if (tab === "content" && isAdminView()) renderContent();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
       b.classList.toggle("is-active", on);
@@ -3497,13 +3690,18 @@
   // A coach picker for admins reassigning a student. Every athlete must have a coach —
   // an unassigned athlete vanishes from every roster — so there is no "unassign" option;
   // the placeholder ("") just means "not chosen yet" and the server rejects it.
+  // Admins and super admins are valid targets too (an admin+ who takes a student simply
+  // coaches them directly — in solo mode they're the only possible target).
   // excludeId drops one coach (e.g. the student's current one); selectedId pre-selects.
   function coachSelectNode(selectedId, excludeId) {
     var sel = el("select", {});
     sel.appendChild(option("", "— Pick a coach —"));
-    var coaches = (state.coaches || []).slice().filter(function (c) { return c.id !== excludeId; });
-    coaches.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
-    coaches.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
+    var targets = (state.coaches || []).map(function (c) { return { id: c.id, name: c.name }; })
+      .concat((state.admins || []).map(function (c) { return { id: c.id, name: c.name + " (admin)" }; }))
+      .concat((state.superadmins || []).map(function (c) { return { id: c.id, name: c.name + " (super admin)" }; }))
+      .filter(function (c) { return c.id !== excludeId; });
+    targets.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    targets.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
     sel.value = (selectedId != null ? selectedId : "");
     return sel;
   }
@@ -4222,6 +4420,7 @@
           return;
         }
         closeModal();
+        state.allStudents = null;   // the All-students directory and Users screen re-fetch
         refreshFromServer().then(function () { renderAll(); showCredentialsModal(res.data); });
       }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
     }
@@ -4288,6 +4487,7 @@
         if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
       }
       if (state.tab === "manage") renderManage();
+      else if (state.tab === "appearance") renderAppearance();   // the CMS Users screen lists staff too
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
@@ -4786,11 +4986,16 @@
       { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
       { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
       { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
+      { id: "users", label: "Users", minRole: "superadmin", render: renderCmsUsers },
       { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
       { id: "access", label: "Access", minRole: "superadmin", render: renderAccess }
     ];
   }
   function cmsAccess() { return (state.site && state.site.access) || {}; }
+  // Workspace mode: solo=true hides the multi-coach machinery (Team tab, staff
+  // creation) because one super admin runs the whole program. Purely a UI switch —
+  // no permission changes — so it's always safe to flip back.
+  function soloMode() { return !!(state.site && state.site.mode && state.site.mode.solo); }
   function canEditCms(area) { return isSuperadmin() || !!cmsAccess()[area]; }
   function adminCmsAccess() { var a = cmsAccess(); return !!(a.pages || a.content || a.media); }
   function visibleCmsSections() {
@@ -5017,6 +5222,32 @@
     ]));
     wrap.appendChild(brand);
 
+    // Workspace mode — solo hides the Team tab and staff creation for a program run
+    // entirely by the super admin. UI-only: no permissions change, existing coach and
+    // admin accounts keep working, and unticking restores everything.
+    var modePanel = el("div", { class: "panel" });
+    modePanel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace mode")]));
+    var soloCb = el("input", { type: "checkbox" });
+    soloCb.checked = soloMode();
+    modePanel.appendChild(el("label", { class: "access-row" }, [
+      soloCb,
+      el("div", {}, [
+        el("div", { class: "access-row-title" }, "Solo mode — I run the whole program myself"),
+        el("div", { class: "field-hint" }, "Hides the Team tab and staff creation; you create students and assign all work as the super admin. Nothing is deleted — untick to bring the multi-coach tools back.")
+      ])
+    ]));
+    modePanel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { mode: { solo: soloCb.checked } } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save workspace mode")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          renderTabs(); renderAppearance();
+          toast(soloMode() ? "Solo mode on — Team tab hidden" : "Solo mode off — Team tab restored");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save workspace mode")
+    ]));
+    wrap.appendChild(modePanel);
+
     var info = el("div", { class: "panel" });
     info.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace")]));
     function infoRow(label, value) { return el("div", { class: "setting-row" }, [el("span", { class: "detail-label" }, label), el("span", {}, value)]); }
@@ -5027,6 +5258,132 @@
     ]));
     wrap.appendChild(info);
     return wrap;
+  }
+
+  /* ----------------------------- CMS: users (all accounts) ----------------------------- */
+  // WordPress-style Users screen: every account — students and staff — in one searchable
+  // list. Actions reuse the same flows as the Students and Team tabs (reset code, move,
+  // delete); Edit is new here and fixes name/email typos in place via PATCH /users/:id.
+  function renderCmsUsers() {
+    var wrap = el("div", { class: "cms-design" });
+    var panel = el("div", { class: "panel" });
+    var searchI = el("input", { type: "search", placeholder: "Search by name, email, coach or role…", "aria-label": "Search users" });
+    var countEl = el("span", { class: "cms-count" }, "");
+    var listBox = el("div", { class: "student-list" });
+
+    var headActions = [countEl, el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddAthleteModal(); } }, "+ Add student")];
+    if (!soloMode()) headActions.push(el("button", { class: "btn btn--sm", onclick: function () { openAddStaffModal("coach"); } }, "+ Add coach"));
+    panel.appendChild(el("div", { class: "section-head section-head--stacked" }, [
+      el("div", { class: "section-head-copy" }, [
+        el("h3", {}, "Users"),
+        el("p", { class: "section-head-note" }, "Everyone with an account, in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
+      ]),
+      el("div", { class: "section-head-actions" }, headActions)
+    ]));
+    panel.appendChild(el("div", { class: "field", style: "margin: 4px 0 12px" }, [searchI]));
+    panel.appendChild(listBox);
+    wrap.appendChild(panel);
+
+    function accountRows() {
+      var rows = [];
+      (state.allStudents || []).forEach(function (s) {
+        rows.push({ tier: "student", label: "Student", data: s, meta: s.coachName ? ("Coach: " + s.coachName) : "" });
+      });
+      (state.coaches || []).forEach(function (c) {
+        rows.push({ tier: "coach", label: "Coach", data: c, meta: (c.studentCount || 0) + " student" + (c.studentCount === 1 ? "" : "s") });
+      });
+      (state.admins || []).forEach(function (c) { rows.push({ tier: "admin", label: "Admin", data: c, meta: "" }); });
+      (state.superadmins || []).forEach(function (c) { rows.push({ tier: "superadmin", label: "Super admin", data: c, meta: "" }); });
+      return rows;
+    }
+
+    function paint() {
+      var q = norm(searchI.value).trim();
+      var rows = accountRows();
+      var total = rows.length;
+      if (q) rows = rows.filter(function (r) {
+        return norm(r.data.name).indexOf(q) >= 0 || norm(r.data.email || "").indexOf(q) >= 0
+          || norm(r.meta).indexOf(q) >= 0 || norm(r.label).indexOf(q) >= 0;
+      });
+      countEl.textContent = total ? (rows.length + " of " + total + " account" + (total === 1 ? "" : "s")) : "";
+      listBox.textContent = "";
+      if (state.allStudents == null) { listBox.appendChild(el("p", { class: "no-link" }, "Loading students…")); return; }
+      if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, total ? "No accounts match." : "No accounts yet.")); return; }
+      rows.forEach(function (r) {
+        var u = r.data;
+        var nameKids = [
+          el("span", { class: "name" }, u.name),
+          el("span", { class: "chip", title: "Account role" }, r.label)
+        ];
+        if (u.email) nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, u.email));
+        if (r.meta) nameKids.push(el("span", { class: "dupe-coach" }, r.meta));
+        var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+        var actions = el("div", { class: "student-row-actions" });
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Edit name or email", onclick: function () { openEditUserModal(u, r.tier); } }, "✎ Edit"));
+        if (r.tier === "student") {
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetPasscode(u); } }, "↻ Reset sign-in code"));
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Move this student to a different coach", onclick: function () { openReassignStudent(u); } }, "Move…"));
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this student and all their data", onclick: function () { deleteAllStudent(u); } }, "✕ Delete"));
+        } else {
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetStaffPasscode(u, r.tier); } }, "↻ Reset sign-in code"));
+          // Same rules as the Team tab: super admins are never deletable, nor is your own account.
+          if (r.tier !== "superadmin" && u.id !== (state.session && state.session.id)) {
+            actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + r.tier, onclick: function () { deleteStaff(u, r.tier); } }, "✕ Delete"));
+          }
+        }
+        row.appendChild(actions);
+        listBox.appendChild(row);
+      });
+    }
+
+    if (state.allStudents == null) {
+      api("/all-athletes").then(function (res) {
+        state.allStudents = (res.ok && res.data && res.data.athletes) || [];
+        paint();
+      }).catch(function () {
+        listBox.textContent = "";
+        listBox.appendChild(el("p", { class: "no-link" }, "Couldn't load students."));
+      });
+    }
+    searchI.addEventListener("input", paint);
+    paint();
+    return wrap;
+  }
+
+  // Edit an account's name/email in place (super admin only; PATCH /users/:id). An email
+  // change signs the account's other sessions out — the modal says so up front.
+  function openEditUserModal(u, tier) {
+    var nameI = el("input", { type: "text", value: u.name || "" });
+    var emailI = el("input", { type: "email", value: u.email || "", autocomplete: "off" });
+    var errBox = el("div", { class: "warn" }); errBox.hidden = true;
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, "Changes apply immediately. If you change the email, they'll sign in with the new address (their password or sign-in code stays the same) and any open sessions are signed out."),
+      el("div", { class: "field" }, [el("label", {}, "Name"), nameI]),
+      el("div", { class: "field" }, [el("label", {}, "Email"), emailI]),
+      errBox
+    ]);
+    function submit() {
+      errBox.hidden = true;
+      var nm = nameI.value.trim(), em = emailI.value.trim();
+      if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
+      var payload = {};
+      if (nm !== (u.name || "")) payload.name = nm;
+      if (em.toLowerCase() !== (u.email || "").toLowerCase()) payload.email = em;
+      if (!Object.keys(payload).length) { closeModal(); return; }
+      api("/users/" + encodeURIComponent(u.id), { method: "PATCH", body: payload }).then(function (res) {
+        if (!res.ok) { errBox.textContent = apiError(res, "Couldn't save changes."); errBox.hidden = false; return; }
+        closeModal();
+        toast("Saved " + (res.data && res.data.user ? res.data.user.name : nm));
+        state.allStudents = null;
+        refreshFromServer().then(function () { renderAll(); });
+        refreshStaff();
+      }).catch(function () { errBox.textContent = "Couldn't reach the server."; errBox.hidden = false; });
+    }
+    openModal("Edit " + (tier === "student" ? "student" : tier), body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Save changes", accent: true, onClick: submit }
+    ]);
+    setTimeout(function () { nameI.focus(); }, 30);
   }
 
   /* ----------------------------- CMS: access (multi-author roles) ----------------------------- */
@@ -6611,9 +6968,15 @@
     var wrap = $("#cms-activities");
     wrap.textContent = "";
     var banner = scopeBanner(); if (banner) wrap.appendChild(banner);
+    var libActions = [el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")];
+    // Bulk import from a spreadsheet (super admin, server mode): parse client-side,
+    // preview, then POST to the bulk endpoint in the current Shared/Private scope.
+    if (SERVER && isSuperadmin()) {
+      libActions.push(el("button", { class: "btn btn--sm", title: "Bulk-add activities from a CSV file", onclick: openCsvImportModal }, "⬆ Import CSV"));
+    }
     wrap.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, "Activity library"),
-      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")
+      el("div", { class: "section-head-actions" }, libActions)
     ]));
     var search = el("input", { type: "search", class: "cms-search", placeholder: "Search activities…" });
     search.value = state.cmsSearch || "";
