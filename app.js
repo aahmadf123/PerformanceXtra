@@ -1451,9 +1451,9 @@
       lines.push("");
     });
     var asgRefl = getReflectionEntry(student, asg.id, "__assignment__");
-    if (asgRefl && asgRefl.text) {
-      lines.push("ASSIGNMENT REFLECTION:");
-      lines.push(asgRefl.text.replace(/\n/g, "\n   "));
+    if (asgRefl && asgRefl.text && asgRefl.text.trim()) {
+      lines.push("ASSIGNMENT REFLECTION (from an earlier version):");
+      lines.push(asgRefl.text.trim().replace(/\n/g, "\n   "));
       lines.push("Submitted: " + fmtDateTime(asgRefl.updatedAt));
       lines.push("");
     }
@@ -1548,8 +1548,8 @@
       var pdfLink = itemLink(asg, id);
       var instructionText = a.instructions || "No additional instructions provided.";
       var existing = getReflectionEntry(student, asg.id, id);
-      var submittedLines = (existing && existing.text)
-        ? doc.splitTextToSize("Existing reflection: " + existing.text, headerWidth - 42)
+      var submittedLines = (existing && existing.text && existing.text.trim())
+        ? doc.splitTextToSize("Existing reflection: " + existing.text.trim(), headerWidth - 42)
         : [];
 
       var itemTitleLines = doc.splitTextToSize(itemTitle, headerWidth - 42);
@@ -1610,24 +1610,26 @@
       yRef.value = iy + itemHeight + 8;
     });
 
+    // Legacy whole-set reflection: athletes now answer per activity (each item above has
+    // its own writing box), so this block only appears when old data exists — no more
+    // permanently-empty "Assignment-level reflection" box on every export.
     var asgReflection = getReflectionEntry(student, asg.id, "__assignment__");
-    var asgReflectionText = asgReflection && asgReflection.text
-      ? doc.splitTextToSize("Existing assignment reflection: " + asgReflection.text, headerWidth - 24)
+    var asgReflectionText = (asgReflection && asgReflection.text && asgReflection.text.trim())
+      ? doc.splitTextToSize("From an earlier version: " + asgReflection.text.trim(), headerWidth - 24)
       : [];
-    var assignmentBoxH = 92 + (asgReflectionText.length ? (asgReflectionText.length * lineH + 8) : 0);
-    ensureSpace(assignmentBoxH + 10);
-    var ay = yRef.value;
-    doc.setDrawColor(251, 146, 60);
-    doc.setFillColor(255, 247, 237);
-    doc.roundedRect(marginX, ay, headerWidth, assignmentBoxH, 8, 8, "FD");
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(9.8);
-    doc.text("Assignment-level reflection", marginX + 12, ay + 16);
     if (asgReflectionText.length) {
+      var assignmentBoxH = 30 + asgReflectionText.length * lineH + 12;
+      ensureSpace(assignmentBoxH + 10);
+      var ay = yRef.value;
+      doc.setDrawColor(251, 146, 60);
+      doc.setFillColor(255, 247, 237);
+      doc.roundedRect(marginX, ay, headerWidth, assignmentBoxH, 8, 8, "FD");
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(9.8);
+      doc.text("Assignment-level reflection", marginX + 12, ay + 16);
       textBlock(asgReflectionText, marginX + 12, ay + 30, { font: "normal", size: 8.5, color: [124, 45, 18] });
+      yRef.value = ay + assignmentBoxH + 14;
     }
-    drawLinedBox(marginX + 12, ay + assignmentBoxH - 58, headerWidth - 24, 44);
-    yRef.value = ay + assignmentBoxH + 14;
 
     ensureSpace(18);
     doc.setDrawColor(226, 232, 240);
@@ -2326,7 +2328,7 @@
         // Coach read-only view of the athlete's per-activity reflection / observation.
         if (canReview) {
           var itemRefl = getReflectionEntry(s, asg.id, id);
-          if (itemRefl && itemRefl.text) {
+          if (itemRefl && itemRefl.text && itemRefl.text.trim()) {
             item.appendChild(el("div", { class: "reflection-read", style: "width:100%; margin-top:6px;" }, [
               el("div", { class: "detail-label" }, "Student reflection"),
               el("div", { class: "detail-text" }, itemRefl.text),
@@ -2340,14 +2342,21 @@
 
       // Legacy assignment-level reflection (the old end-of-set textbox, replaced by the
       // per-activity fields above). Shown read-only to the coach ONLY when an athlete
-      // actually wrote one back then \u2014 no empty "not submitted" noise on new work.
+      // actually wrote one back then \u2014 no empty "not submitted" noise on new work \u2014
+      // and only when the text isn't already covered by a per-activity answer above
+      // (athletes sometimes re-typed the old note into the new boxes).
       var ASSIGN_REFL_KEY = "__assignment__";
       if (canReview) {
         var asgReflAdmin = getReflectionEntry(s, asg.id, ASSIGN_REFL_KEY);
-        if (asgReflAdmin && asgReflAdmin.text) {
+        var legacyText = asgReflAdmin && asgReflAdmin.text ? asgReflAdmin.text.trim() : "";
+        var duplicated = legacyText && asg.items.some(function (id) {
+          var r = getReflectionEntry(s, asg.id, id);
+          return r && r.text && r.text.trim() === legacyText;
+        });
+        if (legacyText && !duplicated) {
           card.appendChild(el("div", { class: "reflection-read assignment-reflection" }, [
-            el("div", { class: "detail-label" }, "Student reflection (whole set)"),
-            el("div", { class: "detail-text" }, asgReflAdmin.text),
+            el("div", { class: "detail-label" }, "Student reflection (from an earlier version)"),
+            el("div", { class: "detail-text" }, legacyText),
             asgReflAdmin.updatedAt ? el("div", { class: "assignment-meta", style: "margin-top:6px" }, "Updated " + fmtDateTime(asgReflAdmin.updatedAt)) : null
           ]));
         }
