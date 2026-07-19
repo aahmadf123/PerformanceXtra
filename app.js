@@ -3508,6 +3508,9 @@
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
     else if (tab === "appearance" && isAtLeastAdmin()) renderAppearance();
+    // Content renders at boot while the shared-library snapshot may still be loading;
+    // re-render on entry so the pane doesn't sit on "Loading…" until the next sync tick.
+    else if (tab === "content" && isAdminView()) renderContent();
     $all(".tab").forEach(function (b) {
       var on = b.getAttribute("data-tab") === tab;
       b.classList.toggle("is-active", on);

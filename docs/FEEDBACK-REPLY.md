@@ -1,3 +1,73 @@
+# Round 2 — your new list, in plain English
+
+Everything from your earlier list (further down this document) is confirmed done in the
+app — we re-checked each item in the current code before starting this round. Here's
+what changed for the new list:
+
+### "We can take out coaches login and maybe even the admin"
+
+Done, reversibly. You already had full coach powers as super admin — the app now gets
+out of your way: turn on **Solo mode** (CMS → Settings → Workspace mode) and the Team
+tab and staff creation disappear, leaving Students, the Repository and the CMS. Nothing
+is deleted and no accounts stop working, so if you ever bring on a coach again, untick
+the box and the multi-coach tools come straight back.
+
+Two fixes make the consolidation real: you can now **move any existing student onto
+yourself** (Students → All students → Move — previously the app refused to hand a
+student to an admin), and you can reset any student's sign-in code no matter who
+originally created them. Suggested cleanup once you're ready: move Test Coach 1's
+students (including Lionel Messi) to yourself, then delete the test coach from the
+Team tab — the app will walk you through it.
+
+### "Don't cross out the name of the activities when complete"
+
+Done. Completed activities keep the checkmark, the "Logged" note and the softer color —
+the name just isn't struck through anymore, anywhere.
+
+### "Take out 'on court/no link' on an assigned activity"
+
+Done. Activities without a link now simply show nothing where the link would be — on
+the repository cards and in the TXT/PDF downloads.
+
+### "Bulk load activities via a CSV file"
+
+Done. CMS → Content → Activity library now has **⬆ Import CSV**. Download the CSV
+template (it has the exact column headings plus two example rows), paste your journal
+prompts / readings / etc. into it, and import. You'll see a preview first — how many
+are new, which names already exist (skipped unless you say otherwise), and any broken
+rows with their row numbers. The import respects your Shared/Private switch: in
+"Shared library" mode everything you import is published to everyone.
+
+### "Need an install drive for production server"
+
+The app runs on Cloudflare's platform, so there's no physical server or install drive —
+but we've built the equivalent: a one-command install script plus a step-by-step guide
+(`docs/INSTALL.md`) that takes a blank Cloudflare account to a running production site,
+database and all. If you meant something else by "install drive", tell us what you had
+in mind and we'll build that instead.
+
+### "Two reflection spaces on the Students page, one seems empty"
+
+Found it — two causes, both fixed. Your athlete had reflections written in the **old
+whole-set box** (from before the per-activity fix) on two assignments, so those showed
+as a second, separate block; it's now clearly labelled "from an earlier version",
+appears only when it has text, and is hidden when the same text already shows on an
+activity. And the **PDF download** drew an empty "Assignment-level reflection" box on
+every export — that box now only appears when there's old writing to show.
+
+### "WordPress users and security"
+
+We read this as: *manage people the way WordPress does — one Users screen.* That now
+exists: **CMS → Users** lists every account (students and staff) in one searchable
+place, with the role shown on each row, and you can **edit a name or email in place**
+(previously a typo meant deleting and re-creating the account), hand out a fresh
+sign-in code, move a student, or remove an account. On the security side, the earlier
+answer below still stands — the app isn't built on WordPress and has none of its attack
+surface. If you also wanted something specific (say, connecting an existing WordPress
+site), let us know.
+
+---
+
 # Your feedback — what we found and what changed
 
 Thanks for the detailed list — every item led somewhere useful. Here's each one in
