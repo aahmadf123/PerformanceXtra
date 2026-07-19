@@ -1804,6 +1804,188 @@
     toast("Roster exported");
   }
 
+  /* ----------------------------- CSV import (activity library) -----------------------------
+   * Bulk-add activities from a spreadsheet: parse the CSV here in the browser, preview
+   * what will happen (valid / duplicate / broken rows), then POST the rows as JSON to
+   * /custom-activities/bulk (or the /global variant via cmsRoute, so the Shared/Private
+   * switch decides who sees them). No upload handling, no dependencies. */
+
+  // Minimal spec-correct CSV parser: quoted cells, "" escapes, embedded commas and
+  // newlines, CRLF/CR/LF endings, leading BOM. Returns rows of cells; fully empty
+  // rows (trailing newlines, spacer lines) are dropped.
+  function parseCSV(text) {
+    var rows = [], row = [], cell = "", inQuotes = false;
+    var s = String(text || "");
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    for (var i = 0; i < s.length; i++) {
+      var ch = s[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (s[i + 1] === '"') { cell += '"'; i++; }
+          else inQuotes = false;
+        } else cell += ch;
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ",") {
+        row.push(cell); cell = "";
+      } else if (ch === "\n" || ch === "\r") {
+        if (ch === "\r" && s[i + 1] === "\n") i++;
+        row.push(cell); cell = "";
+        rows.push(row); row = [];
+      } else {
+        cell += ch;
+      }
+    }
+    if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+    return rows.filter(function (r) { return r.some(function (c) { return String(c).trim() !== ""; }); });
+  }
+
+  // Recognized CSV headers (case-insensitive) → activity fields. Friendly aliases match
+  // how the columns are usually labelled in a spreadsheet.
+  var CSV_HEADER_MAP = {
+    "name": "name", "activity": "name", "activity name": "name", "title": "name",
+    "topic": "topic",
+    "subtopic": "subtopics", "subtopics": "subtopics", "sub-topic": "subtopics", "sub-topics": "subtopics", "sub topics": "subtopics",
+    "type": "type", "content type": "type",
+    "progression": "progression",
+    "week": "week",
+    "month": "month",
+    "frequency": "frequency",
+    "time": "time",
+    "timeminutes": "timeMinutes", "time in minutes": "timeMinutes", "minutes": "timeMinutes",
+    "link": "link", "url": "link",
+    "instructions": "instructions",
+    "reflection": "reflection", "reflection prompt": "reflection"
+  };
+
+  function downloadActivityCsvTemplate() {
+    var headers = ["name", "topic", "subtopics", "type", "progression", "week", "frequency", "time", "timeMinutes", "link", "instructions", "reflection"];
+    var examples = [
+      ["Wheel of Excellence — Commitment", "Mental Toughness", "Commitment, Focus", "Reading", "Week 1", "1", "Once", "10 min", "10", "https://example.com/reading", "Read the chapter, then note the two ideas that apply to your sport.", "Which commitment habit will you practice this week?"],
+      ["Journal: Best Performance", "Self-Awareness", "Reflection", "Journal Prompt", "Advanced", "", "Weekly", "5 min", "5", "", "Think back to your best performance this season.", "What did you do before and during it that you can repeat?"]
+    ];
+    var csv = [headers].concat(examples).map(function (r) { return r.map(csvCell).join(","); }).join("\r\n");
+    downloadFile("performancextra-activities-template.csv", csv, "text/csv");
+    toast("Template downloaded — fill it in, then use Import CSV");
+  }
+
+  // Parse a picked CSV file into { activities, errors, unknownHeaders } using the header
+  // map + normalizeActivity (the same coercion the one-at-a-time form uses).
+  function csvToActivities(text) {
+    var rows = parseCSV(text);
+    if (rows.length < 2) return { error: rows.length ? "The file only has a header row — add at least one activity row." : "The file is empty." };
+    var headers = rows[0].map(function (h) { return CSV_HEADER_MAP[String(h || "").trim().toLowerCase()] || null; });
+    if (headers.indexOf("name") === -1) return { error: "No “name” column found. Download the CSV template to see the expected headings." };
+    var unknown = rows[0].filter(function (h, i) { return String(h).trim() && !headers[i]; });
+    var activities = [], errors = [];
+    rows.slice(1).forEach(function (r, idx) {
+      var obj = {};
+      headers.forEach(function (field, i) { if (field && r[i] != null) obj[field] = String(r[i]); });
+      var a = normalizeActivity(obj, null);
+      delete a.id;
+      if (!a.name) { errors.push({ row: idx + 2, error: "Missing name" }); return; }   // +2: 1-based + header row
+      activities.push(a);
+    });
+    return { activities: activities, errors: errors, unknownHeaders: unknown };
+  }
+
+  // The import dialog: pick a file → see what will happen → import. Duplicates (same
+  // name as an existing activity, or repeated within the file) are skipped unless the
+  // user opts in.
+  function openCsvImportModal() {
+    if (cmsGlobal() && !globalSnapshotReady()) { toast("Still loading the shared library — try again in a moment"); return; }
+    var fileI = el("input", { type: "file", accept: ".csv,text/csv" });
+    var preview = el("div", { class: "form-stack" });
+    var dupCheck = el("input", { type: "checkbox" });
+    var dupLabel = el("label", { class: "check" }, [dupCheck, " Also import duplicates as copies"]); dupLabel.hidden = true;
+    var parsed = null;   // { activities, errors, dupes }
+
+    var existingNames = {};
+    cmsActivityRows(true).forEach(function (a) { if (a.name) existingNames[String(a.name).trim().toLowerCase()] = true; });
+
+    function refreshPreview() {
+      preview.textContent = "";
+      dupLabel.hidden = true;
+      if (!parsed) return;
+      if (parsed.error) { preview.appendChild(el("div", { class: "warn" }, parsed.error)); return; }
+      var seen = {};
+      var fresh = [], dupes = [];
+      parsed.activities.forEach(function (a) {
+        var key = a.name.toLowerCase();
+        if (existingNames[key] || seen[key]) dupes.push(a); else fresh.push(a);
+        seen[key] = true;
+      });
+      parsed.fresh = fresh; parsed.dupes = dupes;
+      var bits = [fresh.length + " new activit" + (fresh.length === 1 ? "y" : "ies") + " ready to import"];
+      if (dupes.length) bits.push(dupes.length + " duplicate name" + (dupes.length === 1 ? "" : "s") + " (skipped unless you tick the box)");
+      if (parsed.errors.length) bits.push(parsed.errors.length + " row" + (parsed.errors.length === 1 ? "" : "s") + " with problems");
+      preview.appendChild(el("p", {}, bits.join(" · ") + "."));
+      if (dupes.length) {
+        var dl = el("details", { class: "detail" }, el("summary", {}, "Duplicate names"));
+        dupes.slice(0, 30).forEach(function (a) { dl.appendChild(el("div", { class: "field-hint" }, a.name)); });
+        if (dupes.length > 30) dl.appendChild(el("div", { class: "field-hint" }, "…and " + (dupes.length - 30) + " more"));
+        preview.appendChild(dl);
+        dupLabel.hidden = false;
+      }
+      if (parsed.errors.length) {
+        var elx = el("details", { class: "detail", open: true }, el("summary", {}, "Rows with problems (won't import)"));
+        parsed.errors.slice(0, 30).forEach(function (e2) { elx.appendChild(el("div", { class: "field-hint" }, "Row " + e2.row + ": " + e2.error)); });
+        preview.appendChild(elx);
+      }
+      if (parsed.unknownHeaders && parsed.unknownHeaders.length) {
+        preview.appendChild(el("p", { class: "field-hint" }, "Ignored column" + (parsed.unknownHeaders.length === 1 ? "" : "s") + ": " + parsed.unknownHeaders.join(", ")));
+      }
+      if (fresh.length || dupes.length) {
+        var sample = el("details", { class: "detail" }, el("summary", {}, "Preview first rows"));
+        (fresh.concat(dupes)).slice(0, 5).forEach(function (a) {
+          sample.appendChild(el("div", { class: "field-hint" }, a.name + " — " + [a.topic, a.type, a.progression].filter(Boolean).join(" · ")));
+        });
+        preview.appendChild(sample);
+      }
+    }
+
+    fileI.addEventListener("change", function () {
+      var f = fileI.files && fileI.files[0];
+      if (!f) return;
+      var reader = new FileReader();
+      reader.onload = function () { parsed = csvToActivities(String(reader.result || "")); refreshPreview(); };
+      reader.onerror = function () { parsed = { error: "Couldn't read that file." }; refreshPreview(); };
+      reader.readAsText(f);
+    });
+
+    var scopeNote = cmsGlobal()
+      ? "Importing into the Shared library — every coach and athlete will see these."
+      : "Importing into My library — private to you. Use the scope switch above the activity list to publish for everyone instead.";
+    var body = el("div", { class: "form-stack" }, [
+      el("p", { class: "field-hint" }, scopeNote + " Need the column headings? "),
+      el("button", { class: "btn btn--sm btn--ghost", type: "button", onclick: downloadActivityCsvTemplate }, "⬇ Download CSV template"),
+      el("div", { class: "field" }, [el("label", {}, "CSV file"), fileI]),
+      preview,
+      dupLabel
+    ]);
+
+    function submit() {
+      if (!parsed || parsed.error) { toast("Pick a CSV file first"); return; }
+      var send = dupCheck.checked ? parsed.fresh.concat(parsed.dupes) : parsed.fresh;
+      if (!send.length) { toast("Nothing to import" + (parsed.dupes.length ? " — every row already exists" : "")); return; }
+      if (send.length > 500) { toast("Max 500 rows per import — split the file and import in parts"); return; }
+      api(cmsRoute("/custom-activities/bulk"), { method: "POST", body: { activities: send, skipDuplicates: !dupCheck.checked } }).then(function (res) {
+        if (!res.ok) { toast(apiError(res, "Couldn't import")); return; }
+        closeModal();
+        var d = res.data || {};
+        var msg = "Imported " + (d.created || 0) + " activit" + (d.created === 1 ? "y" : "ies");
+        if (d.skipped) msg += " · " + d.skipped + " duplicate" + (d.skipped === 1 ? "" : "s") + " skipped";
+        if (d.errors && d.errors.length) msg += " · " + d.errors.length + " failed";
+        afterCmsWrite(function () { renderAll(); toast(msg); });
+      }).catch(function () { toast("Couldn't reach the server"); });
+    }
+
+    openModal("Import activities from CSV", body, [
+      { label: "Cancel", onClick: closeModal },
+      { label: "Import", accent: true, onClick: submit }
+    ]);
+  }
+
   /* ----------------------------- Students ----------------------------- */
   function renderStudents() {
     // Subtab: "My students" (this coach's roster) vs "All students" (org-wide directory,
@@ -6783,9 +6965,15 @@
     var wrap = $("#cms-activities");
     wrap.textContent = "";
     var banner = scopeBanner(); if (banner) wrap.appendChild(banner);
+    var libActions = [el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")];
+    // Bulk import from a spreadsheet (super admin, server mode): parse client-side,
+    // preview, then POST to the bulk endpoint in the current Shared/Private scope.
+    if (SERVER && isSuperadmin()) {
+      libActions.push(el("button", { class: "btn btn--sm", title: "Bulk-add activities from a CSV file", onclick: openCsvImportModal }, "⬆ Import CSV"));
+    }
     wrap.appendChild(el("div", { class: "section-head" }, [
       el("h3", {}, "Activity library"),
-      el("button", { class: "btn btn--sm btn--accent", onclick: function () { openActivityModal(); } }, "+ Add activity")
+      el("div", { class: "section-head-actions" }, libActions)
     ]));
     var search = el("input", { type: "search", class: "cms-search", placeholder: "Search activities…" });
     search.value = state.cmsSearch || "";

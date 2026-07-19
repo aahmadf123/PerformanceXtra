@@ -645,6 +645,7 @@ async function route(method, path, request, env, url, secure) {
     const sub = seg[1] || "";
     if (sub === "custom-activities") {
       if (method === "GET" && seg.length === 2) return json({ customActivities: await loadCustom(env, GLOBAL_OWNER_ID) });
+      if (method === "POST" && seg.length === 3 && seg[2] === "bulk") return handleBulkSaveCustom(session, request, env, GLOBAL_OWNER_ID);
       if (method === "POST" && seg.length === 2) return handleSaveCustom(session, request, env, GLOBAL_OWNER_ID);
       if (method === "DELETE" && seg.length === 3) return handleDeleteCustom(session, env, seg[2], GLOBAL_OWNER_ID);
     }
@@ -672,6 +673,7 @@ async function route(method, path, request, env, url, secure) {
   }
   if (head === "custom-activities") {
     if (method === "GET" && seg.length === 1) return handleListCustom(session, env);
+    if (method === "POST" && seg.length === 2 && seg[1] === "bulk") return handleBulkSaveCustom(session, request, env);
     if (method === "POST" && seg.length === 1) return handleSaveCustom(session, request, env);
     if (method === "DELETE" && seg.length === 2) return handleDeleteCustom(session, env, seg[1]);
   }
@@ -1755,6 +1757,55 @@ async function handleSaveCustom(session, request, env, targetCoachId) {
     await env.DB.prepare("INSERT INTO custom_activities (id,coach_id,payload,created_at) VALUES (?,?,?,?)").bind(id, owner, JSON.stringify(store), nowSec()).run();
   }
   return json({ id: id });
+}
+// Bulk-create custom activities (the CSV import). The CSV itself is parsed client-side;
+// rows arrive here as JSON in the same payload shape handleSaveCustom stores, so no
+// multipart handling is needed. Same owner rule as handleSaveCustom: private by default,
+// GLOBAL_OWNER_ID via the /global route publishes to the shared library.
+// Body { activities: [...], skipDuplicates?: true } → { ok, created, skipped, errors }.
+async function handleBulkSaveCustom(session, request, env, targetCoachId) {
+  const owner = targetCoachId || session.uid;
+  const b = await readBody(request);
+  const rows = Array.isArray(b.activities) ? b.activities : [];
+  if (!rows.length) return err(400, "No activities to import");
+  if (rows.length > 500) return err(400, "Too many rows for one import (max 500) — split the file and import in parts");
+  const skipDuplicates = b.skipDuplicates !== false;
+
+  // Names this owner already has (custom layer only — collisions with the 190 base
+  // activities are surfaced client-side in the preview, where that list already lives).
+  const existing = await env.DB.prepare("SELECT payload FROM custom_activities WHERE coach_id = ?").bind(owner).all();
+  const names = {};
+  (existing.results || []).forEach(function (r) {
+    try {
+      const p = JSON.parse(r.payload);
+      if (p && p.name) names[String(p.name).trim().toLowerCase()] = true;
+    } catch (e) {}
+  });
+
+  const stmts = [];
+  const errors = [];
+  let created = 0, skipped = 0;
+  const ts = nowSec();
+  rows.forEach(function (raw, i) {
+    const store = (raw && typeof raw === "object") ? Object.assign({}, raw) : {};
+    delete store.id;      // import always mints fresh ids — never overwrites by id
+    delete store.scope;   // transient provenance tag, never stored (same as handleSaveCustom)
+    const name = String(store.name || "").trim();
+    if (!name) { errors.push({ row: i + 1, error: "Missing name" }); return; }
+    store.name = name;
+    const key = name.toLowerCase();
+    if (names[key] && skipDuplicates) { skipped++; return; }
+    const blob = JSON.stringify(store);
+    if (blob.length > 32000) { errors.push({ row: i + 1, error: "Too large to save — shorten its text" }); return; }
+    names[key] = true;    // also dedupes repeats within the same file
+    stmts.push(env.DB.prepare("INSERT INTO custom_activities (id,coach_id,payload,created_at) VALUES (?,?,?,?)").bind(custId(), owner, blob, ts));
+    created++;
+  });
+  // Chunked batch writes, same pattern as handleImport.
+  for (let i = 0; i < stmts.length; i += 40) {
+    await env.DB.batch(stmts.slice(i, i + 40));
+  }
+  return json({ ok: true, created: created, skipped: skipped, errors: errors });
 }
 async function handleDeleteCustom(session, env, id, targetCoachId) {
   const owner = targetCoachId || session.uid;
