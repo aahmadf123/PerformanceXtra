@@ -1236,13 +1236,11 @@
     // The Repository is the shared activity catalog (coach-only tab). Completion is a
     // per-student, per-assignment fact, so it is NOT shown here — it lives in the
     // student's My Workouts and the admin's per-student Students/Progress views.
-    var foot = el("div", { class: "card-foot" });
     if (a.link) {
+      var foot = el("div", { class: "card-foot" });
       foot.appendChild(el("a", { class: "btn btn--sm btn--primary", href: a.link, target: "_blank", rel: "noopener" }, "Open resource ↗"));
-    } else {
-      foot.appendChild(el("span", { class: "no-link" }, "No link (on-court)"));
+      card.appendChild(foot);
     }
-    card.appendChild(foot);
 
     if (isAdminView()) {
       var admin = el("div", { class: "card-admin" }, [
@@ -1445,7 +1443,8 @@
       var meta = [a.type || "—", a.time || ""].filter(Boolean).join(", ");
       lines.push((idx + 1) + ". " + a.name + " [" + meta + "]");
       lines.push("   Status: " + (completionAt(student, asg.id, id) ? "Completed" : "Pending"));
-      lines.push("   Link: " + (itemLink(asg, id) || "No link (on-court)"));
+      var txtLink = itemLink(asg, id);
+      if (txtLink) lines.push("   Link: " + txtLink);
       if (a.instructions) lines.push("   Instructions: " + a.instructions.replace(/\n/g, "\n      "));
       if (a.reflection) lines.push("   Reflection prompt: " + a.reflection.replace(/\n/g, "\n      "));
 
@@ -1546,7 +1545,7 @@
         a.frequency || null,
         a.time || null
       ].filter(Boolean).join("  |  ");
-      var linkText = itemLink(asg, id) || "No external link (coach-led or on-court activity)";
+      var pdfLink = itemLink(asg, id);
       var instructionText = a.instructions || "No additional instructions provided.";
       var existing = getReflectionEntry(student, asg.id, id);
       var submittedLines = (existing && existing.text)
@@ -1556,7 +1555,7 @@
       var itemTitleLines = doc.splitTextToSize(itemTitle, headerWidth - 42);
       var metaLines = doc.splitTextToSize(meta, headerWidth - 42);
       var statusLines = doc.splitTextToSize("Status: " + doneText, headerWidth - 42);
-      var linkLines = doc.splitTextToSize("Resource link: " + linkText, headerWidth - 42);
+      var linkLines = pdfLink ? doc.splitTextToSize("Resource link: " + pdfLink, headerWidth - 42) : [];
       var instLabel = ["Instructions:"];
       var instLines = doc.splitTextToSize(instructionText, headerWidth - 42);
       var promptLabel = ["Reflection prompt:"];
@@ -1591,7 +1590,7 @@
       ty += 1;
       ty = textBlock(statusLines, marginX + 12, ty, { font: "bold", size: 8.7, color: done ? [21, 128, 61] : [180, 83, 9] });
       ty += 1;
-      ty = textBlock(linkLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [37, 99, 235] });
+      if (linkLines.length) ty = textBlock(linkLines, marginX + 12, ty, { font: "normal", size: 8.5, color: [37, 99, 235] });
       ty += 4;
       ty = textBlock(instLabel, marginX + 12, ty, { font: "bold", size: 9.3 });
       ty = textBlock(instLines, marginX + 12, ty, { font: "normal", size: 8.8 });
