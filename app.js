@@ -3285,7 +3285,7 @@
       { id: "repo", label: slot("nav.repo") },
       { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
-    if (isAtLeastAdmin()) tabs.push({ id: "manage", label: slot("nav.team") });
+    if (isAtLeastAdmin() && !soloMode()) tabs.push({ id: "manage", label: slot("nav.team") });
     if (isSuperadmin() || (isAtLeastAdmin() && adminCmsAccess())) tabs.push({ id: "appearance", label: slot("nav.cms") });
     tabs.push({ id: "settings", label: slot("nav.settings") });
     return withNavPages(tabs);
@@ -3505,13 +3505,18 @@
   // A coach picker for admins reassigning a student. Every athlete must have a coach —
   // an unassigned athlete vanishes from every roster — so there is no "unassign" option;
   // the placeholder ("") just means "not chosen yet" and the server rejects it.
+  // Admins and super admins are valid targets too (an admin+ who takes a student simply
+  // coaches them directly — in solo mode they're the only possible target).
   // excludeId drops one coach (e.g. the student's current one); selectedId pre-selects.
   function coachSelectNode(selectedId, excludeId) {
     var sel = el("select", {});
     sel.appendChild(option("", "— Pick a coach —"));
-    var coaches = (state.coaches || []).slice().filter(function (c) { return c.id !== excludeId; });
-    coaches.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
-    coaches.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
+    var targets = (state.coaches || []).map(function (c) { return { id: c.id, name: c.name }; })
+      .concat((state.admins || []).map(function (c) { return { id: c.id, name: c.name + " (admin)" }; }))
+      .concat((state.superadmins || []).map(function (c) { return { id: c.id, name: c.name + " (super admin)" }; }))
+      .filter(function (c) { return c.id !== excludeId; });
+    targets.sort(function (a, b) { return (a.name || "").localeCompare(b.name || ""); });
+    targets.forEach(function (c) { sel.appendChild(option(c.id, c.name)); });
     sel.value = (selectedId != null ? selectedId : "");
     return sel;
   }
@@ -4799,6 +4804,10 @@
     ];
   }
   function cmsAccess() { return (state.site && state.site.access) || {}; }
+  // Workspace mode: solo=true hides the multi-coach machinery (Team tab, staff
+  // creation) because one super admin runs the whole program. Purely a UI switch —
+  // no permission changes — so it's always safe to flip back.
+  function soloMode() { return !!(state.site && state.site.mode && state.site.mode.solo); }
   function canEditCms(area) { return isSuperadmin() || !!cmsAccess()[area]; }
   function adminCmsAccess() { var a = cmsAccess(); return !!(a.pages || a.content || a.media); }
   function visibleCmsSections() {
@@ -5024,6 +5033,32 @@
       } }, "Save brand")
     ]));
     wrap.appendChild(brand);
+
+    // Workspace mode — solo hides the Team tab and staff creation for a program run
+    // entirely by the super admin. UI-only: no permissions change, existing coach and
+    // admin accounts keep working, and unticking restores everything.
+    var modePanel = el("div", { class: "panel" });
+    modePanel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace mode")]));
+    var soloCb = el("input", { type: "checkbox" });
+    soloCb.checked = soloMode();
+    modePanel.appendChild(el("label", { class: "access-row" }, [
+      soloCb,
+      el("div", {}, [
+        el("div", { class: "access-row-title" }, "Solo mode — I run the whole program myself"),
+        el("div", { class: "field-hint" }, "Hides the Team tab and staff creation; you create students and assign all work as the super admin. Nothing is deleted — untick to bring the multi-coach tools back.")
+      ])
+    ]));
+    modePanel.appendChild(el("div", { class: "appearance-actions" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { mode: { solo: soloCb.checked } } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save workspace mode")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          renderTabs(); renderAppearance();
+          toast(soloMode() ? "Solo mode on — Team tab hidden" : "Solo mode off — Team tab restored");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save workspace mode")
+    ]));
+    wrap.appendChild(modePanel);
 
     var info = el("div", { class: "panel" });
     info.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace")]));

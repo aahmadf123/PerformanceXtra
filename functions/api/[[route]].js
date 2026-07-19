@@ -1043,7 +1043,12 @@ async function handleCreateAthlete(session, request, env, url) {
 }
 
 async function handleResetPasscode(session, env, athleteId, url) {
-  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND coach_id = ? AND role='athlete'").bind(athleteId, session.uid).first();
+  // Same ownership rule as every other athlete write: a coach manages their own
+  // roster, an admin/super admin manages anyone (previously this hard-coded
+  // coach_id = session.uid and 404'd admins on other coaches' athletes).
+  const owns = await canManageAthlete(session, athleteId, env);
+  if (!owns) return err(404, "Athlete not found");
+  const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
   if (!row) return err(404, "Athlete not found");
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
@@ -1089,10 +1094,12 @@ async function handleReassignAthlete(session, request, env, athleteId) {
   const raw = b.coachId;
   const targetId = (raw == null || String(raw).trim() === "") ? null : String(raw).trim();
   if (!targetId) return err(400, "Pick a coach — every student needs one so they always appear in a roster");
-  // Only a pure coach is a valid target (mirrors listCoaches) — never an admin/super admin
+  // Any staff account is a valid target — a pure coach, an admin, or a super admin
+  // (an admin+ who takes an athlete simply coaches them directly; this is how a solo
+  // super admin consolidates every student under themselves). Never the athlete tier
   // or the global-library sentinel.
   const coach = await env.DB.prepare(
-    "SELECT id,name FROM users WHERE id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0 AND id != ?"
+    "SELECT id,name FROM users WHERE id = ? AND role='coach' AND id != ?"
   ).bind(targetId, GLOBAL_OWNER_ID).first();
   if (!coach) return err(404, "Coach not found");
   if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
@@ -1950,7 +1957,7 @@ function sanitizeRichDoc(raw) {
 async function loadSiteSettings(env) {
   // menus null = "no explicit menu; derive nav from published pages". checkin always a
   // valid config (default until customized) so the client's check-in never breaks.
-  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS) };
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS), mode: Object.assign({}, DEFAULT_MODE) };
   try {
     const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
     (rows.results || []).forEach(function (r) {
@@ -1961,6 +1968,7 @@ async function loadSiteSettings(env) {
       else if (r.key === "menus") { const m = sanitizeMenus(v); if (m.items.length) out.menus = m; }
       else if (r.key === "checkin") { const c = sanitizeCheckinConfig(v); if (c.dimensions.length) out.checkin = c; }
       else if (r.key === "access") out.access = sanitizeAccess(v);
+      else if (r.key === "mode") out.mode = sanitizeMode(v);
     });
   } catch (e) { /* table not migrated yet — return defaults */ }
   return out;
@@ -2025,6 +2033,15 @@ const DEFAULT_ACCESS = { pages: false, content: false, media: false };
 function sanitizeAccess(raw) {
   const src = (raw && typeof raw === "object") ? raw : {};
   return { pages: !!src.pages, content: !!src.content, media: !!src.media };
+}
+// Workspace mode (site_settings key 'mode'). solo=true means one person (the super
+// admin) runs the whole program: the client hides the Team tab and staff creation.
+// UI-only — no permission gate reads this flag, so flipping it back restores the
+// multi-coach workflow with nothing lost.
+const DEFAULT_MODE = { solo: false };
+function sanitizeMode(raw) {
+  const src = (raw && typeof raw === "object") ? raw : {};
+  return { solo: !!src.solo };
 }
 async function loadAccess(env) {
   try {
@@ -2091,6 +2108,12 @@ async function handleSaveSite(request, env) {
       "INSERT INTO site_settings (key,value,updated_at) VALUES ('access',?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).bind(JSON.stringify(sanitizeAccess(b.access)), nowSec()));
+  }
+  if (b.mode != null) {
+    stmts.push(env.DB.prepare(
+      "INSERT INTO site_settings (key,value,updated_at) VALUES ('mode',?,?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
+    ).bind(JSON.stringify(sanitizeMode(b.mode)), nowSec()));
   }
   if (!stmts.length) return err(400, "Nothing to save");
   try { await env.DB.batch(stmts); }
