@@ -617,7 +617,6 @@
   .assign-item .ai-name { flex:1 1 200px; min-width:0; }
   .assign-item details.detail { flex-basis:100%; }
   .assign-item.is-done .ai-name { color: var(--muted); }
-  .assign-item.is-done .ai-name strong { text-decoration: line-through; }
   .reflection-box, .reflection-read { flex-basis: 100%; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-2); padding: 10px 12px; margin-top: 2px; }
   .reflection-input { width: 100%; min-height: 88px; margin-top: 6px; border: none; background: transparent; color: var(--ink); resize: vertical; padding: 0; font-family: var(--font); font-size: .9rem; line-height: 1.6; }
   .reflection-input:focus { outline: none; background: transparent; box-shadow: none; }
@@ -1407,7 +1406,6 @@
   .wk-name { font-family: var(--display); font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
   .wk-rep.wk-done .wk-name, .wk-rep.wk-upcoming .wk-name { font-size: 1.05rem; color: var(--ink-soft); margin: 3px 0 5px; }
   .wk-rep.wk-done { opacity: .66; }
-  .wk-rep.wk-done .wk-name { text-decoration: line-through; text-decoration-color: var(--line-strong); }
   .wk-rep.wk-upcoming .wk-blurb { color: var(--muted); font-size: .9rem; margin: 4px 0 10px; max-width: 58ch; line-height: 1.5; }
 
   .wk-doneline { display: flex; align-items: center; gap: 12px; font-size: .82rem; flex-wrap: wrap; }
