@@ -35,8 +35,10 @@ The script is idempotent and asks before touching a remote database. It will:
      `db/seed_activities.sql` (the 190 base activities). Fresh installs do **not** run
      the numbered migrations — those exist to evolve databases created before each
      change, and `db/schema.sql` already includes all of them.
-   - **`--existing`:** applies every file in `db/migrations/` in order. They're written
-     idempotently, so re-running is safe. Back up first:
+   - **`--existing`:** applies every file in `db/migrations/` in order. Re-running is
+     safe: migrations a database already has fail with a harmless "duplicate column /
+     already exists" error, which the script recognizes and skips (SQLite has no
+     `ADD COLUMN IF NOT EXISTS`); any other error aborts the run. Back up first:
      `npx wrangler d1 export performancextra --remote --output backup.sql`.
 5. Offer to set `SESSION_SECRET` (signs session cookies; recommended for production —
    without it the app auto-provisions a secret into D1 on first request).

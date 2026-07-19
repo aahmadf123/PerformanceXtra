@@ -66,9 +66,12 @@ if [ "$MODE" = "fresh" ]; then
   npx wrangler d1 execute "$DB_NAME" --file db/schema.sql "$TARGET" -y
   npx wrangler d1 execute "$DB_NAME" --file db/seed_activities.sql "$TARGET" -y
 else
-  # Existing database: apply the numbered migrations in order. They are written to be
-  # idempotent (CREATE TABLE IF NOT EXISTS / INSERT OR IGNORE), so re-running the list
-  # is safe; the directory is read dynamically so this never goes stale.
+  # Existing database: apply the numbered migrations in order (the directory is read
+  # dynamically so this list never goes stale). Most migrations are idempotent
+  # (CREATE TABLE IF NOT EXISTS / INSERT OR IGNORE), but SQLite has no
+  # "ADD COLUMN IF NOT EXISTS" — an already-applied ALTER migration fails with
+  # "duplicate column name". That error just means "this one is done", so it's
+  # detected and skipped; any other failure still aborts the run.
   say "Applying migrations from db/migrations/ in order…"
   if [ "$TARGET" = "--remote" ]; then
     echo "Tip: back up first:  npx wrangler d1 export $DB_NAME --remote --output backup.sql"
@@ -76,7 +79,16 @@ else
   fi
   for f in $(ls db/migrations/*.sql | sort); do
     echo "— $f"
-    npx wrangler d1 execute "$DB_NAME" --file "$f" "$TARGET" -y
+    if out=$(npx wrangler d1 execute "$DB_NAME" --file "$f" "$TARGET" -y 2>&1); then
+      continue
+    fi
+    if printf '%s' "$out" | grep -qiE 'duplicate column name|already exists'; then
+      echo "  already applied — skipped"
+    else
+      printf '%s\n' "$out"
+      echo "✘ Migration failed: $f"
+      exit 1
+    fi
   done
 fi
 
