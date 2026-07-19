@@ -181,6 +181,12 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
 
 ## Deploy to Cloudflare Workers
 
+> **Standing up a brand-new production install?** Use the provisioning script:
+> `./build/provision.sh` — it creates the D1 database and R2 bucket, loads the schema
+> and seed data, sets the session secret, and deploys. Full guide: `docs/INSTALL.md`.
+> The steps below document the same process manually (and the migration path for a
+> database that already has data).
+
 1. In Cloudflare → **Workers & Pages → Create → Worker → Connect to Git**, select this repo
   and branch `main`. Use the Wrangler config in `wrangler.toml`.
 2. The D1 database `performancextra` is bound as `DB` via `wrangler.toml`. Apply the schema
