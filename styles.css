@@ -472,6 +472,45 @@
   .student-row.is-active { border-color: rgba(201,242,78,.45); background: linear-gradient(180deg, rgba(201,242,78,.12), rgba(201,242,78,.06)); }
   .student-row .name { font-weight: 600; font-size: 1rem; min-width: 0; overflow-wrap: anywhere; }
   .student-row-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex-shrink: 0; }
+  .users-group {
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    overflow: hidden;
+  }
+  .users-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--surface-2);
+  }
+  .users-group-title {
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+  }
+  .users-group-count {
+    font-family: var(--mono);
+    font-size: .66rem;
+    color: var(--muted);
+    letter-spacing: .07em;
+    text-transform: uppercase;
+  }
+  .users-group-list { display: flex; flex-direction: column; }
+  .users-group-list .student-row {
+    margin: 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .users-group-list .student-row:first-child { border-top: 0; }
+  .users-group-list .student-row:hover { transform: none; }
   .roster-refresh-row { display: flex; justify-content: flex-end; margin-bottom: 8px; }
   .add-student { display: flex; gap: 8px; }
   .progress-stat { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }

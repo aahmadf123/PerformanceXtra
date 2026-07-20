@@ -47,9 +47,9 @@ The script is idempotent and asks before touching a remote database. It will:
 ## First run (browser)
 
 1. Open the deployed URL. With an empty `users` table the sign-in screen shows
-   **"Create the admin account"** — use it to create the super admin. No credentials
+  **"Create the admin account"** — use it to create the first super admin. No credentials
    are ever committed to the repo.
-2. Sign in. Create students from the Students tab (or CMS → Users); each student gets a
+2. Sign in. Create students from the Users tab; each student gets a
    one-time sign-in code to hand out. Assign work from the Repository.
 3. Smoke test end-to-end: create a student → assign an activity → sign in as the student
    (email + code) → complete it and write a reflection → check it shows on your side.

@@ -272,6 +272,86 @@ function isPlausibleRealEmail(email) {
   return true;
 }
 
+let auditLogHealAttempted = false;
+async function ensureAuditLogTable(env) {
+  if (auditLogHealAttempted) return;
+  auditLogHealAttempted = true;
+  try {
+    await env.DB.batch([
+      env.DB.prepare(
+        "CREATE TABLE IF NOT EXISTS audit_log (" +
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "actor_id TEXT," +
+        "actor_role TEXT," +
+        "action TEXT NOT NULL," +
+        "target_type TEXT," +
+        "target_id TEXT," +
+        "ip TEXT," +
+        "user_agent TEXT," +
+        "meta TEXT," +
+        "created_at INTEGER NOT NULL)"
+      ),
+      env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC)"),
+      env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_id, created_at DESC)"),
+      env.DB.prepare("CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_type, target_id, created_at DESC)")
+    ]);
+  } catch (e) {
+    // Best effort only: actions continue even if audit table creation fails.
+  }
+}
+function requestMeta(request) {
+  return {
+    ip: clientIp(request),
+    ua: String(request && request.headers && request.headers.get("User-Agent") || "").slice(0, 512)
+  };
+}
+async function recordAuditEvent(env, event) {
+  if (!event || !event.action) return;
+  const meta = event.meta == null ? null : JSON.stringify(event.meta);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await env.DB.prepare(
+        "INSERT INTO audit_log (actor_id,actor_role,action,target_type,target_id,ip,user_agent,meta,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
+      ).bind(
+        event.actorId || null,
+        event.actorRole || null,
+        event.action,
+        event.targetType || null,
+        event.targetId || null,
+        event.ip || null,
+        event.userAgent || null,
+        meta,
+        nowSec()
+      ).run();
+      return;
+    } catch (e) {
+      await ensureAuditLogTable(env);
+    }
+  }
+}
+async function verifyTurnstileToken(env, token, request) {
+  const secret = String(env.TURNSTILE_SECRET || "").trim();
+  if (!secret) return { ok: true, required: false };
+  const responseToken = String(token || "").trim();
+  if (!responseToken) return { ok: false, required: true, code: "TURNSTILE_REQUIRED", error: "Please complete the security check and try again." };
+  try {
+    const form = new URLSearchParams();
+    form.set("secret", secret);
+    form.set("response", responseToken);
+    form.set("remoteip", clientIp(request));
+    const verifyRes = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: form.toString()
+    });
+    const data = await verifyRes.json();
+    if (verifyRes.ok && data && data.success === true) return { ok: true, required: true };
+    return { ok: false, required: true, code: "TURNSTILE_FAILED", error: "Security check failed. Please try again." };
+  } catch (e) {
+    return { ok: false, required: true, code: "TURNSTILE_UNAVAILABLE", error: "Security check is temporarily unavailable. Please try again." };
+  }
+}
+
 /* ----------------------------- D1 assembly helpers ----------------------------- */
 // opts.includeCoachNote: include the coach-private note (coach views only — it must
 // never reach the athlete's own bootstrap).
@@ -537,6 +617,11 @@ async function route(method, path, request, env, url, secure) {
   if (method === "POST" && path === "/login") return handleLogin(request, env, secure);
   if (method === "POST" && path === "/logout") return json({ ok: true }, 200, { "Set-Cookie": clearCookie(secure) });
   if (method === "POST" && path === "/athletes/accept") return handleAccept(request, env, secure);
+  if (method === "GET" && path === "/security-config") {
+    const siteKey = String(env.TURNSTILE_SITE_KEY || "").trim();
+    const hasSecret = !!String(env.TURNSTILE_SECRET || "").trim();
+    return json({ turnstileSiteKey: siteKey || null, turnstileRequired: hasSecret });
+  }
   if (method === "GET" && path === "/setup-status") {
     const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE is_superadmin=1").first();
     return json({ needsSetup: !row || row.n === 0 });
@@ -595,9 +680,9 @@ async function route(method, path, request, env, url, secure) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
     if (method === "GET" && seg.length === 1) return handleListUsers(env, url);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url);
-    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "any");
+    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(session, env, seg[1], url, "any", request);
     if (method === "PATCH" && seg.length === 2) return handleUpdateUser(session, request, env, seg[1]);
-    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "admin");
+    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "admin", request);
   }
   if (head === "site" && method === "POST" && seg.length === 1) {
     if (!atLeast(session, "superadmin")) return err(403, "Super admins only");
@@ -636,8 +721,8 @@ async function route(method, path, request, env, url, secure) {
     if (!atLeast(session, "admin")) return err(403, "Admins only");
     if (method === "GET" && seg.length === 1) return handleListCoaches(env);
     if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url, "coach");
-    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(env, seg[1], url, "coach");
-    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "coach");
+    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(session, env, seg[1], url, "coach", request);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "coach", request);
   }
   /* -------- super admin only: curate the shared global content library -------- */
   if (head === "global") {
@@ -665,8 +750,8 @@ async function route(method, path, request, env, url, secure) {
   if (head === "athletes") {
     if (method === "GET" && seg.length === 1) return handleListAthletes(session, env, url);
     if (method === "POST" && seg.length === 1) return handleCreateAthlete(session, request, env, url);
-    if (method === "DELETE" && seg.length === 2) return handleDeleteAthlete(session, env, seg[1]);
-    if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url);
+    if (method === "DELETE" && seg.length === 2) return handleDeleteAthlete(session, env, seg[1], request);
+    if (method === "POST" && seg.length === 3 && (seg[2] === "reset-passcode" || seg[2] === "reinvite")) return handleResetPasscode(session, env, seg[1], url, request);
     if (method === "GET" && seg.length === 3 && seg[2] === "detail") return handleGetAthleteDetail(session, env, seg[1]);
     if (method === "POST" && seg.length === 3 && seg[2] === "links") return handleSetStudentLink(session, request, env, seg[1]);
     if (method === "POST" && seg.length === 3 && seg[2] === "reassign") return handleReassignAthlete(session, request, env, seg[1]);
@@ -803,6 +888,12 @@ async function handleLogin(request, env, secure) {
   const password = String(b.password || "");
   if (!email || !password) return err(400, "Email and password are required");
   if (password.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
+
+  const turnstile = await verifyTurnstileToken(env, b.turnstile_token, request);
+  if (!turnstile.ok) {
+    return err(turnstile.code === "TURNSTILE_UNAVAILABLE" ? 503 : 403, turnstile.error, { code: turnstile.code });
+  }
+
   const ipScope = "ip:" + clientIp(request);
   const emailScope = "email:" + email;
   // Throttle brute force: reject while this IP or account is locked out.
@@ -1040,12 +1131,23 @@ async function handleCreateAthlete(session, request, env, url) {
   await env.DB.prepare(
     "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
   ).bind(id, email, name, "athlete", session.uid, hash, nowSec()).run();
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "ATHLETE_CREATE",
+    targetType: "user",
+    targetId: id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { email: email, name: name, coachId: session.uid }
+  });
   // The plaintext passcode is returned exactly once so the coach can share it. Only the
   // PBKDF2 hash is stored; if the coach loses it they must reset to a new one.
   return json({ athlete: { id: id, name: name, email: email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
-async function handleResetPasscode(session, env, athleteId, url) {
+async function handleResetPasscode(session, env, athleteId, url, request) {
   // Same ownership rule as every other athlete write: a coach manages their own
   // roster, an admin/super admin manages anyone (previously this hard-coded
   // coach_id = session.uid and 404'd admins on other coaches' athletes).
@@ -1057,13 +1159,24 @@ async function handleResetPasscode(session, env, athleteId, url) {
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
   await bumpTokenVersion(env, athleteId);   // revoke any session still using the old credential
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "ATHLETE_PASSCODE_RESET",
+    targetType: "user",
+    targetId: row.id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { email: row.email, name: row.name }
+  });
   return json({ athlete: { id: row.id, name: row.name, email: row.email }, passcode: passcode, loginUrl: url.origin + "/" });
 }
 
 // Permanently delete an athlete and everything keyed to them. A plain coach may only delete
 // their own athletes; an admin/super admin may delete any. No user reference in the schema
 // has ON DELETE CASCADE, so every dependent row is removed explicitly in one atomic batch.
-async function handleDeleteAthlete(session, env, athleteId) {
+async function handleDeleteAthlete(session, env, athleteId, request) {
   const row = await env.DB.prepare("SELECT id,coach_id FROM users WHERE id = ? AND role='athlete'").bind(athleteId).first();
   if (!row) return err(404, "Athlete not found");
   if (!atLeast(session, "admin") && row.coach_id !== session.uid) return err(404, "Athlete not found");
@@ -1079,6 +1192,17 @@ async function handleDeleteAthlete(session, env, athleteId) {
     env.DB.prepare("DELETE FROM athlete_notes WHERE athlete_id = ?").bind(athleteId),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(athleteId)
   ]);
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "ATHLETE_DELETE",
+    targetType: "user",
+    targetId: row.id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { coachId: row.coach_id || null }
+  });
   return json({ ok: true });
 }
 
@@ -1108,6 +1232,17 @@ async function handleReassignAthlete(session, request, env, athleteId) {
   if (targetId === athlete.coach_id) return err(400, "Already assigned to that coach", { code: "NO_CHANGE" });
   const coachName = coach.name;
   await env.DB.prepare("UPDATE users SET coach_id = ? WHERE id = ? AND role='athlete'").bind(targetId, athleteId).run();
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "ATHLETE_REASSIGN",
+    targetType: "user",
+    targetId: athleteId,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { fromCoachId: athlete.coach_id || null, toCoachId: targetId, toCoachName: coachName }
+  });
   return json({ athlete: { id: athleteId, name: athlete.name, coachId: targetId, coachName: coachName } });
 }
 
@@ -1195,6 +1330,17 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
   await env.DB.prepare(
     "INSERT INTO users (id,email,name,role,is_admin,is_superadmin,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
   ).bind(id, email, name, "coach", flags.is_admin, flags.is_superadmin, null, hash, nowSec()).run();
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "STAFF_CREATE",
+    targetType: "user",
+    targetId: id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { email: email, name: name, tier: tier }
+  });
   const user = { id: id, name: name, email: email, tier: tier };
   // `coach` alias kept so the existing credentials modal keeps working for coach creation.
   return json({ user: user, coach: user, passcode: passcode, loginUrl: url.origin + "/" });
@@ -1204,7 +1350,7 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
 // matches pure coaches only, so an admin can't reset an admin/super-admin; scope "any"
 // (super-admin-only /users route) matches any non-athlete staff row. The global-library
 // sentinel is never resettable.
-async function handleResetUserPasscode(env, userId, url, scope) {
+async function handleResetUserPasscode(session, env, userId, url, scope, request) {
   if (userId === GLOBAL_OWNER_ID) return err(404, "Not found");
   const where = scope === "coach"
     ? "id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0"
@@ -1215,6 +1361,17 @@ async function handleResetUserPasscode(env, userId, url, scope) {
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, userId).run();
   await bumpTokenVersion(env, userId);   // revoke any session still using the old credential
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "STAFF_PASSCODE_RESET",
+    targetType: "user",
+    targetId: row.id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { email: row.email, name: row.name, scope: scope }
+  });
   const out = { id: row.id, name: row.name, email: row.email };
   return json({ user: out, coach: out, passcode: passcode, loginUrl: url.origin + "/" });
 }
@@ -1225,7 +1382,7 @@ async function handleResetUserPasscode(env, userId, url, scope) {
 // sentinel — so each tier can only delete strictly below itself. A staff member who still
 // has athletes is blocked (HAS_STUDENTS) so their roster is dealt with first; otherwise the
 // account and the private content it owns are removed together in one atomic batch.
-async function handleDeleteUser(session, env, userId, scope) {
+async function handleDeleteUser(session, env, userId, scope, request) {
   if (userId === GLOBAL_OWNER_ID) return err(404, "Account not found");
   if (userId === session.uid) return err(403, "You can't delete your own account");
   const where = scope === "coach"
@@ -1245,6 +1402,17 @@ async function handleDeleteUser(session, env, userId, scope) {
     env.DB.prepare("DELETE FROM messages WHERE coach_id = ?").bind(userId),
     env.DB.prepare("DELETE FROM users WHERE id = ?").bind(userId)
   ]);
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "STAFF_DELETE",
+    targetType: "user",
+    targetId: row.id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { scope: scope, name: row.name }
+  });
   return json({ ok: true });
 }
 
@@ -1281,6 +1449,17 @@ async function handleUpdateUser(session, request, env, userId) {
   ).bind(...keys.map(function (k) { return updates[k]; }), userId).run();
   const emailChanged = updates.email != null && updates.email !== row.email;
   if (emailChanged) await bumpTokenVersion(env, userId);
+  const req = requestMeta(request);
+  await recordAuditEvent(env, {
+    actorId: session.uid,
+    actorRole: session.role,
+    action: "USER_UPDATE",
+    targetType: "user",
+    targetId: row.id,
+    ip: req.ip,
+    userAgent: req.ua,
+    meta: { changed: keys, emailChanged: emailChanged }
+  });
   const out = {
     id: row.id,
     name: updates.name || row.name,

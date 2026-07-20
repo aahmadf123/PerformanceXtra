@@ -53,19 +53,20 @@ appears only when it has text, and is hidden when the same text already shows on
 activity. And the **PDF download** drew an empty "Assignment-level reflection" box on
 every export — that box now only appears when there's old writing to show.
 
-### "WordPress users and security"
+### "Users and security"
 
-We read this as: *manage people the way WordPress does — top-level Users and Settings.*
+We read this as: *manage people in a clear, CMS-style structure — top-level Users plus a dedicated account settings area.*
 That now exists: a **Users** tab in the main navigation lists every account — students
 and super admins — in one searchable place, with the role shown on each row. This is
 where you **add students** (and, rarely, another super admin), **edit a name or email
 in place** (previously a typo meant deleting and re-creating the account), hand out a
 fresh sign-in code, move a student, or remove an account. The **Students** tab stays
 focused on the work itself: assignments, progress, reflections and messages. The
-**Settings** tab holds your account security and backup/restore. On the security side,
-the earlier answer below still stands — the app isn't built on WordPress and has none
-of its attack surface. If you also wanted something specific (say, connecting an
-existing WordPress site), let us know.
+**Account & Data** area holds your account security and backup/restore, while
+**Appearance** handles site-level CMS editing. On the security side,
+the app's security is app-native: server-enforced role access, secure signed sessions,
+hashed credentials, login rate limiting, and no plugin-admin attack surface. If you also wanted something specific (say, connecting an
+existing website), let us know.
 
 ---
 
@@ -78,14 +79,14 @@ plain English: what was happening, what changed, and what you'll notice.
 
 ## The bugs you reported
 
-### "Changes I made as SuperAdmin weren't showing up for Coach1"
+### "Changes I made as SuperAdmin weren't showing up for other users"
 
 **You were right, and it wasn't your fault.** When you edited activities from the
 Repository tab, the app quietly saved those edits to your *personal* library — a
-private copy only your account could see. Coach1 was never looking at stale data;
+private copy only your account could see. Other users were never looking at stale data;
 your changes were simply never published. We found 102 of your edits (17 activity
 edits, your taxonomy re-organization, and one added article) sitting in that private
-scope, and we've **published all of them to the shared library**, so every coach and
+scope, and we've **published all of them to the shared library**, so every staff user and
 athlete now sees them.
 
 Going forward it can't happen again: as super admin, **your edits now publish to
@@ -120,18 +121,15 @@ database, and every filter.
 
 ## About Lionel Messi 🐐
 
-**Why couldn't you see him?** Each staff member's "My students" list shows only their
-own athletes — and Messi belongs to Test Coach 1, not to you. That's by design (each
-coach runs their own roster), and it's why he *does* appear under **Students → All
-students**, which lists everyone. So nothing was broken in the database — but your
+**Why couldn't you see him?** In the old multi-staff model, each staff member's "My
+students" list showed only their own athletes. That's why he appeared under
+**Students → All students**. So nothing was broken in the database — but your
 instinct was right that something was off:
 
-**The real bug was assigning him work.** When you (or an admin) assigned work to
-another coach's athlete, the assignment was filed under *your* name — so Test Coach 1
-could never see or manage it from their side. Fixed: **assignments now always land
-with the athlete's own coach**, no matter who creates them. We also re-filed the ones
-that were mis-filed. And messaging now works the same way — you can message any
-athlete you can assign to, and their coach sees the same conversation.
+**The real bug was assigning him work.** In the old model, assignments could be filed
+under the wrong owner in cross-roster cases. Fixed: assignment ownership now resolves
+correctly, and the affected rows were re-filed. Messaging was aligned to the same
+thread ownership rules.
 
 ---
 
@@ -141,8 +139,8 @@ athlete you can assign to, and their coach sees the same conversation.
 
 You didn't miss anything — "Custom" was just the app's (confusing) label for anything
 that isn't one of the original 190 spreadsheet activities. We've retired it: items you
-publish to the shared library now show **no special tag** to coaches (to them it's
-simply library content — which is the point), and a coach's own private additions say
+publish to the shared library now show **no special tag** to end users (to them it's
+simply library content — which is the point), and super-admin private additions say
 **"Added by you"** instead.
 
 ### "What is the 'Set Active' indicator for?"
@@ -155,9 +153,9 @@ sign-ins** instead of resetting to the first athlete every time.
 ### "Admin login vs my login?"
 
 Same door, different keys. Everyone signs in on the same screen; what changes is what
-appears *after*. A coach gets the coaching tabs; an admin also gets **Team** (create
-and manage coaches); you as super admin also get **Appearance** and the shared-library
-controls. There's no separate admin login page to remember.
+appears *after*. Athletes get their workout tabs; super admins get **Users**,
+**Students**, **Content**, and **Appearance** controls. There's no separate admin login
+page to remember.
 
 ### "Can you create a guide for maintaining the app?"
 
@@ -169,18 +167,18 @@ issues in this list).
 
 ---
 
-## "WordPress users and security"
+## "Users and security"
 
-We want to make sure we address the actual concern here, because **PerformanceXtra
-isn't built on WordPress** — there are no plugins, themes, or wp-admin to secure, and
-none of the usual WordPress security worries apply.
+We want to make sure we address the actual concern here. **PerformanceXtra is a custom
+Cloudflare Worker app**, not a plugin stack, so the usual plugin/theme admin-surface
+risks do not apply.
 
 What protects your data instead, in plain terms:
 
 - Everyone signs in with a personal account; there are no shared logins. Athletes get
   one-time codes you hand out; lost codes are reset, never recovered.
 - What each person can see is enforced on the **server** — an athlete can't reach
-  coach tools by fiddling with their browser.
+   super-admin tools by fiddling with their browser.
 - Passwords are stored only as one-way cryptographic hashes; sign-in attempts are
   rate-limited to block password guessing; changing a password now signs out every
   other device that account was logged in on.
@@ -188,9 +186,9 @@ What protects your data instead, in plain terms:
   plugins, trackers, or email services touch the data.
 
 **Could you tell us what prompted the note?** For example:
-1. Does PerformanceXtra have an existing WordPress website you'd like this app linked
+1. Does PerformanceXtra have an existing website you'd like this app linked
    to (shared sign-in, or a link from the site into the app)?
-2. Were you asking whether this app has the security problems WordPress is known for?
+2. Were you asking whether this app has the security problems that plugin-heavy CMS stacks are known for?
    (Short answer: no — see above.)
 3. Something else entirely?
 

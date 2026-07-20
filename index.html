@@ -11,6 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 </head>
 <body>
 
@@ -149,7 +150,7 @@
     <div class="panel cms-pane" id="cms-taxonomy" hidden></div>
   </section>
 
-  <!-- ===================== Users: all accounts, WordPress-style (super admin) ===================== -->
+  <!-- ===================== Users: all accounts (super admin) ===================== -->
   <section id="view-users" class="view" aria-label="Users"></section>
 
   <!-- ===================== Appearance: theme + page builder (super admin) ===================== -->
@@ -194,8 +195,8 @@
   <!-- ===================== Settings (admin) ===================== -->
   <section id="view-settings" class="view" aria-labelledby="settings-h">
     <div class="view-intro">
-      <h2 id="settings-h" data-slot="settings.heading">Settings</h2>
-      <p data-slot="settings.intro">Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.</p>
+      <h2 id="settings-h" data-slot="settings.heading">Account &amp; Data</h2>
+      <p data-slot="settings.intro">Your password, sign-out, and backup/import tools live here. What you see changes based on whether you are using the shared server or the device-only fallback.</p>
     </div>
 
     <div class="settings-layout">

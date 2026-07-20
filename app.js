@@ -3470,7 +3470,7 @@
       { id: "repo", label: slot("nav.repo") },
       { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
-    // Users is WordPress-style: one top-level tab for ALL account management —
+    // Users is one top-level tab for ALL account management —
     // students and super admins alike. It replaced the old Team tab outright when the
     // program consolidated to a single super admin running everything.
     if (isSuperadmin()) tabs.push({ id: "users", label: "Users" });
@@ -3523,7 +3523,7 @@
       if (on) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
     $all(".view").forEach(function (v) { v.classList.toggle("is-active", v.id === "view-" + tab); });
-    // The CMS tab keeps its open section in the hash (#cms/<section>) so it deep-links
+    // The Appearance tab keeps its open section in the hash (#cms/<section>) so it deep-links
     // and survives a reload; every other tab is just "#<id>".
     var targetHash = tab === "appearance" ? ("#cms/" + cmsSection()) : ("#" + tab);
     if (location.hash !== targetHash) history.replaceState(null, "", targetHash);
@@ -4192,6 +4192,10 @@
     var email = el("input", { type: "email", id: "auth-email", placeholder: "you@email.com", autocomplete: "username" });
     var pass = el("input", { type: "password", id: "auth-pass", placeholder: "Password", autocomplete: "current-password" });
     var newPass = el("input", { type: "password", id: "auth-new-pass", placeholder: "New password (8+ characters)", autocomplete: "new-password" });
+    var turnstileMount = el("div", { class: "auth-turnstile", id: "auth-turnstile" });
+    var turnstileToken = "";
+    var turnstileWidgetId = null;
+    var turnstileRequired = false;
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
     var setupRow = el("p", { class: "field-hint", style: "text-align:center; margin-top:4px" });
     // Revealed only when the server answers FORCE_PASSWORD_CHANGE: the account's
@@ -4202,11 +4206,56 @@
       el("p", { class: "field-hint" }, "For security, pick a new password before continuing — the original one for this account needs to be retired.")
     ]);
     newPassField.hidden = true;
+    turnstileMount.hidden = true;
+
+    function tryRenderTurnstile(siteKey) {
+      if (!siteKey || !turnstileMount.isConnected) return;
+      if (!(window.turnstile && typeof window.turnstile.render === "function")) {
+        setTimeout(function () { tryRenderTurnstile(siteKey); }, 150);
+        return;
+      }
+      turnstileMount.hidden = false;
+      turnstileToken = "";
+      try {
+        if (turnstileWidgetId != null) window.turnstile.remove(turnstileWidgetId);
+      } catch (e) {}
+      turnstileWidgetId = window.turnstile.render(turnstileMount, {
+        sitekey: siteKey,
+        theme: "auto",
+        callback: function (token) { turnstileToken = token || ""; },
+        "expired-callback": function () { turnstileToken = ""; },
+        "error-callback": function () { turnstileToken = ""; }
+      });
+    }
+
+    function resetTurnstile() {
+      turnstileToken = "";
+      try {
+        if (turnstileWidgetId != null && window.turnstile && typeof window.turnstile.reset === "function") {
+          window.turnstile.reset(turnstileWidgetId);
+        }
+      } catch (e) {}
+    }
+
+    if (!offline) {
+      api("/security-config").then(function (res) {
+        if (!res.ok || !res.data) return;
+        turnstileRequired = !!res.data.turnstileRequired;
+        if (res.data.turnstileSiteKey) tryRenderTurnstile(String(res.data.turnstileSiteKey));
+        else if (turnstileRequired) {
+          errBox.textContent = "Sign-in is temporarily unavailable: security check configuration is incomplete.";
+          errBox.hidden = false;
+        }
+      }).catch(function () {});
+    }
+
     function submit() {
       errBox.hidden = true;
       var em = email.value.trim(), pw = pass.value;
       if (!em || !pw) { errBox.textContent = "Enter your email and password."; errBox.hidden = false; return; }
+      if (turnstileRequired && !turnstileToken) { errBox.textContent = "Please complete the security check."; errBox.hidden = false; return; }
       var body = { email: em, password: pw };
+      if (turnstileToken) body.turnstile_token = turnstileToken;
       if (!newPassField.hidden) {
         var np = newPass.value;
         if (np.length < 8) { errBox.textContent = "The new password needs at least 8 characters."; errBox.hidden = false; newPass.focus(); return; }
@@ -4214,6 +4263,7 @@
       }
       api("/login", { method: "POST", body: body }).then(function (res) {
         if (!res.ok) {
+          resetTurnstile();
           if (res.data && res.data.code === "FORCE_PASSWORD_CHANGE") {
             if (newPassField.hidden) { newPassField.hidden = false; setTimeout(function () { newPass.focus(); }, 30); }
             errBox.textContent = apiError(res, "Pick a new password to continue.");
@@ -4236,6 +4286,7 @@
       el("div", { class: "field" }, [el("label", { for: "auth-email" }, "Email"), email]),
       el("div", { class: "field" }, [el("label", { for: "auth-pass" }, "Password / sign-in code"), pass]),
       newPassField,
+      turnstileMount,
       errBox,
       el("button", { class: "btn btn--primary btn--block", onclick: submit }, "Sign in"),
       setupRow
@@ -4762,12 +4813,12 @@
     "messages.intro": "A direct line to your coach. Ask a question, share a win, or let them know how you’re doing.",
     "progress.heading": "My Progress",
     "progress.intro": "See how much you’ve completed so far, broken down by topic and by week.",
-    "settings.heading": "Settings",
-    "settings.intro": "Account security and data transfer tools for this workspace. What you see here changes based on whether you are using the shared server or the device-only fallback.",
+    "settings.heading": "Account & Data",
+    "settings.intro": "Your password, sign-out, and backup/import tools live here. What you see changes based on whether you are using the shared server or the device-only fallback.",
     "footer.text": "PerformanceXtra — Mental Workout Repository",
     "footer.tagline": "catalog items (and growing)",
     "nav.repo": "Repository", "nav.students": "Students", "nav.content": "Content",
-    "nav.team": "Team", "nav.cms": "CMS", "nav.settings": "Settings",
+    "nav.team": "Team", "nav.cms": "Appearance", "nav.settings": "Settings",
     "nav.workouts": "My Workouts", "nav.checkin": "Check-in", "nav.messages": "Messages", "nav.progress": "My Progress",
     "banner.storage": "Browser storage is unavailable, so student progress can’t be saved on this device. Changes will be lost when you close the tab.",
     "banner.preview": "👀 Coach preview: you’re seeing the student view.",
@@ -4808,7 +4859,7 @@
     { title: "Footer", keys: [["footer.text", "Footer text"], ["footer.tagline", "Catalog tagline"]] },
     { title: "Navigation labels", keys: [
       ["nav.repo", "Repository tab"], ["nav.students", "Students tab"], ["nav.content", "Content tab"],
-      ["nav.team", "Team tab"], ["nav.cms", "CMS tab"], ["nav.settings", "Settings tab"],
+      ["nav.team", "Team tab"], ["nav.cms", "Appearance tab"], ["nav.settings", "Settings tab"],
       ["nav.workouts", "My Workouts tab"], ["nav.checkin", "Check-in tab"], ["nav.messages", "Messages tab"], ["nav.progress", "My Progress tab"]
     ] },
     { title: "Banners", keys: [
@@ -4899,8 +4950,8 @@
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
-  /* ----------------------------- CMS hub (WordPress-style admin) -----------------------------
-   * The whole super-admin CMS lives in one "CMS" tab (#view-appearance) organized into
+  /* ----------------------------- Appearance hub (admin workspace) -----------------------------
+   * The whole super-admin Appearance workspace lives in one tab (#view-appearance) organized into
    * sections shown in a left sub-nav, instead of one long scroll. Each section carries a
    * `minRole` (the capability model): only super admins see the tab today, but when
    * multi-author editing lands we flip the tab to isAtLeastAdmin() and admins automatically
@@ -4915,7 +4966,7 @@
       { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
       { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
       { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
-      { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
+      { id: "settings", label: "Site identity", minRole: "superadmin", render: renderSettings },
       { id: "access", label: "Access", minRole: "superadmin", render: renderAccess }
     ];
   }
@@ -4985,10 +5036,10 @@
   function paintCmsHub(view, section) {
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
-      el("h2", {}, "CMS"),
-      el("p", {}, "Manage your whole site from one place — pages, design, content and media. Changes save to the database and apply to everyone.")
+      el("h2", {}, "Appearance"),
+      el("p", {}, "Edit site look, pages, media, and copy from one place. Changes save to the database and apply to everyone.")
     ]));
-    var nav = el("nav", { class: "cms-nav", "aria-label": "CMS sections" });
+    var nav = el("nav", { class: "cms-nav", "aria-label": "Appearance sections" });
     visibleCmsSections().forEach(function (s) {
       nav.appendChild(el("button", {
         class: "cms-nav-item" + (s.id === section ? " is-active" : ""),
@@ -5127,7 +5178,7 @@
     return panel;
   }
 
-  /* ----------------------------- CMS: settings ----------------------------- */
+  /* ----------------------------- Appearance: site identity ----------------------------- */
   function renderSettings() {
     var wrap = el("div", { class: "cms-design" });
     var brand = el("div", { class: "panel" });
@@ -5147,7 +5198,7 @@
     wrap.appendChild(brand);
 
     // Workspace mode moved to the main Settings tab (renderWorkspaceModePanel) — the
-    // person it's for looks there, not in the CMS hub.
+    // person it's for looks there, not in Appearance.
 
     var info = el("div", { class: "panel" });
     info.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace")]));
@@ -5162,7 +5213,7 @@
   }
 
   /* ----------------------------- Users tab (all accounts) ----------------------------- */
-  // WordPress-style Users: a TOP-LEVEL tab (super admin) listing every account —
+  // Users is a TOP-LEVEL tab (super admin) listing every account —
   // students and staff — in one searchable place. Actions reuse the same flows as the
   // Students and Team tabs (reset code, move, delete); Edit is new here and fixes
   // name/email typos in place via PATCH /users/:id.
@@ -5172,19 +5223,19 @@
     view.textContent = "";
     view.appendChild(el("div", { class: "view-intro" }, [
       el("h2", {}, "Users"),
-      el("p", {}, "Everyone with an account, in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
+      el("p", {}, "Manage accounts and sign-in codes in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
     ]));
     view.appendChild(renderCmsUsers());
   }
   function renderCmsUsers() {
     var wrap = el("div", { class: "cms-design" });
     var panel = el("div", { class: "panel" });
-    var searchI = el("input", { type: "search", placeholder: "Search by name, email, coach or role…", "aria-label": "Search users" });
+    var searchI = el("input", { type: "search", placeholder: "Search by name, email, or role…", "aria-label": "Search users" });
     var countEl = el("span", { class: "cms-count" }, "");
     var listBox = el("div", { class: "student-list" });
 
     // The one place accounts are created: students day-to-day, and (rarely) another
-    // super admin. Coach/admin tiers were retired with the old Team tab.
+    // super admin.
     var headActions = [
       countEl,
       el("button", { class: "btn btn--sm btn--primary", onclick: function () { openAddAthleteModal(); } }, "+ Add student"),
@@ -5203,14 +5254,35 @@
     function accountRows() {
       var rows = [];
       (state.allStudents || []).forEach(function (s) {
-        rows.push({ tier: "student", label: "Student", data: s, meta: s.coachName ? ("Coach: " + s.coachName) : "" });
+        rows.push({ tier: "student", label: "Student", data: s, meta: "" });
       });
-      (state.coaches || []).forEach(function (c) {
-        rows.push({ tier: "coach", label: "Coach", data: c, meta: (c.studentCount || 0) + " student" + (c.studentCount === 1 ? "" : "s") });
-      });
-      (state.admins || []).forEach(function (c) { rows.push({ tier: "admin", label: "Admin", data: c, meta: "" }); });
       (state.superadmins || []).forEach(function (c) { rows.push({ tier: "superadmin", label: "Super admin", data: c, meta: "" }); });
       return rows;
+    }
+
+    function renderAccountRow(r) {
+      var u = r.data;
+      var nameKids = [
+        el("span", { class: "name" }, u.name),
+        el("span", { class: "chip", title: "Account role" }, r.label)
+      ];
+      if (u.email) nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, u.email));
+      if (r.meta) nameKids.push(el("span", { class: "dupe-coach" }, r.meta));
+      var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
+      var actions = el("div", { class: "student-row-actions" });
+      actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Edit name or email", onclick: function () { openEditUserModal(u, r.tier); } }, "✎ Edit"));
+      if (r.tier === "student") {
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetPasscode(u); } }, "↻ Reset sign-in code"));
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Move this student to a different coach", onclick: function () { openReassignStudent(u); } }, "Move…"));
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this student and all their data", onclick: function () { deleteAllStudent(u); } }, "✕ Delete"));
+      } else {
+        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetStaffPasscode(u, r.tier); } }, "↻ Reset sign-in code"));
+        if (r.tier !== "superadmin" && u.id !== (state.session && state.session.id)) {
+          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + r.tier, onclick: function () { deleteStaff(u, r.tier); } }, "✕ Delete"));
+        }
+      }
+      row.appendChild(actions);
+      return row;
     }
 
     function paint() {
@@ -5225,30 +5297,25 @@
       listBox.textContent = "";
       if (state.allStudents == null) { listBox.appendChild(el("p", { class: "no-link" }, "Loading students…")); return; }
       if (!rows.length) { listBox.appendChild(el("p", { class: "no-link" }, total ? "No accounts match." : "No accounts yet.")); return; }
-      rows.forEach(function (r) {
-        var u = r.data;
-        var nameKids = [
-          el("span", { class: "name" }, u.name),
-          el("span", { class: "chip", title: "Account role" }, r.label)
-        ];
-        if (u.email) nameKids.push(el("span", { class: "student-email", title: "Signs in with this email" }, u.email));
-        if (r.meta) nameKids.push(el("span", { class: "dupe-coach" }, r.meta));
-        var row = el("div", { class: "student-row" }, [el("span", { class: "name-wrap" }, nameKids)]);
-        var actions = el("div", { class: "student-row-actions" });
-        actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Edit name or email", onclick: function () { openEditUserModal(u, r.tier); } }, "✎ Edit"));
-        if (r.tier === "student") {
-          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetPasscode(u); } }, "↻ Reset sign-in code"));
-          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Move this student to a different coach", onclick: function () { openReassignStudent(u); } }, "Move…"));
-          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this student and all their data", onclick: function () { deleteAllStudent(u); } }, "✕ Delete"));
-        } else {
-          actions.appendChild(el("button", { class: "btn btn--sm btn--ghost", title: "Generate a new sign-in code", onclick: function () { resetStaffPasscode(u, r.tier); } }, "↻ Reset sign-in code"));
-          // Same rules as the Team tab: super admins are never deletable, nor is your own account.
-          if (r.tier !== "superadmin" && u.id !== (state.session && state.session.id)) {
-            actions.appendChild(el("button", { class: "btn btn--sm btn--ghost btn--danger", title: "Delete this " + r.tier, onclick: function () { deleteStaff(u, r.tier); } }, "✕ Delete"));
-          }
-        }
-        row.appendChild(actions);
-        listBox.appendChild(row);
+      var order = [
+        { tier: "student", title: "Students" },
+        { tier: "superadmin", title: "Super admins" }
+      ];
+      var grouped = { student: [], superadmin: [] };
+      rows.forEach(function (r) { if (grouped[r.tier]) grouped[r.tier].push(r); });
+      order.forEach(function (g) {
+        var items = grouped[g.tier] || [];
+        if (!items.length) return;
+        items.sort(function (a, b) { return String(a.data.name || "").localeCompare(String(b.data.name || ""), undefined, { sensitivity: "base" }); });
+        var section = el("section", { class: "users-group", "aria-label": g.title });
+        section.appendChild(el("div", { class: "users-group-head" }, [
+          el("span", { class: "users-group-title" }, g.title),
+          el("span", { class: "users-group-count" }, items.length + " account" + (items.length === 1 ? "" : "s"))
+        ]));
+        var body = el("div", { class: "users-group-list" });
+        items.forEach(function (r) { body.appendChild(renderAccountRow(r)); });
+        section.appendChild(body);
+        listBox.appendChild(section);
       });
     }
 
@@ -5309,7 +5376,7 @@
     var panel = el("div", { class: "panel" });
     panel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Editing access")]));
     panel.appendChild(el("p", { class: "field-hint", style: "margin:4px 0 12px" },
-      "Super admins can always edit everything. Grant admins access to specific CMS areas below — they'll get a CMS tab with just those areas. Coaches never get the CMS. Design, Menus, Check-in, Settings and this page stay super-admin only."));
+      "Super admins can always edit everything. Grant admins access to specific Appearance areas below — they'll get an Appearance tab with just those areas. Coaches never get Appearance access. Design, Menus, Check-in, Site identity and this page stay super-admin only."));
     [["pages", "Pages", "Create and edit builder pages, and edit the site pages' text."],
      ["content", "Content", "Edit all site copy — headings, intros and labels."],
      ["media", "Media", "Upload and manage images."]].forEach(function (row) {
@@ -6283,7 +6350,7 @@
       textField("label", "Button label"); textField("href", "Button link (https://…)");
       selectField("style", "Button style", [["primary", "Primary"], ["ember", "Secondary"], ["ghost", "Ghost"]]);
     } else if (b.type === "richtext") {
-      // WordPress-style editor: block-based rich text (Editor.js), loaded on demand.
+      // Block-based rich text editor (Editor.js), loaded on demand.
       var holder = el("div", { class: "richtext-holder" });
       var loading = el("p", { class: "field-hint" }, "Loading the rich-text editor…");
       fields.appendChild(el("div", { class: "field" }, [holder, loading]));

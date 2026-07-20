@@ -8,10 +8,9 @@ changing anything user-facing.
 
 ## 1. What this app is (one paragraph)
 
-A mental-performance training app for student athletes. Coaches assign sets of
+A mental-performance training app for student athletes. The super admin assigns sets of
 activities from a tagged library; athletes complete them, write reflections, do a
-daily wellbeing check-in, and message their coach. Admins/super admins manage
-accounts, the shared content library, and the site's appearance. Everything runs on
+daily wellbeing check-in, and message the super admin. Everything runs on
 **Cloudflare Workers + D1 (SQLite)** — no other services, no email, no third-party
 trackers.
 
@@ -50,7 +49,7 @@ npx wrangler d1 execute performancextra --file db/seed_activities.sql --local
 
 Then open the printed localhost URL and use the sign-in screen's
 **"Create the admin account"** link (it appears because no super admin exists yet) to
-bootstrap a local super admin. From there create a test coach and athlete via the UI.
+bootstrap a local super admin. From there create a test athlete via the UI.
 
 Quick syntax check without running anything:
 
@@ -63,7 +62,7 @@ node -e "import('./functions/api/[[route]].js').then(()=>console.log('ok'))"
 
 1. Make the change on a branch.
 2. `npm run dev`, walk through the affected flow as each relevant role
-   (super admin / coach / athlete). There is **no automated test suite** — the manual
+  (super admin / athlete). There is **no automated test suite** — the manual
    walkthrough *is* the test. Minimum smoke test: sign in as each role, open every tab,
    assign + complete + reflect on one activity.
 3. If the change needs a schema change, write a **new numbered migration**
@@ -146,28 +145,21 @@ pipeline — the super admin does it in-app via the Content tab, stored in
 
 ## 8. Roles cheat-sheet
 
-`athlete < coach < admin < superadmin`. Admin/super admin are **flag columns**
-(`is_admin`, `is_superadmin`) on a `role='coach'` row — the `role` column never
-changes. `usr_global_library` is a non-login sentinel row that owns the shared
-library content.
+This deployment runs with two active role surfaces: `athlete` and `superadmin`.
+The backend still contains legacy compatibility paths from the earlier multi-staff
+model, but operationally you should treat the app as super-admin-managed.
 
-- Rosters are per-coach: every staff member's Students tab shows athletes whose
-  `coach_id` is **their own id**. Org-wide visibility lives in the "All students"
-  subtab (deliberately visible to every coach — an accepted product decision).
-- Assignments are always **recorded under the athlete's own coach**, even when an
-  admin/super admin creates them (so the coach sees and manages them).
-- Content: coaches/admins write private content; super admins write to the **shared
-  library by default** (persisted per-user toggle to "Only me").
-- Every athlete must have a coach — reassigning to "no coach" is rejected because a
-  coachless athlete appears in no roster.
+- Super admin manages students, assignments, content, and appearance.
+- Athlete can only read their own assignments and submit completions/reflections/check-ins/messages.
+- `usr_global_library` is a non-login sentinel row that owns shared library content.
 
 ## 9. Troubleshooting (symptom → cause → check)
 
 | Symptom | Likely cause | Check |
 |---|---|---|
-| "My edits don't show up for coaches" | Edit saved to a private scope instead of the shared library | Repository-tab banner says *Publishing* or *Private edits*; `SELECT coach_id, COUNT(*) FROM activity_overrides GROUP BY coach_id` — shared rows belong to `usr_global_library` |
-| A student is missing from every roster | `coach_id` NULL or pointing at a deleted user | `SELECT id,name,coach_id FROM users WHERE role='athlete'`; re-home via All students → Move |
-| Super admin can't see a student on the Students tab | Working as designed — rosters are per-coach | Use the "All students" subtab |
+| "My edits don't show up for athletes" | Edit saved to a private scope instead of the shared library | Repository-tab banner says *Publishing* or *Private edits*; `SELECT coach_id, COUNT(*) FROM activity_overrides GROUP BY coach_id` — shared rows belong to `usr_global_library` |
+| A student is missing from the Students view | Student row is malformed or detached from expected ownership metadata | `SELECT id,name,coach_id FROM users WHERE role='athlete'`; then fix ownership from the Users/Students flows in-app |
+| Super admin can't open a student workspace | Student exists but UI state/cache is stale | Refresh Students view, then verify the row exists in `SELECT id,name FROM users WHERE role='athlete'` |
 | An activity shows "done" the moment it's assigned | Pre-0015 completion semantics | Confirm migration 0015 applied: `PRAGMA table_info(completions)` should show `assignment_id NOT NULL` |
 | Login always says "try again in N min" | Throttle lock active | `DELETE FROM login_attempts WHERE scope = 'email:<their email>';` |
 | Everyone signed out at once | `SESSION_SECRET` changed / DB reset regenerated the auto-secret | Expected — they sign back in |
@@ -179,9 +171,7 @@ library content.
 - **No automated tests** — every change needs the manual role walkthrough (§4).
 - **No email/SMS** anywhere, on purpose (no domain/DKIM dependencies). The data is
   shaped so a future scheduled Worker could add digests without schema changes.
-- **All coaches can see the org-wide student directory** (names/emails) — the owner
-  chose visibility over isolation; revisit if the org grows.
-- **Coach can read all of an athlete's journal & check-ins** — disclosed to the
+- **Super admin can read all of an athlete's journal & check-ins** — disclosed to the
   athlete in the UI copy at the point of writing; there is no private-to-self entry.
 - **Login throttling fails open** on DB faults (never lock the whole org out);
   change-password fails closed.

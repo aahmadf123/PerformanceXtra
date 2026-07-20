@@ -301,6 +301,24 @@ CREATE TABLE IF NOT EXISTS assignment_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_templates_coach ON assignment_templates(coach_id);
 
+-- Security audit log (migration 0024): records sensitive account-management actions
+-- (user create/update/delete/reassign and passcode resets) with actor metadata.
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id    TEXT,
+  actor_role  TEXT,
+  action      TEXT NOT NULL,
+  target_type TEXT,
+  target_id   TEXT,
+  ip          TEXT,
+  user_agent  TEXT,
+  meta        TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_target ON audit_log(target_type, target_id, created_at DESC);
+
 -- Seed the non-login sentinel row that owns the shared global content library
 -- (mirrors migration 0006; INSERT OR IGNORE so re-running is a no-op). Without this
 -- row every /global/* write fails its coach_id foreign key on a fresh database.
