@@ -3467,6 +3467,9 @@
       { id: "repo", label: slot("nav.repo") },
       { id: "students", label: slot("nav.students") }, { id: "content", label: slot("nav.content") }
     ];
+    // Users is WordPress-style: a top-level tab (not buried in the CMS hub), so the
+    // one person running everything sees people-management right in the main nav.
+    if (isSuperadmin()) tabs.push({ id: "users", label: "Users" });
     if (isAtLeastAdmin() && !soloMode()) tabs.push({ id: "manage", label: slot("nav.team") });
     if (isSuperadmin() || (isAtLeastAdmin() && adminCmsAccess())) tabs.push({ id: "appearance", label: slot("nav.cms") });
     tabs.push({ id: "settings", label: slot("nav.settings") });
@@ -3507,6 +3510,7 @@
     state.tab = tab;
     // Render the tabs that aren't part of the always-present static markup on demand.
     if (tab === "manage" && isAtLeastAdmin()) renderManage();
+    else if (tab === "users" && isSuperadmin()) renderUsersView();
     else if (tab === "appearance" && isAtLeastAdmin()) renderAppearance();
     // Content renders at boot while the shared-library snapshot may still be loading;
     // re-render on entry so the pane doesn't sit on "Loading…" until the next sync tick.
@@ -3581,6 +3585,40 @@
       var roleLabel = { superadmin: "super admin", admin: "admin", coach: "coach", athlete: "athlete" }[state.session.role] || state.session.role;
       info.appendChild(detailBlock("Signed in as", state.session.name + " · " + roleLabel));
     }
+    renderWorkspaceModePanel();
+  }
+
+  // Workspace mode lives on the MAIN Settings tab (WordPress-style: Settings is the
+  // top-level place you configure the site). Super admin + server mode only; the panel
+  // stays hidden for everyone else. Solo mode hides the Team tab and staff creation —
+  // a UI switch, nothing is deleted, and unticking restores the multi-coach tools.
+  function renderWorkspaceModePanel() {
+    var panel = $("#workspace-mode-panel");
+    if (!panel) return;
+    if (!SERVER || !isSuperadmin()) { panel.hidden = true; return; }
+    panel.hidden = false;
+    panel.textContent = "";
+    panel.appendChild(el("h3", {}, "Workspace mode"));
+    var soloCb = el("input", { type: "checkbox" });
+    soloCb.checked = soloMode();
+    panel.appendChild(el("label", { class: "access-row", style: "margin-top:12px" }, [
+      soloCb,
+      el("div", {}, [
+        el("div", { class: "access-row-title" }, "Solo mode — I run the whole program myself"),
+        el("div", { class: "field-hint" }, "Hides the Team tab and staff creation; you create students and assign all work as the super admin. Nothing is deleted — untick to bring the multi-coach tools back.")
+      ])
+    ]));
+    panel.appendChild(el("div", { class: "appearance-actions", style: "margin-top:12px" }, [
+      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
+        api("/site", { method: "POST", body: { mode: { solo: soloCb.checked } } }).then(function (res) {
+          if (!res.ok) { toast(apiError(res, "Couldn't save workspace mode")); return; }
+          if (res.data && res.data.site) state.site = res.data.site;
+          renderTabs();
+          renderWorkspaceModePanel();
+          toast(soloMode() ? "Solo mode on — Team tab hidden" : "Solo mode off — Team tab restored");
+        }).catch(function () { toast("Couldn't reach the server"); });
+      } }, "Save workspace mode")
+    ]));
   }
 
   function goAdmin() { state.view = "admin"; state.tab = "students"; applyRole(); renderAll(); }
@@ -4487,7 +4525,7 @@
         if (Array.isArray(res.data.superadmins)) state.superadmins = res.data.superadmins;
       }
       if (state.tab === "manage") renderManage();
-      else if (state.tab === "appearance") renderAppearance();   // the CMS Users screen lists staff too
+      else if (state.tab === "users" && isSuperadmin()) renderUsersView();   // the Users tab lists staff too
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
@@ -4986,7 +5024,6 @@
       { id: "media", label: "Media", minRole: "admin", render: renderMediaLibrary },
       { id: "menus", label: "Menus", minRole: "superadmin", render: renderMenus },
       { id: "checkin", label: "Check-in", minRole: "superadmin", render: renderCheckinConfig },
-      { id: "users", label: "Users", minRole: "superadmin", render: renderCmsUsers },
       { id: "settings", label: "Settings", minRole: "superadmin", render: renderSettings },
       { id: "access", label: "Access", minRole: "superadmin", render: renderAccess }
     ];
@@ -5222,31 +5259,8 @@
     ]));
     wrap.appendChild(brand);
 
-    // Workspace mode — solo hides the Team tab and staff creation for a program run
-    // entirely by the super admin. UI-only: no permissions change, existing coach and
-    // admin accounts keep working, and unticking restores everything.
-    var modePanel = el("div", { class: "panel" });
-    modePanel.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace mode")]));
-    var soloCb = el("input", { type: "checkbox" });
-    soloCb.checked = soloMode();
-    modePanel.appendChild(el("label", { class: "access-row" }, [
-      soloCb,
-      el("div", {}, [
-        el("div", { class: "access-row-title" }, "Solo mode — I run the whole program myself"),
-        el("div", { class: "field-hint" }, "Hides the Team tab and staff creation; you create students and assign all work as the super admin. Nothing is deleted — untick to bring the multi-coach tools back.")
-      ])
-    ]));
-    modePanel.appendChild(el("div", { class: "appearance-actions" }, [
-      el("button", { class: "btn btn--sm btn--primary", onclick: function () {
-        api("/site", { method: "POST", body: { mode: { solo: soloCb.checked } } }).then(function (res) {
-          if (!res.ok) { toast(apiError(res, "Couldn't save workspace mode")); return; }
-          if (res.data && res.data.site) state.site = res.data.site;
-          renderTabs(); renderAppearance();
-          toast(soloMode() ? "Solo mode on — Team tab hidden" : "Solo mode off — Team tab restored");
-        }).catch(function () { toast("Couldn't reach the server"); });
-      } }, "Save workspace mode")
-    ]));
-    wrap.appendChild(modePanel);
+    // Workspace mode moved to the main Settings tab (renderWorkspaceModePanel) — the
+    // person it's for looks there, not in the CMS hub.
 
     var info = el("div", { class: "panel" });
     info.appendChild(el("div", { class: "section-head" }, [el("h3", {}, "Workspace")]));
@@ -5260,10 +5274,21 @@
     return wrap;
   }
 
-  /* ----------------------------- CMS: users (all accounts) ----------------------------- */
-  // WordPress-style Users screen: every account — students and staff — in one searchable
-  // list. Actions reuse the same flows as the Students and Team tabs (reset code, move,
-  // delete); Edit is new here and fixes name/email typos in place via PATCH /users/:id.
+  /* ----------------------------- Users tab (all accounts) ----------------------------- */
+  // WordPress-style Users: a TOP-LEVEL tab (super admin) listing every account —
+  // students and staff — in one searchable place. Actions reuse the same flows as the
+  // Students and Team tabs (reset code, move, delete); Edit is new here and fixes
+  // name/email typos in place via PATCH /users/:id.
+  function renderUsersView() {
+    var view = $("#view-users");
+    if (!view) return;
+    view.textContent = "";
+    view.appendChild(el("div", { class: "view-intro" }, [
+      el("h2", {}, "Users"),
+      el("p", {}, "Everyone with an account, in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
+    ]));
+    view.appendChild(renderCmsUsers());
+  }
   function renderCmsUsers() {
     var wrap = el("div", { class: "cms-design" });
     var panel = el("div", { class: "panel" });
@@ -5275,8 +5300,7 @@
     if (!soloMode()) headActions.push(el("button", { class: "btn btn--sm", onclick: function () { openAddStaffModal("coach"); } }, "+ Add coach"));
     panel.appendChild(el("div", { class: "section-head section-head--stacked" }, [
       el("div", { class: "section-head-copy" }, [
-        el("h3", {}, "Users"),
-        el("p", { class: "section-head-note" }, "Everyone with an account, in one place. Fix a name or email, hand out a fresh sign-in code, move a student, or remove an account.")
+        el("h3", {}, "All accounts")
       ]),
       el("div", { class: "section-head-actions" }, headActions)
     ]));
@@ -7131,6 +7155,7 @@
       renderStudents();
       renderContent();
       if (state.tab === "manage" && isAtLeastAdmin()) renderManage();
+      if (state.tab === "users" && isSuperadmin()) renderUsersView();
       if (state.tab === "appearance" && isAtLeastAdmin()) renderAppearance();
     } else {
       renderWorkoutsTab();

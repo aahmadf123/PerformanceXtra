@@ -6,18 +6,20 @@ what changed for the new list:
 
 ### "We can take out coaches login and maybe even the admin"
 
-Done, reversibly. You already had full coach powers as super admin — the app now gets
-out of your way: turn on **Solo mode** (CMS → Settings → Workspace mode) and the Team
-tab and staff creation disappear, leaving Students, the Repository and the CMS. Nothing
-is deleted and no accounts stop working, so if you ever bring on a coach again, untick
-the box and the multi-coach tools come straight back.
+Done — and already applied to the live site. The test coach and admin accounts are
+removed, every student now sits under the super admin, and **Solo mode** is switched
+on, so the Team tab and staff creation are gone from the app. Only the super admin
+remains.
 
-Two fixes make the consolidation real: you can now **move any existing student onto
-yourself** (Students → All students → Move — previously the app refused to hand a
-student to an admin), and you can reset any student's sign-in code no matter who
-originally created them. Suggested cleanup once you're ready: move Test Coach 1's
-students (including Lionel Messi) to yourself, then delete the test coach from the
-Team tab — the app will walk you through it.
+It's reversible: Solo mode is a switch on the **Settings** tab ("Workspace mode").
+Nothing was deleted from the code, so if you ever bring on a real coach, untick the
+box and the multi-coach tools come straight back.
+
+Two fixes made the consolidation possible: any existing student can now be **moved
+onto the super admin** (Students → All students → Move — previously the app refused
+to hand a student to an admin), and the super admin can reset any student's sign-in
+code no matter who originally created them. The students' assignment history was
+kept when the test coach was removed.
 
 ### "Don't cross out the name of the activities when complete"
 
@@ -31,7 +33,7 @@ the repository cards and in the TXT/PDF downloads.
 
 ### "Bulk load activities via a CSV file"
 
-Done. CMS → Content → Activity library now has **⬆ Import CSV**. Download the CSV
+Done. The Content tab's Activity library now has **⬆ Import CSV**. Download the CSV
 template (it has the exact column headings plus two example rows), paste your journal
 prompts / readings / etc. into it, and import. You'll see a preview first — how many
 are new, which names already exist (skipped unless you say otherwise), and any broken
@@ -57,14 +59,15 @@ every export — that box now only appears when there's old writing to show.
 
 ### "WordPress users and security"
 
-We read this as: *manage people the way WordPress does — one Users screen.* That now
-exists: **CMS → Users** lists every account (students and staff) in one searchable
-place, with the role shown on each row, and you can **edit a name or email in place**
-(previously a typo meant deleting and re-creating the account), hand out a fresh
-sign-in code, move a student, or remove an account. On the security side, the earlier
-answer below still stands — the app isn't built on WordPress and has none of its attack
-surface. If you also wanted something specific (say, connecting an existing WordPress
-site), let us know.
+We read this as: *manage people the way WordPress does — top-level Users and Settings.*
+That now exists: a **Users** tab in the main navigation lists every account (students
+and staff) in one searchable place, with the role shown on each row, and you can
+**edit a name or email in place** (previously a typo meant deleting and re-creating
+the account), hand out a fresh sign-in code, move a student, or remove an account.
+The **Settings** tab holds your account security, backup/restore, and the workspace
+mode switch. On the security side, the earlier answer below still stands — the app
+isn't built on WordPress and has none of its attack surface. If you also wanted
+something specific (say, connecting an existing WordPress site), let us know.
 
 ---
 

@@ -150,6 +150,9 @@
   <!-- ===================== Coaches (admin & super admin) ===================== -->
   <section id="view-manage" class="view" aria-label="Coaches"></section>
 
+  <!-- ===================== Users: all accounts, WordPress-style (super admin) ===================== -->
+  <section id="view-users" class="view" aria-label="Users"></section>
+
   <!-- ===================== Appearance: theme + page builder (super admin) ===================== -->
   <section id="view-appearance" class="view" aria-label="Appearance"></section>
 
@@ -218,6 +221,9 @@
           <div id="change-password-error" class="warn" hidden></div>
         </form>        <div style="margin-top:12px"><button class="btn" id="account-logout-btn">Log out</button></div>
       </div>
+
+      <!-- Populated by renderWorkspaceModePanel() — super admin, server mode only. -->
+      <div class="panel" id="workspace-mode-panel" hidden></div>
 
       <div class="panel">
         <h3>Backup &amp; restore</h3>
