@@ -7,13 +7,9 @@ what changed for the new list:
 ### "We can take out coaches login and maybe even the admin"
 
 Done — and already applied to the live site. The test coach and admin accounts are
-removed, every student now sits under the super admin, and **Solo mode** is switched
-on, so the Team tab and staff creation are gone from the app. Only the super admin
-remains.
-
-It's reversible: Solo mode is a switch on the **Settings** tab ("Workspace mode").
-Nothing was deleted from the code, so if you ever bring on a real coach, untick the
-box and the multi-coach tools come straight back.
+removed and every student now sits under the super admin. The old **Team** tab is
+gone entirely: everything it did now lives in the **Users** tab, so there's one place
+for people and no duplicate screens. Coach and admin logins no longer exist.
 
 Two fixes made the consolidation possible: any existing student can now be **moved
 onto the super admin** (Students → All students → Move — previously the app refused
@@ -60,14 +56,16 @@ every export — that box now only appears when there's old writing to show.
 ### "WordPress users and security"
 
 We read this as: *manage people the way WordPress does — top-level Users and Settings.*
-That now exists: a **Users** tab in the main navigation lists every account (students
-and staff) in one searchable place, with the role shown on each row, and you can
-**edit a name or email in place** (previously a typo meant deleting and re-creating
-the account), hand out a fresh sign-in code, move a student, or remove an account.
-The **Settings** tab holds your account security, backup/restore, and the workspace
-mode switch. On the security side, the earlier answer below still stands — the app
-isn't built on WordPress and has none of its attack surface. If you also wanted
-something specific (say, connecting an existing WordPress site), let us know.
+That now exists: a **Users** tab in the main navigation lists every account — students
+and super admins — in one searchable place, with the role shown on each row. This is
+where you **add students** (and, rarely, another super admin), **edit a name or email
+in place** (previously a typo meant deleting and re-creating the account), hand out a
+fresh sign-in code, move a student, or remove an account. The **Students** tab stays
+focused on the work itself: assignments, progress, reflections and messages. The
+**Settings** tab holds your account security and backup/restore. On the security side,
+the earlier answer below still stands — the app isn't built on WordPress and has none
+of its attack surface. If you also wanted something specific (say, connecting an
+existing WordPress site), let us know.
 
 ---
 

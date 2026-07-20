@@ -119,7 +119,9 @@
       <div class="panel">
         <div class="section-head"><h3>Students</h3><span class="section-head-actions"><button class="btn btn--sm" id="bulk-assign-btn" title="Assign one template to several athletes at once">⊕ Bulk assign</button><button class="btn btn--sm" id="export-roster-btn" title="Download roster &amp; progress as CSV">⬇ Roster CSV</button></span></div>
         <div class="student-list" id="student-list"></div>
-        <form class="add-student" id="add-student-form">
+        <!-- Server mode creates students from the Users tab; this inline form is the
+             device-only fallback (hidden automatically once the shared server is in use). -->
+        <form class="add-student local-only" id="add-student-form">
           <input type="text" id="new-student-name" placeholder="New student name" aria-label="New student name" autocomplete="off">
           <button class="btn btn--primary" type="submit">Add athlete</button>
         </form>
@@ -146,9 +148,6 @@
     <div class="panel cms-pane" id="cms-activities"></div>
     <div class="panel cms-pane" id="cms-taxonomy" hidden></div>
   </section>
-
-  <!-- ===================== Coaches (admin & super admin) ===================== -->
-  <section id="view-manage" class="view" aria-label="Coaches"></section>
 
   <!-- ===================== Users: all accounts, WordPress-style (super admin) ===================== -->
   <section id="view-users" class="view" aria-label="Users"></section>
@@ -221,9 +220,6 @@
           <div id="change-password-error" class="warn" hidden></div>
         </form>        <div style="margin-top:12px"><button class="btn" id="account-logout-btn">Log out</button></div>
       </div>
-
-      <!-- Populated by renderWorkspaceModePanel() — super admin, server mode only. -->
-      <div class="panel" id="workspace-mode-panel" hidden></div>
 
       <div class="panel">
         <h3>Backup &amp; restore</h3>
