@@ -2052,7 +2052,7 @@ function sanitizeRichDoc(raw) {
 async function loadSiteSettings(env) {
   // menus null = "no explicit menu; derive nav from published pages". checkin always a
   // valid config (default until customized) so the client's check-in never breaks.
-  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS), mode: Object.assign({}, DEFAULT_MODE) };
+  const out = { theme: Object.assign({}, DEFAULT_THEME), site: {}, menus: null, checkin: sanitizeCheckinConfig(DEFAULT_CHECKIN), access: Object.assign({}, DEFAULT_ACCESS) };
   try {
     const rows = await env.DB.prepare("SELECT key,value FROM site_settings").all();
     (rows.results || []).forEach(function (r) {
@@ -2063,7 +2063,6 @@ async function loadSiteSettings(env) {
       else if (r.key === "menus") { const m = sanitizeMenus(v); if (m.items.length) out.menus = m; }
       else if (r.key === "checkin") { const c = sanitizeCheckinConfig(v); if (c.dimensions.length) out.checkin = c; }
       else if (r.key === "access") out.access = sanitizeAccess(v);
-      else if (r.key === "mode") out.mode = sanitizeMode(v);
     });
   } catch (e) { /* table not migrated yet — return defaults */ }
   return out;
@@ -2128,15 +2127,6 @@ const DEFAULT_ACCESS = { pages: false, content: false, media: false };
 function sanitizeAccess(raw) {
   const src = (raw && typeof raw === "object") ? raw : {};
   return { pages: !!src.pages, content: !!src.content, media: !!src.media };
-}
-// Workspace mode (site_settings key 'mode'). solo=true means one person (the super
-// admin) runs the whole program: the client hides the Team tab and staff creation.
-// UI-only — no permission gate reads this flag, so flipping it back restores the
-// multi-coach workflow with nothing lost.
-const DEFAULT_MODE = { solo: false };
-function sanitizeMode(raw) {
-  const src = (raw && typeof raw === "object") ? raw : {};
-  return { solo: !!src.solo };
 }
 async function loadAccess(env) {
   try {
@@ -2203,12 +2193,6 @@ async function handleSaveSite(request, env) {
       "INSERT INTO site_settings (key,value,updated_at) VALUES ('access',?,?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
     ).bind(JSON.stringify(sanitizeAccess(b.access)), nowSec()));
-  }
-  if (b.mode != null) {
-    stmts.push(env.DB.prepare(
-      "INSERT INTO site_settings (key,value,updated_at) VALUES ('mode',?,?) " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at"
-    ).bind(JSON.stringify(sanitizeMode(b.mode)), nowSec()));
   }
   if (!stmts.length) return err(400, "Nothing to save");
   try { await env.DB.batch(stmts); }
