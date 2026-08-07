@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS users (
   is_admin       INTEGER NOT NULL DEFAULT 0,  -- 1 = admin   (effective role 'admin' at login)      [migration 0006]
   is_superadmin  INTEGER NOT NULL DEFAULT 0,  -- 1 = super admin (effective role 'superadmin' at login)
   password_hash  TEXT,                        -- nullable until athlete sets password via invite
+  must_reset_password INTEGER NOT NULL DEFAULT 0, -- 1 = must choose a new password before session issue (migration 0025)
   coach_id       TEXT REFERENCES users(id),   -- set for athletes; null for coaches/admins/super admin
   invite_token   TEXT,                        -- one-time token for athlete first login
   invite_expires INTEGER,                     -- epoch seconds

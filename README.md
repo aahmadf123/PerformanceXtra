@@ -71,14 +71,14 @@ This deployment uses two active role surfaces:
 
 A **super admin** can add another super admin from the **Users** tab when needed. The server
 generates a one-time passcode, shown **once**; you share the email + passcode, they sign in,
-and can change their password in Settings.
+and must set a new password before a session is issued.
 
 ### Adding athletes
 
 A super admin adds an athlete by **name + email**. The server **generates a random passcode**,
 stores only its hash, and returns the passcode to the super admin **once** — shown with a copy
 button. The super admin shares the athlete's **email + passcode** with them (by whatever channel
-they like); the athlete signs in with those and lands on **My Workouts**.
+they like); the athlete signs in with those, sets a new password, and then lands on **My Workouts**.
 There's no shared passcode to leak and no link to set a password. If a passcode is lost,
 the super admin uses **Reset passcode** on the athlete's row to issue a fresh one.
 
@@ -224,6 +224,7 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
   wrangler d1 execute performancextra --file db/migrations/0022_media_folders.sql --remote
   wrangler d1 execute performancextra --file db/migrations/0023_page_sections.sql --remote
   wrangler d1 execute performancextra --file db/migrations/0024_audit_log.sql --remote
+  wrangler d1 execute performancextra --file db/migrations/0025_force_password_reset_two_roles.sql --remote
    ```
 
   `0003` adds the super-admin role, `0004` seeds the super-admin login (generate a password
@@ -245,7 +246,8 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
     slots, `0018` upgrades pages with status/metadata/navigation fields, `0019` adds the media
     library index table, `0020` adds page revisions + autosave support fields, `0021` adds
     JSON check-in dimension scores, `0022` adds media folders, `0023` adds reusable page
-    sections, and `0024` adds the security audit log for user/passcode management actions.
+    sections, `0024` adds the security audit log for user/passcode management actions, and
+    `0025` adds mandatory first-login password reset for passcode-created accounts.
    Validate the role migrations against a local copy (`--local`) first.
 3. Create and bind the R2 bucket used by CMS media uploads:
 
@@ -266,7 +268,8 @@ JSON in `data.js` between marker comments. It prints a summary (e.g. `Activities
   production so the secret is under your control and survives a database reset.
 5. Push to `main` → Cloudflare builds and deploys the Worker. Sign in as the seeded super
   admin, change the password, then create athlete accounts from Users;
-  athletes sign in with the email + passcode the super admin sends them.
+  athletes sign in with the email + passcode the super admin sends them and must set a
+  password before entering the workspace.
 
 > Because the site, API and database share **one origin**, sessions are first-party cookies
 > and there's **no CORS** to configure.

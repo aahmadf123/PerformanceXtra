@@ -181,6 +181,17 @@ async function bumpTokenVersion(env, uid) {
   }
 }
 
+// Mark whether an account must pick a private password before receiving a session.
+// The column lands in migration 0025; on older databases, writes are skipped so auth
+// keeps working until that migration is applied.
+async function setMustResetPassword(env, uid, required) {
+  try {
+    await env.DB.prepare("UPDATE users SET must_reset_password = ? WHERE id = ?").bind(required ? 1 : 0, uid).run();
+  } catch (e) {
+    if (!isMissingColumnError(e, "must_reset_password")) throw e;
+  }
+}
+
 // Resolve the secret used to sign/verify session JWTs.
 //   1. Prefer an explicit SESSION_SECRET from the environment (set this in production).
 //   2. Otherwise provision a strong random secret once and persist it in D1, reusing it
@@ -261,15 +272,11 @@ function isMissingColumnError(err, column) {
 function isConstraintError(err) {
   return /constraint/i.test(String((err && err.message) || ""));
 }
-// Format check + rejects obviously-fake / reserved domains so production accounts use
-// real emails. Reserved TLDs per RFC 2606 / 6761 plus the old .demo placeholder.
+// Format-only email check. We do not send email from this app, so test/demo domains
+// are allowed as long as the address is syntactically valid.
 function isPlausibleRealEmail(email) {
   const e = String(email || "").trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) return false;
-  const domain = e.split("@")[1] || "";
-  if (/\.(demo|invalid|local|localhost|test|example)$/.test(domain)) return false;
-  if (/^example\.(com|org|net)$/.test(domain)) return false;
-  return true;
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e);
 }
 
 let auditLogHealAttempted = false;
@@ -718,11 +725,7 @@ async function route(method, path, request, env, url, secure) {
 
   /* -------- admin & super admin: manage coach accounts -------- */
   if (head === "coaches") {
-    if (!atLeast(session, "admin")) return err(403, "Admins only");
-    if (method === "GET" && seg.length === 1) return handleListCoaches(env);
-    if (method === "POST" && seg.length === 1) return handleCreateUser(session, request, env, url, "coach");
-    if (method === "POST" && seg.length === 3 && seg[2] === "reset-passcode") return handleResetUserPasscode(session, env, seg[1], url, "coach", request);
-    if (method === "DELETE" && seg.length === 2) return handleDeleteUser(session, env, seg[1], "coach", request);
+    return err(410, "Legacy coach/admin tiers are retired. Use superadmin accounts from /users.");
   }
   /* -------- super admin only: curate the shared global content library -------- */
   if (head === "global") {
@@ -789,9 +792,8 @@ async function route(method, path, request, env, url, secure) {
 // stored role stays 'coach' so the CHECK and FK references never had to change).
 function effectiveRole(user) {
   if (!user) return null;
-  if (user.is_superadmin) return "superadmin";
-  if (user.is_admin) return "admin";
-  return user.role;   // 'coach' | 'athlete'
+  if (user.role === "athlete") return "athlete";
+  return "superadmin";
 }
 
 async function handleSetup(request, env, secure) {
@@ -803,7 +805,7 @@ async function handleSetup(request, env, secure) {
   const password = String(b.password || "");
   if (!name || !email || password.length < 8) return err(400, "Name, email, and an 8+ character password are required");
   if (password.length > MAX_PASSWORD_LEN) return err(400, "Password is too long");
-  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a valid email address");
   const id = crypto.randomUUID();
   const hash = await hashPassword(password);
   await env.DB.prepare("INSERT INTO users (id,email,name,role,is_superadmin,password_hash,created_at) VALUES (?,?,?,?,?,?,?)")
@@ -921,7 +923,22 @@ async function handleLogin(request, env, secure) {
     if (newPassword === password) return err(400, "Choose a password different from the old one", { code: "FORCE_PASSWORD_CHANGE" });
     const newHash = await hashPassword(newPassword);
     await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id).run();
+    await setMustResetPassword(env, user.id, false);
     user.token_version = await bumpTokenVersion(env, user.id);
+  }
+  if (user.must_reset_password) {
+    const newPassword = String(b.new_password || "");
+    if (!newPassword) {
+      return err(403, "For security, set a new password before continuing.", { code: "FORCE_PASSWORD_CHANGE" });
+    }
+    if (newPassword.length < 8) return err(400, "The new password needs at least 8 characters", { code: "FORCE_PASSWORD_CHANGE" });
+    if (newPassword.length > MAX_PASSWORD_LEN) return err(400, "The new password is too long", { code: "FORCE_PASSWORD_CHANGE" });
+    if (newPassword === password) return err(400, "Choose a password different from the sign-in code", { code: "FORCE_PASSWORD_CHANGE" });
+    const newHash = await hashPassword(newPassword);
+    await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id).run();
+    await setMustResetPassword(env, user.id, false);
+    user.token_version = await bumpTokenVersion(env, user.id);
+    user.must_reset_password = 0;
   }
   const sessionUser = { id: user.id, name: user.name, role: effectiveRole(user), token_version: user.token_version || 0 };
   return json(sessionUser, 200, await issueSessionHeader(sessionUser, env, secure));
@@ -942,8 +959,9 @@ async function handleAccept(request, env, secure) {
   const hash = await hashPassword(password);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?")
     .bind(hash, user.id).run();
+  await setMustResetPassword(env, user.id, false);
   user.token_version = await bumpTokenVersion(env, user.id);   // revoke sessions from before the reset
-  const out = { id: user.id, name: user.name, role: user.role };
+  const out = { id: user.id, name: user.name, role: effectiveRole(user) };
   return json(out, 200, await issueSessionHeader(user, env, secure));
 }
 
@@ -978,6 +996,7 @@ async function handleChangePassword(session, request, env, secure) {
   const newHash = await hashPassword(newPassword);
   await env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
     .bind(newHash, session.uid).run();
+  await setMustResetPassword(env, session.uid, false);
 
   // Revoke every other outstanding session for this account, then re-issue THIS one so
   // the person who changed the password stays signed in on the device they used.
@@ -1115,7 +1134,7 @@ async function handleCreateAthlete(session, request, env, url) {
   const name = String(b.name || "").trim();
   const email = String(b.email || "").trim().toLowerCase();
   if (!name || !email) return err(400, "Name and email are required");
-  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a valid email address");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
   // Block an exact (case-insensitive) name collision with an existing student anywhere in
@@ -1131,6 +1150,7 @@ async function handleCreateAthlete(session, request, env, url) {
   await env.DB.prepare(
     "INSERT INTO users (id,email,name,role,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?)"
   ).bind(id, email, name, "athlete", session.uid, hash, nowSec()).run();
+  await setMustResetPassword(env, id, true);
   const req = requestMeta(request);
   await recordAuditEvent(env, {
     actorId: session.uid,
@@ -1158,6 +1178,7 @@ async function handleResetPasscode(session, env, athleteId, url, request) {
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, athleteId).run();
+  await setMustResetPassword(env, athleteId, true);
   await bumpTokenVersion(env, athleteId);   // revoke any session still using the old credential
   const req = requestMeta(request);
   await recordAuditEvent(env, {
@@ -1290,15 +1311,11 @@ async function handleListCoaches(env) {
 // Super-admin roster view. ?tier=coach|admin|superadmin narrows it; otherwise all three.
 async function handleListUsers(env, url) {
   const tier = String(url.searchParams.get("tier") || "").toLowerCase();
-  if (tier === "coach") return json({ coaches: await listCoaches(env) });
-  if (tier === "admin") return json({ admins: await listAdmins(env) });
   if (tier === "superadmin") return json({ superadmins: await listSuperadmins(env) });
-  return json({ coaches: await listCoaches(env), admins: await listAdmins(env), superadmins: await listSuperadmins(env) });
+  return json({ coaches: [], admins: [], superadmins: await listSuperadmins(env) });
 }
 
-const TIER_FLAGS = {                       // role stays 'coach'; the flags set the tier
-  coach:      { is_admin: 0, is_superadmin: 0 },
-  admin:      { is_admin: 1, is_superadmin: 0 },
+const TIER_FLAGS = {                       // role stays 'coach'; only superadmin is active
   superadmin: { is_admin: 0, is_superadmin: 1 }
 };
 
@@ -1310,11 +1327,11 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
   const b = await readBody(request);
   const name = String(b.name || "").trim();
   const email = String(b.email || "").trim().toLowerCase();
-  const tier = String(forcedTier || b.tier || "coach").trim().toLowerCase();
+  const requestedTier = String(forcedTier || b.tier || "superadmin").trim().toLowerCase();
+  const tier = "superadmin";
   if (!name || !email) return err(400, "Name and email are required");
-  if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
-  if (!TIER_FLAGS[tier]) return err(400, "Invalid role");
-  if (rank(tier) > rank(session.role)) return err(403, "You can't create an account above your own role");
+  if (!isPlausibleRealEmail(email)) return err(400, "Enter a valid email address");
+  if (requestedTier !== "superadmin") return err(400, "Only superadmin staff accounts are supported.");
   const dupe = await env.DB.prepare("SELECT id FROM users WHERE email = ?").bind(email).first();
   if (dupe) return err(409, "A user with that email already exists");
   // Block an exact (case-insensitive) name collision with an existing staff member (any of
@@ -1330,6 +1347,7 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
   await env.DB.prepare(
     "INSERT INTO users (id,email,name,role,is_admin,is_superadmin,coach_id,password_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
   ).bind(id, email, name, "coach", flags.is_admin, flags.is_superadmin, null, hash, nowSec()).run();
+  await setMustResetPassword(env, id, true);
   const req = requestMeta(request);
   await recordAuditEvent(env, {
     actorId: session.uid,
@@ -1352,14 +1370,13 @@ async function handleCreateUser(session, request, env, url, forcedTier) {
 // sentinel is never resettable.
 async function handleResetUserPasscode(session, env, userId, url, scope, request) {
   if (userId === GLOBAL_OWNER_ID) return err(404, "Not found");
-  const where = scope === "coach"
-    ? "id = ? AND role='coach' AND is_admin=0 AND is_superadmin=0"
-    : "id = ? AND role='coach'";   // coach/admin/super admin staff rows all have role='coach'
+  const where = "id = ? AND role='coach' AND is_superadmin=1";
   const row = await env.DB.prepare("SELECT id,name,email FROM users WHERE " + where).bind(userId).first();
   if (!row) return err(404, "Account not found");
   const passcode = genPasscode();
   const hash = await hashPassword(passcode);
   await env.DB.prepare("UPDATE users SET password_hash = ?, invite_token = NULL, invite_expires = NULL WHERE id = ?").bind(hash, userId).run();
+  await setMustResetPassword(env, userId, true);
   await bumpTokenVersion(env, userId);   // revoke any session still using the old credential
   const req = requestMeta(request);
   await recordAuditEvent(env, {
@@ -1437,7 +1454,7 @@ async function handleUpdateUser(session, request, env, userId) {
   if (b.email != null) {
     const email = String(b.email).trim().toLowerCase();
     if (!email) return err(400, "Email can't be empty");
-    if (!isPlausibleRealEmail(email)) return err(400, "Enter a real email address (no .demo/.test/.local placeholders)");
+    if (!isPlausibleRealEmail(email)) return err(400, "Enter a valid email address");
     const dupe = await env.DB.prepare("SELECT id FROM users WHERE lower(email) = ? AND id != ?").bind(email, userId).first();
     if (dupe) return err(409, "A user with that email already exists");
     updates.email = email;

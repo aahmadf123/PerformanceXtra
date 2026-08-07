@@ -4324,7 +4324,7 @@
     }
     card.appendChild(el("div", { class: "auth-card-kicker" }, "First-time setup"));
     card.appendChild(el("h3", { class: "auth-title" }, "Create the admin account"));
-    card.appendChild(el("p", { class: "field-hint" }, "This first account becomes the super admin. After that, you can add coaches, and each coach manages their own athletes."));
+    card.appendChild(el("p", { class: "field-hint" }, "This first account becomes the super admin. After that, create athletes and any additional superadmin accounts from Users."));
     card.appendChild(buildAuthFlowGuide("setup"));
     card.appendChild(el("div", { class: "form-stack" }, [
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
@@ -4375,8 +4375,8 @@
       signin: {
         title: "What happens next",
         items: [
-          "Athletes use the email and sign-in code shared by their coach.",
-          "Coaches, admins, and super admins use their staff password.",
+          "Athletes use the email and sign-in code shared by their super admin.",
+          "Staff use superadmin accounts only.",
           "After sign-in, PerformanceXtra opens the workspace that matches your role."
         ]
       },
@@ -4384,7 +4384,7 @@
         title: "First-time setup flow",
         items: [
           "Create one super admin account for the workspace.",
-          "Sign in, then add coaches and team members from the management area.",
+          "Sign in, then add athletes and any additional superadmin accounts.",
           "You can refine content, branding, and landing copy after access is live."
         ]
       },
@@ -4501,7 +4501,7 @@
     [emailField, passField].forEach(function (i) { i.addEventListener("focus", function () { this.select(); }); });
 
     var body = el("div", { class: "form-stack" }, [
-      el("p", {}, "Share these sign-in details with " + who + ". This sign-in code is shown once, so copy it now. If it is lost, use “Reset sign-in code” on their row to create a new one."),
+      el("p", {}, "Share these sign-in details with " + who + ". This sign-in code is shown once, so copy it now. On first sign-in they must set a new password. If this code is lost, use “Reset sign-in code” on their row to create a new one."),
       el("div", { class: "field" }, [el("label", {}, "Email"), emailField]),
       el("div", { class: "field" }, [el("label", {}, "Sign-in code"), passField])
     ]);
@@ -4548,9 +4548,9 @@
     }).catch(function () { toast("Couldn't refresh"); });
   }
 
-  // Create a coach (POST /coaches) or an admin/super admin (POST /users {tier}).
+  // Create a superadmin account (POST /users).
   function openAddStaffModal(tier) {
-    var who = { coach: "coach", admin: "admin", superadmin: "super admin" }[tier] || "user";
+    var who = { superadmin: "super admin" }[tier] || "user";
     var name = el("input", { type: "text", placeholder: "Full name" });
     var email = el("input", { type: "email", placeholder: "name@email.com", autocomplete: "off" });
     var errBox = el("div", { class: "warn" }); errBox.hidden = true;
@@ -4558,7 +4558,7 @@
     var dupCheck = el("input", { type: "checkbox" });
     var dupConfirm = el("label", { class: "dupe-confirm" }, [dupCheck, el("span", {}, " This is a different person — create anyway")]); dupConfirm.hidden = true;
     var body = el("div", { class: "form-stack" }, [
-      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time sign-in code. Share the email and code with them. They sign in with those details and can set their own password afterward."),
+      el("p", { class: "field-hint" }, "We'll create the " + who + " and generate a one-time sign-in code. Share the email and code with them. On first sign-in they must set a new password."),
       el("div", { class: "field" }, [el("label", {}, "Name"), name]),
       el("div", { class: "field" }, [el("label", {}, "Email"), email]),
       matchesPanel,
@@ -4570,8 +4570,8 @@
       errBox.hidden = true;
       var nm = name.value.trim(), em = email.value.trim();
       if (!nm || !em) { errBox.textContent = "Name and email are both required."; errBox.hidden = false; return; }
-      var path = tier === "coach" ? "/coaches" : "/users";
-      var payload = tier === "coach" ? { name: nm, email: em } : { tier: tier, name: nm, email: em };
+      var path = "/users";
+      var payload = { tier: "superadmin", name: nm, email: em };
       if (dupCheck.checked) payload.allowDuplicateName = true;
       api(path, { method: "POST", body: payload }).then(function (res) {
         if (!res.ok) {
@@ -4592,20 +4592,20 @@
 
   function resetStaffPasscode(c, tier) {
     if (!confirm("Generate a new sign-in code for " + c.name + "? Their old code stops working.")) return;
-    var path = (tier === "coach" ? "/coaches/" : "/users/") + encodeURIComponent(c.id) + "/reset-passcode";
+    var path = "/users/" + encodeURIComponent(c.id) + "/reset-passcode";
     api(path, { method: "POST" }).then(function (res) {
       if (!res.ok) { toast(apiError(res, "Couldn't reset sign-in code")); return; }
       refreshStaff().then(function () { showCredentialsModal(res.data); });
     }).catch(function () { toast("Couldn't reach the server"); });
   }
 
-  // Delete a coach (admin+) or admin (super admin). The server refuses while the account
+  // Delete a non-superadmin staff account (legacy support path). The server refuses while the account
   // still has students (HAS_STUDENTS); when that happens we open their roster so the admin
   // can clear it first. Super admins are never deletable (no button is rendered for them).
   function deleteStaff(c, tier) {
     if (tier === "superadmin") return;
     if (!confirm("Permanently delete " + c.name + " (" + tier + ")? Their private content (custom activities, templates, taxonomy) will be removed. This can't be undone.")) return;
-    var path = (tier === "coach" ? "/coaches/" : "/users/") + encodeURIComponent(c.id);
+    var path = "/users/" + encodeURIComponent(c.id);
     api(path, { method: "DELETE" }).then(function (res) {
       if (!res.ok) {
         if (res.data && res.data.code === "HAS_STUDENTS") { toast(apiError(res, "Remove their students first")); openCoachStudentsModal(c, tier); return; }
@@ -4778,18 +4778,18 @@
     "hero.title": "One focused place for athlete check-ins, coach guidance, and mental performance work.",
     "hero.copy": "PerformanceXtra keeps workouts, reflections, check-ins, and coach communication together, so athletes always know the next step and coaches can support progress without chasing updates across tools.",
     "hero.role1": "Athletes: workouts, check-ins, messages",
-    "hero.role2": "Coaches: assignments, tracking, support",
-    "hero.role3": "Admins: team setup, content, operations",
+    "hero.role2": "Super admins: assignments, tracking, support",
+    "hero.role3": "One shared workspace for focused mental performance coaching",
     "hero.note_title": "Preview the library",
     "hero.note_copy": "Then sign in to open your workspace.",
     "guide.title": "Start in a few focused steps",
     "guide.meta": "Usually 1 to 2 minutes",
     "guide.step1_title": "Athletes sign in with the email and passcode their coach shared.",
     "guide.step1_copy": "Open your assigned workouts, send reflections, and check in without extra setup.",
-    "guide.step2_title": "Coaches and staff sign in with their own account.",
-    "guide.step2_copy": "If this is a brand-new workspace, create the first admin account once, then invite the rest of the team.",
+    "guide.step2_title": "Super admins sign in with their own account.",
+    "guide.step2_copy": "If this is a brand-new workspace, create the first admin account once, then invite athletes and any additional superadmins.",
     "guide.step3_title": "The first screen after sign-in is role-specific.",
-    "guide.step3_copy": "Athletes land on current work, coaches land on roster workflows, and admins land on setup controls.",
+    "guide.step3_copy": "Athletes land on current work, and super admins land on roster and setup controls.",
     "moment.morning_label": "Morning reset",
     "moment.morning_copy": "Start the day with one clear assignment, one honest check-in, and one place to return later.",
     "moment.midday_label": "Midday focus",
